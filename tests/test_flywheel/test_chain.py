@@ -198,13 +198,13 @@ class TestThePaths:
             assert call[call.index("--benchmark") + 1] == branches
             assert "--no-eval" in call and "--task-id" not in call
 
-    def test_a_stage_may_set_its_oracle_timeout(self, tmp_path: Path) -> None:
-        record = {"config": _write(tmp_path / "record.yaml", RUN_YAML), "oracle_timeout": 90}
+    def test_a_stage_may_set_its_verify_timeout(self, tmp_path: Path) -> None:
+        record = {"config": _write(tmp_path / "record.yaml", RUN_YAML), "verify_timeout": 90}
         bench = Recorder(commit_one_run)
         run_chain(_spec(tmp_path, record=record), bench=bench, export=Recorder(publish_dataset))
         first, *others = bench.calls
-        assert first[first.index("--oracle-timeout") + 1] == "90"
-        assert all("--oracle-timeout" not in call for call in others)
+        assert first[first.index("--verify-timeout") + 1] == "90"
+        assert all("--verify-timeout" not in call for call in others)
 
     def test_original_source_version_survives_generated_paths_and_later_file_edits(self, tmp_path):
         spec = _spec(tmp_path)

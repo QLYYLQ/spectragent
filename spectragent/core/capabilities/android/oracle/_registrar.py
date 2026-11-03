@@ -1,10 +1,10 @@
 """The Android task oracle axis (``docs/architecture_design.md`` §11.2 "策略轴", "任务裁判与 ``AndroidSetup``").
 
-An oracle prepares each task of its benchmark on the booted device, reads the
-task's score from the live device at the Runtime's scoring point (§4.2) and
-ends the task at teardown. ``AndroidCapability`` holds one as its
+An oracle prepares each task of its benchmark on the booted device, judges the
+task against the live device at the Runtime's scoring point (§4.2) and ends
+the task at teardown. ``AndroidCapability`` holds one as its
 ``task_oracle`` receptor (``none`` selects no benchmark), implements ``TaskOracle`` by
-delegating ``read_score`` to it, and passes it the task's data unread: an
+delegating ``identity`` and ``read_score`` to it, and passes it the task's data unread: an
 Android task's ``oracle_task`` (``AndroidSetup``) is the oracle's own. It
 implements ``TaskTextFromSetup`` and ``EpisodeEnd`` through it too: an oracle
 that makes the task's goal on the device completes the run's task text, and
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
         AndroidProviderSession,
         DeviceNeeds,
     )
-    from spectragent.schemas.oracle_score import OracleReading
+    from spectragent.schemas.verdict import Judgment, VerifierIdentity
 
 #: An Android task's data for its oracle, opaque to the capability.
 OracleTask = Mapping[str, JsonValue]
@@ -52,6 +52,10 @@ class AndroidTaskOracle(Protocol):
 
     @property
     def oracle_id(self) -> str: ...
+
+    def identity(self) -> VerifierIdentity | None:
+        """Who it judges as, every verdict it gives at the scoring point records it; ``None``: it judges nothing."""
+        ...
 
     @property
     def device_needs(self) -> DeviceNeeds:
@@ -106,11 +110,12 @@ class AndroidTaskOracle(Protocol):
         """
         ...
 
-    async def read_score(self, *, answer: str | None) -> OracleReading | None:
-        """This task's score, read from the live device; ``None`` when there is no oracle.
+    async def read_score(self, *, answer: str | None) -> Judgment:
+        """This task's judgment against the live device: its score and what was judged.
 
+        Asked only of an oracle whose :meth:`identity` is not ``None``.
         *answer* is the run's final answer, ``loop.done``'s text or ``None``
-        (``TaskOracle``, §4.9); a benchmark that scores no answer ignores it.
+        (``TaskOracle``, §4.9); a benchmark that judges no answer ignores it.
         Turns its own transport failures into ordinary exceptions and lets no
         ``CancelledError`` of its own escape.
         """
@@ -139,6 +144,12 @@ class AndroidTaskOracleBase(metaclass=AndroidTaskOracleRegistrar.Meta):
     @property
     def oracle_id(self) -> str:
         return self.__registry_key__
+
+    def identity(self) -> VerifierIdentity | None:
+        """Its kind, the registry key, with no version and no setting that changes a verdict."""
+        from spectragent.schemas.verdict import VerifierIdentity
+
+        return VerifierIdentity(verifier_id=self.oracle_id)
 
 
 def default_task_oracle() -> AndroidTaskOracle:

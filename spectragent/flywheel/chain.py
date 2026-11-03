@@ -148,8 +148,8 @@ class StageSpec(_Spec):
     #: ``trace_branches`` task source the stage runs (the recording stages run ``tasks``).
     benchmark: Path | None = None
     timeout: float = Field(default=300.0, gt=0)
-    #: Seconds each task oracle may take to score a task; ``None``: the bench's default.
-    oracle_timeout: float | None = Field(default=None, gt=0)
+    #: Seconds each live verifier may take to judge a task; ``None``: the bench's default.
+    verify_timeout: float | None = Field(default=None, gt=0)
     #: Whether the benchmark's offline verifiers judge the stage's runs after
     #: it (``False``: ``--no-eval``); each verdict goes into its run's store.
     evaluate: bool = False
@@ -753,8 +753,8 @@ def _run_stage(
         "--log-level",
         log_level,
     ]
-    if stage_spec.oracle_timeout is not None:
-        argv += ["--oracle-timeout", f"{stage_spec.oracle_timeout:g}"]
+    if stage_spec.verify_timeout is not None:
+        argv += ["--verify-timeout", f"{stage_spec.verify_timeout:g}"]
     if branches is not None:
         branches_path, branches_raw = branches
         _write_yaml(branches_path, branches_raw)

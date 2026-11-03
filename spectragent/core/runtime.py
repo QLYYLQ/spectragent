@@ -77,13 +77,13 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_HOOK_PRIORITY = 100
 
-#: Seconds each task oracle may take to read its score at the scoring point
-#: (``execute``'s ``oracle_timeout``, docs/architecture_design.md §4.2). Set from
+#: Seconds each live verifier may take to judge the task at the scoring point
+#: (``execute``'s ``verify_timeout``, docs/architecture_design.md §4.2). Set from
 #: AndroidWorld's scores (2026-11-01): 36-57 ms each in the end-to-end runs, and
 #: over 88 calls of the earlier spike a median of 0.1 s, p90 6.1 s and a longest
 #: of 18.2 s (an SMS task's score waited on a failing ``uiautomator dump``), so
 #: 60 s leaves more than three times the slowest one seen.
-ORACLE_TIMEOUT_S = 60.0
+VERIFY_TIMEOUT_S = 60.0
 
 
 async def _no_environment_act(action: Any, **_kwargs: Any) -> Any:
@@ -109,7 +109,7 @@ def _outcome_under(timed_out: TimeoutError) -> RunAbort | AgentResult | None:
 
 
 def _final_answer(ending: AgentResult | Exception) -> str | None:
-    """The run's final answer for the task oracles: the text ``loop.done`` handed over, else ``None``.
+    """The run's final answer for the live verifiers: the text ``loop.done`` handed over, else ``None``.
 
     Only a run that ended ``done`` has one; the Loop put the text in
     ``answer``. That holds too when the run's own timeout cut off the
@@ -196,10 +196,10 @@ class AgentRuntime:
         self._fragment_formats: Mapping[str, str] | None = None
         self._execution_started: float | None = None
         # Where the execution clock stopped: the Loop's end, before scoring
-        # (see :meth:`_score`). ``None`` until the run reaches the scoring point.
+        # (see :meth:`_judge`). ``None`` until the run reaches the scoring point.
         self._execution_ended: float | None = None
         # The environment as :meth:`prepare` wove it, so a hook observes the
-        # scoring point's ``read_oracle_scores`` like any other call on it.
+        # scoring point's ``verify_live`` like any other call on it.
         self._woven_env: Environment | None = None
         self._recorder: StepSink = StepRecorder()
         self._env_needs_teardown = False
@@ -732,7 +732,7 @@ class AgentRuntime:
         task: str,
         *,
         timeout: float = 300,
-        oracle_timeout: float = ORACLE_TIMEOUT_S,
+        verify_timeout: float = VERIFY_TIMEOUT_S,
         task_id: str = "unknown",
         benchmark: str = "",
         subset: str = "",
@@ -802,13 +802,13 @@ class AgentRuntime:
         The scoring point (docs/architecture_design.md §4.2): once the Loop
         has returned or raised — done, max_steps, the run's timeout, an
         exception, a veto — and before ``on_run_end`` and teardown, the woven
-        environment's task oracles read the task's score against the live
-        environment (``read_oracle_scores``), handed the run's final answer
-        (the text of ``loop.done``; ``None`` on every other ending), and the
-        trace records it. A run whose setup failed, or that was cancelled
-        from outside, is not scored; a cancellation that lands during scoring
-        closes the run out as cancelled. Scoring time stays out of
-        ``execution_ms``, and scoring never changes ``agent_done`` or fails
+        environment judges the task live (``verify_live``), each live
+        verifier handed the run's final answer (the text of ``loop.done``;
+        ``None`` on every other ending), and the trace hook keeps each
+        verdict in the run's verdict store. A run whose setup failed, or that
+        was cancelled from outside, is not judged; a cancellation that lands
+        during judging closes the run out as cancelled. Judging time stays out
+        of ``execution_ms``, and judging never changes ``agent_done`` or fails
         the run.
 
         A task whose setup completes its text (``Environment.task_text_setter``,
@@ -821,7 +821,7 @@ class AgentRuntime:
         Args:
             task: Task text handed to the agent.
             timeout: Wall-clock budget for ``agent.run``.
-            oracle_timeout: Seconds each task oracle may take at the scoring
+            verify_timeout: Seconds each live verifier may take at the scoring
                 point; separate from *timeout*, which covers ``agent.run`` only.
             task_id: Dataset identity of this task.
             benchmark: Benchmark registry key, recorded in the trace so it
@@ -985,7 +985,7 @@ class AgentRuntime:
 
                 try:
                     result = await self._run_to_the_scoring_point(
-                        prepared_agent, task, timeout=timeout, oracle_timeout=oracle_timeout
+                        prepared_agent, task, timeout=timeout, verify_timeout=verify_timeout
                     )
                 except TimeoutError as timed_out:
                     # The run's own timeout — but the run may already have ended
@@ -1154,14 +1154,14 @@ class AgentRuntime:
     # -- Private helpers ---------------------------------------
 
     async def _run_to_the_scoring_point(
-        self, prepared_agent: Any, task: str, *, timeout: float, oracle_timeout: float
+        self, prepared_agent: Any, task: str, *, timeout: float, verify_timeout: float
     ) -> AgentResult:
-        """Drive the Loop under the run's own timeout, then score the run (:meth:`_score`).
+        """Drive the Loop under the run's own timeout, then judge the run (:meth:`_judge`).
 
         However the Loop ends — a result, the run's timeout, an exception, a
-        veto — the run is scored, with its final answer (:func:`_final_answer`),
+        veto — the run is judged, with its final answer (:func:`_final_answer`),
         before its outcome goes on to ``execute``, unchanged. A cancellation
-        leaves at once: a cancelled run is not scored.
+        leaves at once: a cancelled run is not judged.
 
         A run whose setup completed the task's text is seeded from that text
         first. A seed builder that fails on it is the agent's failure, not the
@@ -1172,9 +1172,9 @@ class AgentRuntime:
                 self._seed_from_task_text(task)
             result = await asyncio.wait_for(prepared_agent.run(task), timeout=timeout)
         except Exception as ended:
-            await self._score(oracle_timeout, answer=_final_answer(ended))
+            await self._judge(verify_timeout, answer=_final_answer(ended))
             raise
-        await self._score(oracle_timeout, answer=_final_answer(result))
+        await self._judge(verify_timeout, answer=_final_answer(result))
         return result
 
     async def _task_text_after_setup(self) -> str:
@@ -1221,22 +1221,22 @@ class AgentRuntime:
         if seeds and self._memory is not None:
             self._memory.add_messages(seeds)
 
-    async def _score(self, timeout_s: float, *, answer: str | None) -> None:
-        """The scoring point: the execution clock stops, then the task oracles read the score.
+    async def _judge(self, timeout_s: float, *, answer: str | None) -> None:
+        """The scoring point: the execution clock stops, then the live verifiers judge the task.
 
-        Through the woven environment, so the trace hook records what comes
-        back; each oracle is handed *answer*. Scoring never fails the run: the
-        environment hands back a failed oracle as a not-scored entry, and an
-        environment that raises anyway is logged here, not raised. A
-        cancellation propagates.
+        Through the woven environment, so the trace hook keeps what comes back
+        in the run's verdict store; each live verifier is handed *answer*.
+        Judging never fails the run: the environment hands back a failed
+        verifier as a not-judged verdict, and an environment that raises
+        anyway is logged here, not raised. A cancellation propagates.
         """
         self._execution_ended = time.monotonic()
         if self._woven_env is None:
             return
         try:
-            await self._woven_env.read_oracle_scores(timeout_s=timeout_s, answer=answer)
+            await self._woven_env.verify_live(timeout_s=timeout_s, answer=answer)
         except Exception:
-            logger.exception("AgentRuntime: reading the task oracles' scores failed")
+            logger.exception("AgentRuntime: judging the task at the scoring point failed")
 
     async def _finish(self, result: AgentResult, error: BaseException | None = None) -> None:
         """Close a run out: ``on_run_end`` first, then error detail, then drain."""

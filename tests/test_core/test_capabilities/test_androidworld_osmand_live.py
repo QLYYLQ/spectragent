@@ -92,6 +92,6 @@ async def test_osmands_markers_table_is_on_the_device_and_empty(
 
 
 async def test_the_unsolved_task_scores_0(prepared: Prepared) -> None:
-    (unsolved,) = await prepared.env.read_oracle_scores(timeout_s=60, answer=None)
+    (unsolved,) = await prepared.env.verify_live(timeout_s=60, answer=None)
 
-    assert (unsolved.status, unsolved.score) == ("scored", 0.0), unsolved.detail
+    assert (unsolved.status, unsolved.score) == ("judged", 0.0), unsolved.detail

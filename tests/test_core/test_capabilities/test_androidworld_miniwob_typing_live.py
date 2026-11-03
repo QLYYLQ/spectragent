@@ -138,8 +138,8 @@ async def test_the_terminal_takes_commands_typed_as_key_events(tmp_path: Path) -
     assert len(model.commands) == 2 and model.commands[0] == "ls", model.commands
     assert writer.run_dir is not None
     trace = RunTrace(writer.run_dir)
-    (score,) = trace.oracle_scores()
-    assert (score.status, score.score) == ("scored", 1.0), score.detail
+    (score,) = trace.verdicts().values()
+    assert (score.status, score.score) == ("judged", 1.0), score.detail
     typed = [
         acted.effect
         for record in trace.step_records

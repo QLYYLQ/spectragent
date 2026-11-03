@@ -33,7 +33,7 @@ from spectragent.core.benchmark_runner import positive_seconds, safe_run_id, tas
 from spectragent.core.composer import ConfigComposer, named_packages
 from spectragent.core.experiment import ExperimentScope
 from spectragent.core.registries import start_flags
-from spectragent.core.runtime import ORACLE_TIMEOUT_S, AgentRuntime
+from spectragent.core.runtime import VERIFY_TIMEOUT_S, AgentRuntime
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.restoration import BranchProvenance
@@ -124,6 +124,26 @@ def _trace_summary(path: str | None) -> dict[str, Any]:
         return {"status": "unreadable", "complete_through": None, "reason": str(exc)}
 
 
+def _verdicts_summary(path: str | None) -> list[str]:
+    """One line per verdict the run's store holds (its scoring point's): slug and what it found."""
+    if path is None:
+        return []
+    try:
+        verdicts = RunTrace(Path(path)).verdicts()
+    except Exception as exc:
+        return [f"unreadable: {exc}"]
+    lines = []
+    for slug, verdict in verdicts.items():
+        if verdict.status != "judged":
+            found = f"not judged ({verdict.reason}: {verdict.detail})"
+        elif verdict.label is not None:
+            found = "passed" if verdict.label == 1 else "failed"
+        else:
+            found = f"score {verdict.score}"
+        lines.append(f"{slug}: {found}")
+    return lines
+
+
 @dataclass(frozen=True)
 class _Task:
     """What one task hands the run: its text, its context parts and the identity it is recorded with.
@@ -161,7 +181,7 @@ async def _run_in_experiment(
     benchmark: str | None = None,
     subset: str | None = None,
     task_id: str | None = None,
-    oracle_timeout: float = ORACLE_TIMEOUT_S,
+    verify_timeout: float = VERIFY_TIMEOUT_S,
     progress: Any = None,
     report: Callable[[dict[str, Any]], None] | None = None,
 ) -> int:
@@ -237,7 +257,7 @@ async def _run_in_experiment(
         result = await runtime.execute(
             task=selected.text,
             timeout=timeout,
-            oracle_timeout=oracle_timeout,
+            verify_timeout=verify_timeout,
             task_id=selected.task_id,
             benchmark=selected.benchmark,
             subset=selected.subset,
@@ -268,14 +288,15 @@ async def _run_in_experiment(
     print(f"recording={trace['status']} complete_through={trace['complete_through']}")
     if trace["reason"]:
         print(f"recording detail: {trace['reason']}")
-    print("evaluation=not_evaluated")
+    verdicts = _verdicts_summary(trace_path)
+    print(f"verdicts: {'; '.join(verdicts) or 'none'}")
     if report is not None:
         report(
             {
                 "result": result.model_dump(mode="json"),
                 "trace_dir": trace_path,
                 "recording": trace,
-                "evaluation": "not_evaluated",
+                "verdicts": verdicts,
             }
         )
     if progress is not None:
@@ -332,10 +353,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout", type=positive_seconds, default=300.0, help="Run timeout in seconds"
     )
     parser.add_argument(
-        "--oracle-timeout",
+        "--verify-timeout",
         type=positive_seconds,
-        default=ORACLE_TIMEOUT_S,
-        help="Seconds each task oracle may take to score the task after the run",
+        default=VERIFY_TIMEOUT_S,
+        help="Seconds each live verifier may take to judge the task after the run",
     )
     parser.add_argument(
         "--dry-run",
@@ -389,7 +410,7 @@ def main(
             subset=args.subset,
             task_id=args.task_id,
             timeout=args.timeout,
-            oracle_timeout=args.oracle_timeout,
+            verify_timeout=args.verify_timeout,
             dry_run=args.dry_run,
             progress=progress,
             report=report,

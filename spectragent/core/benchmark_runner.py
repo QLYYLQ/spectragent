@@ -75,7 +75,7 @@ from spectragent.core.data_loader.eval.base import BaseEvalLoader
 from spectragent.core.experiment import ExperimentScope
 from spectragent.core.llm.exceptions import ModelOutputTruncatedError
 from spectragent.core.loops.errors import RunAbort
-from spectragent.core.runtime import ORACLE_TIMEOUT_S, AgentRuntime
+from spectragent.core.runtime import VERIFY_TIMEOUT_S, AgentRuntime
 from spectragent.core.trace.encoding import MANIFEST_FILE
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.reader import RunTrace
@@ -590,8 +590,8 @@ class BenchmarkRunner:
         env_id: Which environment to run against. Required only when a
             run holds more than one.
         timeout: Per-task wall-clock budget.
-        oracle_timeout: Seconds each task oracle may take to score a task
-            after its run (``AgentRuntime.execute``'s ``oracle_timeout``).
+        verify_timeout: Seconds each live verifier may take to judge a task
+            after its run (``AgentRuntime.execute``'s ``verify_timeout``).
         run_id_prefix: Prepended to every generated trace directory name.
         verifiers: The benchmark's offline verifiers. Every trace the sweep
             produced is judged by each of them after the last task finishes,
@@ -613,7 +613,7 @@ class BenchmarkRunner:
         agent_id: str | None = None,
         env_id: str | None = None,
         timeout: float = 300.0,
-        oracle_timeout: float = ORACLE_TIMEOUT_S,
+        verify_timeout: float = VERIFY_TIMEOUT_S,
         run_id_prefix: str = "",
         verifiers: Sequence[OfflineVerifier] = (),
         reference_loader: BaseEvalLoader | None = None,
@@ -634,7 +634,7 @@ class BenchmarkRunner:
         self._agent_id = agent_id
         self._env_id = env_id
         self._timeout = timeout
-        self._oracle_timeout = oracle_timeout
+        self._verify_timeout = verify_timeout
         self._benchmark = getattr(loader, "benchmark_name", "")
         self._subset = getattr(loader, "subset", "")
         self._run_id_prefix = run_id_prefix
@@ -958,7 +958,7 @@ class BenchmarkRunner:
                 branch=context.branch,
                 config_source=self._config_source,
                 timeout=self._timeout,
-                oracle_timeout=self._oracle_timeout,
+                verify_timeout=self._verify_timeout,
                 raise_on_error=False,
                 config=task_snapshot(task, self._benchmark, self._subset),
             )
@@ -1064,11 +1064,11 @@ def _token_limit_argument(text: str) -> int | Unlimited:
 
 
 def positive_seconds(text: str) -> float:
-    """``--timeout`` / ``--oracle-timeout`` (here and in ``spectragent run``): seconds above 0.
+    """``--timeout`` / ``--verify-timeout`` (here and in ``spectragent run``): seconds above 0.
 
     ``value > 0`` refuses NaN as well. A limit of 0, below 0 or NaN expires at
-    once: every oracle would come back not scored, and a score read against
-    the live environment cannot be read again once it is torn down.
+    once: every live verifier would come back not judged, and a verdict judged
+    against the live environment cannot be had again once it is torn down.
     """
     try:
         value = float(text)
@@ -1127,10 +1127,10 @@ def main(
     parser.add_argument("--limit", type=int, help="Run at most N tasks.")
     parser.add_argument("--timeout", type=positive_seconds, default=300.0, help="Per-task seconds.")
     parser.add_argument(
-        "--oracle-timeout",
+        "--verify-timeout",
         type=positive_seconds,
-        default=ORACLE_TIMEOUT_S,
-        help="Seconds each task oracle may take to score a task after its run.",
+        default=VERIFY_TIMEOUT_S,
+        help="Seconds each live verifier may take to judge a task after its run.",
     )
     parser.add_argument("--agent-id", help="Agent instance id to drive.")
     parser.add_argument("--env-id", help="Environment instance id to run against.")
@@ -1215,7 +1215,7 @@ def main(
         agent_id=args.agent_id,
         env_id=args.env_id,
         timeout=args.timeout,
-        oracle_timeout=args.oracle_timeout,
+        verify_timeout=args.verify_timeout,
         verifiers=verifiers,
         reference_loader=reference_loader,
         token_limit=args.token_limit,

@@ -73,8 +73,8 @@ from spectragent.core.loops import ReactLoop
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action
 from spectragent.schemas.observation.geometry import ScreenshotGeometry
-from spectragent.schemas.oracle_score import OracleReading
 from spectragent.schemas.task import SetupTaskText
+from spectragent.schemas.verdict import Judgment, VerifierIdentity
 from tests._helpers.android_device import (
     APK_BYTES,
     FINGERPRINT,
@@ -817,9 +817,12 @@ class _RecordingOracle:
         self.asked_at = asyncio.get_running_loop().time()
         return self.over
 
-    async def read_score(self, *, answer: str | None) -> OracleReading | None:
+    def identity(self) -> VerifierIdentity | None:
+        return VerifierIdentity(verifier_id="recording")
+
+    async def read_score(self, *, answer: str | None) -> Judgment:
         self.calls.append(f"read_score {answer}")
-        return OracleReading(score=0.5, oracle="recording")
+        return Judgment(score=0.5)
 
     async def stop(self) -> None:
         self.calls.append("stop")
@@ -848,12 +851,14 @@ async def test_the_oracle_shapes_the_boot_and_is_stopped_before_the_device_goes(
         provider = _ClosingProvider(adb.host, adb.port, log=oracle.calls)
         capability.backend = provider
         await capability.setup(oracle_task=task)
+        identity = capability.oracle_identity()
         reading = await capability.read_score(answer="Mall")
         await capability.teardown()
 
     assert provider.needs == [DeviceNeeds(root=True, guest_wifi=True)]
     assert oracle.tasks == [task] and oracle.tasks[0] is task, "handed over as it came"
-    assert reading == OracleReading(score=0.5, oracle="recording")
+    assert identity == VerifierIdentity(verifier_id="recording")
+    assert reading == Judgment(score=0.5)
     assert oracle.calls == [
         "check_setup",
         f"start {SERIAL}",

@@ -71,9 +71,9 @@ from spectragent.core.hooks._registrar import HookBase
 from spectragent.core.loops import ReactLoop
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
-from spectragent.schemas.oracle_score import OracleScore
 from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.task import SetupTaskText
+from spectragent.schemas.verdict import Verdict
 from tests._helpers.assembly import make_env, make_run
 
 #: The fake capability's registry key — the prefix of every key it provides.
@@ -612,11 +612,9 @@ class SurfacelessEnv:
         # Every run calls it (``prepare()``'s setup check), archiving or not.
         self._inner.check_setup(context, negotiation=negotiation, archivers=archivers)
 
-    async def read_oracle_scores(
-        self, *, timeout_s: float, answer: str | None
-    ) -> list[OracleScore]:
+    async def verify_live(self, *, timeout_s: float, answer: str | None) -> list[Verdict]:
         # Every run that reaches the scoring point calls it, archiving or not.
-        return await self._inner.read_oracle_scores(timeout_s=timeout_s, answer=answer)
+        return await self._inner.verify_live(timeout_s=timeout_s, answer=answer)
 
     def task_text_setter(self, context: Mapping[str, Any] | None = None) -> str | None:
         # Every run's ``prepare()`` asks it, archiving or not.

@@ -53,9 +53,9 @@ from spectragent.schemas.observation.dynamic_model import (
     build_observation_model_from_result,
 )
 from spectragent.schemas.observation.failure import FragmentFailure
-from spectragent.schemas.oracle_score import OracleReading, OracleScore
 from spectragent.schemas.restoration import IDENTITY, RestorationEvidence, Retarget
 from spectragent.schemas.task import SetupTaskText
+from spectragent.schemas.verdict import Judgment, Verdict, VerifierIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -654,38 +654,43 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
             )
         return batch
 
-    # ── Scoring: the task oracles, after the Loop ─────────────
+    # ── The scoring point: the live verdicts, after the Loop ──
 
-    async def read_oracle_scores(
-        self, *, timeout_s: float, answer: str | None
-    ) -> list[OracleScore]:
-        """Ask every task oracle for this task's score; the entries in capability order.
+    async def verify_live(self, *, timeout_s: float, answer: str | None) -> list[Verdict]:
+        """Judge this task against the live environment; the verdicts in capability order.
 
         One task per capability implementing
-        :class:`~spectragent.core.capabilities.base.TaskOracle`, run
+        :class:`~spectragent.core.capabilities.base.TaskOracle` whose oracle
+        judges this run (``oracle_identity()`` is not ``None``), run
         **concurrently**, each limited to *timeout_s* and handed the same
         *answer*, the run's final answer (``loop.done``'s text, or ``None``),
-        and every task is waited for before anything is returned. A reading
-        becomes a ``scored`` entry carrying the capability's id and the start
-        time and duration measured here around the call; a ``None`` (no oracle
-        in this run) is left out.
-        An oracle that runs out of time, raises, or hands back something other
-        than an :class:`OracleReading` comes back as a ``not_scored`` entry
-        saying why. Nothing here raises ``Exception``: scoring never fails the
-        run (``docs/architecture_design.md`` §4.3 "判分的路由"). No oracle: an
-        empty list, and no capability is asked anything.
+        and every task is waited for before anything is returned. A judgment
+        becomes a ``judged`` live verdict carrying the oracle's identity and
+        the start time and duration measured here around the call. An oracle
+        that runs out of time, raises, or hands back something other than a
+        :class:`Judgment` comes back as a ``not_judged`` verdict saying why,
+        under the same identity. Nothing here raises ``Exception``: judging
+        never fails the run (``docs/architecture_design.md`` §4.3 "判分的路由").
+        No oracle: an empty list.
 
         A cancellation propagates unchanged, after every oracle still running
         was cancelled and waited for, as in :meth:`collect_archive`.
         """
-        oracles = [cap for cap in self.capabilities.values() if isinstance(cap, TaskOracle)]
-        if not oracles:
+        judging = [
+            (cap, identity)
+            for cap in self.capabilities.values()
+            if isinstance(cap, TaskOracle) and (identity := cap.oracle_identity()) is not None
+        ]
+        if not judging:
             return []
-        tasks = [asyncio.ensure_future(self._score_one(cap, timeout_s, answer)) for cap in oracles]
+        tasks = [
+            asyncio.ensure_future(self._verify_one(cap, identity, timeout_s, answer))
+            for cap, identity in judging
+        ]
         try:
-            outcomes = await asyncio.gather(*tasks)
+            return list(await asyncio.gather(*tasks))
         except BaseException:
-            # Only a cancellation reaches here — ``_score_one`` returns every
+            # Only a cancellation reaches here — ``_verify_one`` returns every
             # ``Exception``. ``gather`` lets the siblings of a child that raised
             # ``CancelledError`` keep running; cancel whatever is still pending
             # and wait it out, so no oracle outlives this call.
@@ -693,59 +698,48 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
                 task.cancel()
             await asyncio.wait(tasks)
             raise
-        return [score for score in outcomes if score is not None]
 
     @staticmethod
-    async def _score_one(
-        cap: BaseCapability, timeout_s: float, answer: str | None
-    ) -> OracleScore | None:
-        """One oracle's entry: built from its reading, or the not-scored entry standing in for it.
+    async def _verify_one(
+        cap: BaseCapability, identity: VerifierIdentity, timeout_s: float, answer: str | None
+    ) -> Verdict:
+        """One oracle's verdict: built from its judgment, or the not-judged verdict standing in for it.
 
-        The capability's id and the start time and duration are this method's
-        own, measured around the call, never the oracle's. Catches ``Exception``
-        only: a ``CancelledError`` (a ``BaseException``) propagates. The limit
-        is this method's own clock, so an oracle that raises ``TimeoutError``
-        itself, inside the limit, failed with an ``error``; ``timeout`` means
-        the limit cut it off.
+        The start time and duration are this method's own, measured around the
+        call, never the oracle's. Catches ``Exception`` only: a
+        ``CancelledError`` (a ``BaseException``) propagates. The limit is this
+        method's own clock, so an oracle that raises ``TimeoutError`` itself,
+        inside the limit, failed with an ``error``; ``timeout`` means the limit
+        cut it off.
         """
         # Only capabilities that passed the isinstance check above are asked.
         oracle = cast(TaskOracle, cap)
         started_at, started = time.time(), time.monotonic()
         limit = asyncio.timeout(timeout_s)
-        reading: object = None
+        judgment: object = None
         failure: Exception | None = None
         try:
             async with limit:
-                reading = await oracle.read_score(answer=answer)
+                judgment = await oracle.read_score(answer=answer)
         except Exception as exc:  # per-oracle isolation
             failure = exc
         duration_ms = int((time.monotonic() - started) * 1000)
         if failure is None:
-            if reading is None:
-                return None
-            if isinstance(reading, OracleReading):
-                return OracleScore(
-                    capability_id=cap.capability_id,
-                    status="scored",
-                    score=reading.score,
-                    oracle=reading.oracle,
-                    oracle_version=reading.oracle_version,
-                    provenance=dict(reading.provenance),
-                    started_at=started_at,
-                    duration_ms=duration_ms,
+            if isinstance(judgment, Judgment):
+                return Verdict.judged(
+                    identity, "live", judgment, started_at=started_at, duration_ms=duration_ms
                 )
-            failure = TypeError(
-                f"read_score() returned {type(reading).__name__}, not an OracleReading or None"
-            )
+            failure = TypeError(f"read_score() returned {type(judgment).__name__}, not a Judgment")
         timed_out = limit.expired()
-        return OracleScore(
-            capability_id=cap.capability_id,
-            status="not_scored",
+        return Verdict(
+            verifier=identity,
+            attachment="live",
+            status="not_judged",
             started_at=started_at,
             duration_ms=duration_ms,
             reason="timeout" if timed_out else "error",
             detail=(
-                f"no score within {timeout_s:g} s (oracle_timeout)"
+                f"no verdict within {timeout_s:g} s (verify_timeout)"
                 if timed_out
                 else f"{type(failure).__name__}: {failure}"
             ),
@@ -787,7 +781,7 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         Asks every :class:`~spectragent.core.capabilities.base.TaskTextFromSetup`
         capability in capability order; one that completed none answers
         ``None`` and does not count. No text: ``None``. The capability's id is
-        the environment's to add, as in :meth:`read_oracle_scores`. Public so
+        the environment's to add, as in :meth:`verify_live`. Public so
         the trace hook records what it returns (``docs/architecture_design.md``
         §4.3, §5.3). A capability's exception propagates: the run's setup failed.
 

@@ -206,7 +206,7 @@ class Output:
                     ("Recording", recording.get("status")),
                     ("Complete through", recording.get("complete_through")),
                     ("Recording detail", recording.get("reason")),
-                    ("Evaluation", value.get("evaluation")),
+                    ("Verdicts", "; ".join(value.get("verdicts") or []) or "none"),
                     ("Trace", value.get("trace_dir")),
                     ("Answer", result.get("answer")),
                     ("Error", result.get("error")),

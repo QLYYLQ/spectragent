@@ -405,12 +405,12 @@ class TestFormatVersions:
 
     Format 3 split the manifest's status from the agent's outcome; format 4
     stores each image a prompt sent inline once per run; format 7 records each
-    step's coordinate frame.
+    step's coordinate frame; format 8 keeps no verdict in the manifest.
     """
 
     @pytest.mark.parametrize(
         ("version", "named"),
-        [(None, "1"), (1, "1"), (2, "2"), (3, "3"), (4, "4"), ("5", "'5'"), (6, "6")],
+        [(None, "1"), (1, "1"), (2, "2"), (3, "3"), (4, "4"), ("5", "'5'"), (6, "6"), (7, "7")],
     )
     def test_an_older_or_malformed_format_is_refused_at_construction(
         self, reference, version, named
@@ -435,6 +435,13 @@ class TestFormatVersions:
             _trace(reference.run_dir)
         assert exc_info.value.path == path
 
+    def test_a_format_7_trace_is_refused_for_its_scores_in_the_manifest(self, reference):
+        """Its scoring point's scores are in its manifest, not in the verdict store."""
+        path = _declare_format(reference.run_dir, 7)
+        with pytest.raises(TraceSchemaError, match="verdict store") as exc_info:
+            _trace(reference.run_dir)
+        assert exc_info.value.path == path
+
     def test_a_format_2_status_is_never_read_as_a_ledger(self, reference):
         """An old ``error`` meant "the agent failed" or "the trace is incomplete": no guess."""
         path = _declare_format(reference.run_dir, 2)
@@ -445,8 +452,8 @@ class TestFormatVersions:
             _trace(reference.run_dir)
 
     def test_a_newer_format_is_refused_at_construction(self, reference):
-        path = _declare_format(reference.run_dir, 8)
-        with pytest.raises(TraceSchemaError, match="format version 8") as exc_info:
+        path = _declare_format(reference.run_dir, 9)
+        with pytest.raises(TraceSchemaError, match="format version 9") as exc_info:
             _trace(reference.run_dir)
         assert exc_info.value.path == path
         assert "the spectragent that wrote it" in str(exc_info.value)

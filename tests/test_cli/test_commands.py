@@ -27,12 +27,12 @@ def test_terminal_captured_run_prints_still_leave_a_final_summary(capsys):
             "output": [],
             "result": {"agent_done": "done", "env_status": "success", "answer": "answer"},
             "recording": {"status": "incomplete", "complete_through": 2, "reason": "close failed"},
-            "evaluation": "not_evaluated",
+            "verdicts": ["androidworld_0a1b2c3d: score 1.0"],
             "trace_dir": "traces/one",
         }
     )
     text = capsys.readouterr().out
-    assert "done" in text and "incomplete" in text and "not_evaluated" in text
+    assert "done" in text and "incomplete" in text and "androidworld_0a1b2c3d: score 1.0" in text
     assert "traces/one" in text and "close failed" in text
 
 
@@ -154,7 +154,7 @@ def test_explain_lists_the_interceptions_the_run_would_weave(
     points = {(item["role"], item["method"]) for item in writer["intercepts"]}
     assert ("loop", "record_step") in points
     assert (("env", "act") in points) is env_intercepted
-    assert (("env", "read_oracle_scores") in points) is env_intercepted
+    assert (("env", "verify_live") in points) is env_intercepted
     assert not (tmp_path / "never-written").exists()
 
 
@@ -409,4 +409,4 @@ async def test_agent_done_and_incomplete_recording_remain_separate(tmp_path, mon
     assert report["result"]["agent_done"] == "done"
     assert report["recording"]["status"] == "incomplete"
     assert report["recording"]["complete_through"] == -1
-    assert report["evaluation"] == "not_evaluated"
+    assert report["verdicts"] == []

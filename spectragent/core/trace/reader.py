@@ -112,7 +112,6 @@ from spectragent.schemas.observation._registrar import (
     fragment_field_name,
 )
 from spectragent.schemas.observation.failure import FragmentFailure
-from spectragent.schemas.oracle_score import OracleScore
 from spectragent.schemas.recording import RecordingTiming
 from spectragent.schemas.step_record import StepRecord
 from spectragent.schemas.task import SetupTaskText
@@ -139,7 +138,6 @@ _FRAGMENT_PACKAGES = ("spectragent.schemas", "spectragent.core.capabilities")
 _SCREENSHOT = "screenshot"
 
 _JSON_OBJECT: TypeAdapter[dict[str, Any]] = TypeAdapter(dict[str, Any])
-_ORACLE_SCORES: TypeAdapter[list[OracleScore]] = TypeAdapter(list[OracleScore])
 
 
 class RunTrace:
@@ -224,23 +222,6 @@ class RunTrace:
         """
         result = self._result
         return result.model_copy(deep=True) if result is not None else None
-
-    def oracle_scores(self) -> list[OracleScore]:
-        """The task oracles' scores (``oracle_scores.json``), in capability order.
-
-        ``[]`` when the manifest points to no record: no capability scored the
-        task, or the run never reached the scoring point (its setup failed, it
-        was cancelled). An evaluator counts that as not scored, never as a
-        failure (``docs/architecture_design.md`` §4.11). A record the manifest
-        points to that cannot be read raises :class:`TraceSchemaError` naming it.
-        """
-        rel = self._manifest.oracle_scores
-        if rel is None:
-            return []
-        path = self._listed(rel)
-        return _parse(
-            path, _read_bytes(path), _ORACLE_SCORES.validate_python, "list of OracleScore"
-        )
 
     def setup_task_text(self) -> SetupTaskText | None:
         """The task text a capability's setup completed (``task_text.json``); ``None`` when none did.
@@ -543,8 +524,8 @@ class RunTrace:
         """Every file this run committed, one entry per listing, in commit order.
 
         The run's own files first (``manifest.json``, ``config.json``,
-        ``result.json`` when the run wrote one, and ``oracle_scores.json`` and
-        ``task_text.json`` when the manifest points to them); then, step by step in
+        ``result.json`` when the run wrote one, and ``task_text.json`` when the
+        manifest points to it); then, step by step in
         manifest order, the step record, each fragment's file and artifact,
         each LLM call, the extra index and every file it lists; then each
         trailing commit's calls, index and files; then the requested reply
@@ -573,8 +554,6 @@ class RunTrace:
         ]
         if self._result_data is not None:
             files.append(CommittedFile(path=RESULT_FILE, kind="result"))
-        if self._manifest.oracle_scores is not None:
-            files.append(self._listing(self._manifest.oracle_scores, "oracle_scores", None))
         if self._manifest.task_text is not None:
             files.append(self._listing(self._manifest.task_text, "task_text", None))
         for entry in self._manifest.steps:
@@ -1274,6 +1253,11 @@ def _require_current_format(path: Path, document: Any) -> None:
 
 def _why_not_read(found: Any) -> str:
     """What changed since the format *found*, in the words of a refusal."""
+    if found == 7 and type(found) is int:
+        return (
+            "A format-7 trace keeps the scoring point's scores in its manifest; the current "
+            "format keeps every verdict in the run's verdict store."
+        )
     if found == 6 and type(found) is int:
         return (
             "A format-6 trace does not record the coordinate frame of each step, so the grid "

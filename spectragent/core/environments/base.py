@@ -18,9 +18,9 @@ if TYPE_CHECKING:
     from spectragent.core.archive._registrar import ArchiverBase
     from spectragent.core.archive.types import ArchiveBatch
     from spectragent.core.capabilities.base import PreparedSetupContext
-    from spectragent.schemas.oracle_score import OracleScore
     from spectragent.schemas.restoration import RestorationEvidence, Retarget
     from spectragent.schemas.task import SetupTaskText
+    from spectragent.schemas.verdict import Verdict
 
 
 @runtime_checkable
@@ -260,24 +260,23 @@ class Environment(Protocol):
         """
         ...
 
-    # ── Scoring: after the Loop, before the close-out ─────────
+    # ── The scoring point: after the Loop, before the close-out ─
 
-    async def read_oracle_scores(
-        self, *, timeout_s: float, answer: str | None
-    ) -> list[OracleScore]:
-        """Every task oracle's score, in capability order; ``[]`` when there is none.
+    async def verify_live(self, *, timeout_s: float, answer: str | None) -> list[Verdict]:
+        """Every live verdict on this task, in capability order; ``[]`` when nothing judges it live.
 
         ``AgentRuntime`` calls it once on every run that reaches the scoring
         point (after the Loop returned or raised, before ``on_run_end`` and
         teardown), so a structural implementation needs it too. Asks every
         capability implementing ``TaskOracle`` (``core/capabilities/base.py``)
-        concurrently, each within *timeout_s*, handing each the run's final
-        *answer* (``loop.done``'s text; ``None`` when the run ended without
-        one). A reading comes back as a ``scored`` entry with the capability's
-        id and the start time and duration measured around the call; a
-        ``None`` is left out, and a timeout or an ``Exception`` comes back as a
-        ``not_scored`` entry. Never raises ``Exception``. A cancellation
-        cancels the oracles still running, waits for them, and then propagates.
+        whose oracle judges the run, concurrently and each within
+        *timeout_s*, handing each the run's final *answer* (``loop.done``'s
+        text; ``None`` when the run ended without one). A judgment comes back
+        as a ``judged`` live verdict under the oracle's identity, with the
+        start time and duration measured around the call, and a timeout or an
+        ``Exception`` as a ``not_judged`` one. Never raises ``Exception``. A
+        cancellation cancels the oracles still running, waits for them, and
+        then propagates.
         """
         ...
 
@@ -303,7 +302,7 @@ class Environment(Protocol):
         """After setup: the task text a capability's setup completed, with its id; ``None`` when none did.
 
         Asks every ``TaskTextFromSetup`` capability in capability order. Public
-        so the trace hook records it, as it records :meth:`read_oracle_scores`.
+        so the trace hook records it, as it records :meth:`verify_live`.
 
         Raises:
             ValueError: More than one capability completed a text, or one

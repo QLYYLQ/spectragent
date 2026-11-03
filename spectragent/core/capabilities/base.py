@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
-from spectragent.schemas.oracle_score import OracleReading
 from spectragent.schemas.restoration import RestorationEvidence, Retarget
+from spectragent.schemas.verdict import Judgment, VerifierIdentity
 
 if TYPE_CHECKING:
     from spectragent.core.archive._registrar import ArchiverBase
@@ -394,41 +394,50 @@ class SetupCheck(Protocol):
 
 @runtime_checkable
 class TaskOracle(Protocol):
-    """Optional: this task's score, read from the live environment once the Loop has ended.
+    """Optional: this task's verdict, judged against the live environment once the Loop has ended.
 
-    Some benchmarks can only be scored against the environment itself
+    Some benchmarks can only be judged against the environment itself
     (AndroidWorld reads databases, files and settings on the device), and only
     the capability reaches it. ``AgentRuntime`` calls the woven environment's
-    ``read_oracle_scores`` after the Loop returned or raised, before the
-    close-out and the teardown (``docs/architecture_design.md`` §4.2
-    "判分时间点"); the environment asks every capability implementing this,
-    concurrently and each within the run's ``oracle_timeout``, and the trace
-    records the scores as evidence evaluators read (§5.3). Not part of
-    :class:`BaseCapability`; ``CapabilityBase`` gives no default.
+    ``verify_live`` after the Loop returned or raised, before the close-out and
+    the teardown (``docs/architecture_design.md`` §4.2 "判分时间点"); the
+    environment asks every capability implementing this whose oracle judges
+    the run, concurrently and each within the run's ``verify_timeout``, and
+    the trace writer keeps each verdict in the run's verdict store (§5.3
+    "判定统一存放"). Not part of :class:`BaseCapability`; ``CapabilityBase``
+    gives no default.
 
     An oracle turns its own transport failures into ordinary exceptions (a
     ``ConnectionError``, say) and never lets a ``CancelledError`` escape: the
     framework takes any ``CancelledError`` for the run being cancelled, closes
-    the run out as cancelled and records no score, as it does for every other
-    capability call.
+    the run out as cancelled and records no verdict, as it does for every
+    other capability call.
     """
 
-    async def read_score(self, *, answer: str | None) -> OracleReading | None:
-        """Score this task against the live environment; ``None`` when this run has no oracle.
+    def oracle_identity(self) -> VerifierIdentity | None:
+        """Who this run's oracle judges as, recorded in its verdict however it goes; ``None``: no oracle.
+
+        Reads configuration only. Known before the oracle is asked, so a
+        verdict that timed out or failed still names its verifier.
+        """
+        ...
+
+    async def read_score(self, *, answer: str | None) -> Judgment:
+        """Judge this task against the live environment.
 
         *answer* is the run's final answer: the text the agent handed over with
         ``loop.done``, or ``None`` when the run ended any other way or
         ``loop.done`` carried no text (§4.2). It is only the answer, never the
-        agent's reasoning or history; an oracle whose benchmark scores no
+        agent's reasoning or history; an oracle whose benchmark judges no
         answer ignores it.
 
         Executes none of the run's actions and tears nothing down; handing
-        *answer* to the benchmark's own judge is part of scoring. The reading
-        holds only what the oracle knows: the score, its identity and version,
-        what it judged. The environment records this capability's id and when
-        the read started and how long it took, on its own clock; it enforces
-        the time limit and turns a timeout or an exception into a not-scored
-        entry.
+        *answer* to the benchmark's own judge is part of judging. The judgment
+        holds only what the oracle found: its score, what it judged. The
+        environment adds who judged (:meth:`oracle_identity`), the
+        attachment, and when it was asked and how long it took, on its own
+        clock; it enforces the time limit and turns a timeout or an exception
+        into a not-judged verdict.
         """
         ...
 

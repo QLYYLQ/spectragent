@@ -27,9 +27,9 @@ from spectragent.core.loops import ReactLoop
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace import RunTrace
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
-from spectragent.schemas.oracle_score import OracleReading
 from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.task import SetupTaskText
+from spectragent.schemas.verdict import Judgment, VerifierIdentity
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
 
 LOADED = "Follow the instructions shown on the top of the screen."
@@ -71,9 +71,12 @@ class _TextCap(CapabilityBase):
             raise self.text
         return self.text  # type: ignore[return-value]  # a breach of contract on purpose
 
-    async def read_score(self, *, answer: str | None) -> OracleReading | None:
+    def oracle_identity(self) -> VerifierIdentity | None:
+        return VerifierIdentity(verifier_id="setup_text_oracle")
+
+    async def read_score(self, *, answer: str | None) -> Judgment:
         self.log.append("score")
-        return OracleReading(score=1.0, oracle="setup_text_oracle")
+        return Judgment(score=1.0)
 
 
 class _OtherTextCap(_TextCap):

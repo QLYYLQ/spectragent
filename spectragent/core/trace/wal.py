@@ -57,8 +57,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
-from pydantic import TypeAdapter
-
 from spectragent.core.trace import fsio
 from spectragent.core.trace.encoding import (
     CONFIG_FILE,
@@ -66,7 +64,6 @@ from spectragent.core.trace.encoding import (
     MESSAGES_DIR,
     METRICS_DIR,
     OBSERVATIONS_DIR,
-    ORACLE_SCORES_FILE,
     OUTPUT_FORMATS_DIR,
     PROMPT_IMAGES_DIR,
     RESULT_FILE,
@@ -98,12 +95,9 @@ from spectragent.core.trace.models import (
     recorded_prefix,
 )
 from spectragent.schemas.agent_result import AgentResult
-from spectragent.schemas.oracle_score import OracleScore
 from spectragent.schemas.recording import RecordingProblem
 from spectragent.schemas.step_record import StepRecord
 from spectragent.schemas.task import SetupTaskText
-
-_ORACLE_SCORES: TypeAdapter[list[OracleScore]] = TypeAdapter(list[OracleScore])
 
 
 class WALWriter:
@@ -112,7 +106,7 @@ class WALWriter:
     Creates and manages the trace directory (§5.3)::
 
         traces/{run_id}/
-            manifest.json   config.json   result.json   [oracle_scores.json]   [task_text.json]
+            manifest.json   config.json   result.json   [task_text.json]
             steps/  observations/  messages/  metrics/  [env/]  [verdicts/]
 
     ``env/`` holds environment evidence when a run binds archivers. It is
@@ -374,35 +368,6 @@ class WALWriter:
                     "prompt_images": [*manifest.prompt_images, *plan.prompt_images],
                     "updated_at": datetime.now(UTC),
                 }
-            ),
-        )
-
-    def commit_oracle_scores(self, scores: Sequence[OracleScore]) -> None:
-        """Commit the task oracles' scores as ``oracle_scores.json``; the manifest points to it.
-
-        Once per run, before ``result.json`` (``docs/architecture_design.md``
-        §5.3 "判分记录"), by the same protocol as a step: the file durably,
-        then the manifest. ``RunTrace.oracle_scores`` reads it back. An empty
-        list commits nothing.
-
-        Raises:
-            ValueError: The run already committed its scores, or an entry is not
-                an :class:`OracleScore` — before any byte is written.
-            OSError: Writing or ``fsync``-ing failed. If the manifest was
-                already replaced, it is reconciled before another write.
-        """
-        manifest = self._require_manifest()
-        if not scores:
-            return
-        if manifest.oracle_scores is not None:
-            raise ValueError(f"{ORACLE_SCORES_FILE} is already committed to {self._run_dir}")
-        data = _ORACLE_SCORES.dump_json(_ORACLE_SCORES.validate_python(list(scores)), indent=2)
-        plan = self._plan()
-        plan.add_record(TraceFile(ORACLE_SCORES_FILE, data))
-        self._commit(
-            plan,
-            manifest.model_copy(
-                update={"oracle_scores": ORACLE_SCORES_FILE, "updated_at": datetime.now(UTC)}
             ),
         )
 
