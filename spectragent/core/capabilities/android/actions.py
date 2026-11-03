@@ -450,9 +450,19 @@ class _FocusedTyping:
     old field a moment after the tap, so the wait covers that too; a service
     that names no field with focus by then cannot tell which field it is, and
     the text is entered as asked. A refusal still reports the tap
-    (``AndroidTextEffect``), and so does a typing backend that enters nothing:
-    the action fails with the backend's own reason (``RemoteError: set_text:
-    no_focused_field: ...``).
+    (``AndroidTextEffect``).
+
+    Once nothing refuses, the configured typing backend must find a field to
+    enter text into (``AndroidTypingBackend.finds_field``), read again within
+    the same wait. ``set_text`` sets the text on the editable node the service
+    names with input focus, which a WebView's page gives its field a moment
+    after the tap (none right after it, the field half a second later,
+    measured 2026-11-03), while the input method's connection the shared rule
+    reads can be there already: with the keyboard up, it stays from the field
+    before. When the wait runs out the text is entered as asked; a backend
+    that then enters nothing fails the action with its own reason
+    (``RemoteError: set_text: no_focused_field: ...``), and the effect reports
+    the tap with no text entered, as a refusal does.
     """
 
     clear_by_default: Annotated[
@@ -464,14 +474,17 @@ class _FocusedTyping:
             ge=0,
             description=(
                 "How long typing waits, in ms, while no text field has focus yet (after its tap, "
-                "or at once when it taps nowhere) and, after a tap, while focus stays on the field "
+                "or at once when it taps nowhere); after a tap, while focus stays on the field "
                 "that had it before the tap, with the tapped point outside that field as drawn, or "
-                "the service does not name the field with focus yet. Read again every 0.1 s. When "
-                "the wait runs out, typing fails without entering text, except where the service "
-                "still names no field: it cannot tell then, and enters the text as asked. A tap "
-                "that opens a screen takes a while: on the API 33 emulator, Settings' search "
-                "field had focus 1.8-2.8 s after a tap on its bar on a still page, and up to "
-                "4.6 s after a tap right after Settings started."
+                "the service does not name the field with focus yet; and while the typing backend "
+                "finds no field to enter text into yet (set_text: until the service names an "
+                "editable node with input focus, which a WebView's page gives a moment after the "
+                "tap). Read again every 0.1 s. When the wait runs out, typing fails without "
+                "entering text, except where the service still names no field or the backend "
+                "finds none: it cannot tell then, and enters the text as asked. A tap that opens "
+                "a screen takes a while: on the API 33 emulator, Settings' search field had focus "
+                "1.8-2.8 s after a tap on its bar on a still page, and up to 4.6 s after a tap "
+                "right after Settings started."
             ),
         ),
     ] = 5000
@@ -539,13 +552,14 @@ class _FocusedTyping:
         """Where focus is when no text should go in (at *point*, *before* the tap); ``None``: it should.
 
         Read again every :data:`FOCUS_POLL_S` while that is so, or while the
-        service names no field with focus, up to ``focus_wait_ms``; a service
-        that still names none then cannot tell, and the answer is ``None``.
+        service names no field with focus or the typing backend finds none, up
+        to ``focus_wait_ms``; one that still names or finds none then cannot
+        tell, and the answer is ``None``.
         """
         deadline = time.monotonic() + self.focus_wait_ms / 1000
         while True:
-            where, untold = await self._no_field_now(capability, point, before, target)
-            if (where is None and not untold) or time.monotonic() >= deadline:
+            where, waiting = await self._no_field_now(capability, point, before, target)
+            if (where is None and not waiting) or time.monotonic() >= deadline:
                 return where
             await asyncio.sleep(max(0.0, min(FOCUS_POLL_S, deadline - time.monotonic())))
 
@@ -556,27 +570,30 @@ class _FocusedTyping:
         before: FocusedNode | None,
         target: str,
     ) -> tuple[str | None, bool]:
-        """Where focus is when no text should go in now, and whether the service could not tell.
+        """Where focus is when no text should go in now, and whether to read again though nothing refuses.
 
         Focus on a text field is refused only when it stayed on the field
         *before* named, with the point outside that field as drawn when tapped.
+        Typing reads again while the service names no field with focus after
+        such a tap, and while the typing backend finds no field to enter text
+        into.
         """
         focus = await capability.bridge.apps.text_focus()
         if focus.text_field is False:
             if focus.window is None:
                 return "nothing has focus", False
             return f"focus is in {focus.window}, not on a text field", False
-        if point is None or before is None or before.field_holds(*point) is not False:
-            # A text field has focus, and no field had it before the tap with
-            # the point measured outside it: none, one the point was in, or
-            # one whose bounds the service could not give.
-            return None, False
-        node = await capability.bridge.input.focused_field()
-        if node is None:
-            return None, True
-        if node.same_node(before):
-            return f"focus stayed on {_field(node)}, away from {target}", False
-        return None, False
+        device = capability.bridge.input
+        # Only a field that had focus before the tap, with the point measured
+        # outside it, can keep focus away from the point; not none, one the
+        # point was in, or one whose bounds the service could not give.
+        if point is not None and before is not None and before.field_holds(*point) is False:
+            node = await device.focused_field()
+            if node is None:
+                return None, True
+            if node.same_node(before):
+                return f"focus stayed on {_field(node)}, away from {target}", False
+        return None, not await device.finds_field()
 
 
 @dataclass

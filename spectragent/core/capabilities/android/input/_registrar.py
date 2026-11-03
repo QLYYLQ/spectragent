@@ -104,6 +104,16 @@ class AndroidTypingBackend(Protocol):
         """Why this backend cannot enter text on a device of API level *sdk_int*; ``None`` when it can."""
         ...
 
+    async def finds_field(self, device: DevicePrograms) -> bool:
+        """Whether this backend finds a field to enter text into now, as the device shows it.
+
+        Typing waits for it within the action's ``focus_wait_ms`` before it
+        enters text, once the shared focus rule lets the text in; when the
+        wait runs out it enters the text as asked, and :meth:`enter` says why
+        it could not (``docs/architecture_design.md`` §11.2, "动作").
+        """
+        ...
+
     async def enter(self, device: DevicePrograms, text: str, *, replace: bool) -> TextTarget:
         """Enter *text*: over the field's whole text with *replace*, else at its cursor.
 
@@ -134,3 +144,10 @@ class AndroidTypingBackendBase(metaclass=AndroidTypingBackendRegistrar.Meta):
     @property
     def typing_id(self) -> str:
         return self.__registry_key__
+
+    async def finds_field(self, device: DevicePrograms) -> bool:
+        """Yes: a backend that types through the input connection needs no more than the shared focus rule checked.
+
+        ``set_text`` finds its field otherwise, and says so itself.
+        """
+        return True

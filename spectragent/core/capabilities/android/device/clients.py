@@ -100,6 +100,8 @@ class TextTarget(_Result):
 class FocusedNode(_Result):
     """The node with input focus: the focused view of the window that has input focus.
 
+    In a WebView, the field of its page that has focus (:meth:`ServiceClient.focus`).
+
     Attributes:
         bounds_in_screen: Where it is, in screen pixels.
         field_bounds_in_screen: Where the field it belongs to is, as the
@@ -327,7 +329,16 @@ class ServiceClient:
     async def focus(
         self, *, field_bounds: bool = False, at: tuple[int, int] | None = None
     ) -> FocusedNode | None:
-        """The node with input focus, as the system resolves it; ``None`` when no view has it.
+        """The node with input focus; ``None`` when no view has it.
+
+        Looked for only in the window that has input focus, never the input
+        method's: after keys with characters the keyboard gives one of its own
+        views focus, which the service's node cache would name. There the
+        system's answer (``findFocus(FOCUS_INPUT)``), unless that node takes
+        no text and an editable node of the window has focus: a WebView names
+        itself while a field of its page has focus, and the service then finds
+        the field in the window's tree (``docs/architecture_design.md`` §11.2,
+        "动作").
 
         With *field_bounds*, an editable node comes with the bounds of the
         field it belongs to and of its own label (``FocusedNode.
@@ -341,17 +352,20 @@ class ServiceClient:
         return _Focus.model_validate((await self.channel.call("focus", params)).result).focused
 
     async def set_text(self, text: str, *, replace: bool = True) -> TextTarget:
-        """Set *text* on the editable field that has input focus (``ACTION_SET_TEXT``).
+        """Set *text* on the editable field that has input focus (``ACTION_SET_TEXT``), as :meth:`focus` names it.
 
         With *replace*, it replaces the field's whole text; without, it
         replaces the field's selection, or goes at its cursor (at its end
-        when it has none), and the cursor follows it.
+        when it has none), and the cursor follows it. A password field hides
+        its text from the service, so without *replace* the text goes in only
+        when the field is empty, reporting no text, and no cursor or one at 0:
+        the text then replaces nothing.
 
         Raises:
             RemoteError: ``no_focused_field`` when no editable field has input
                 focus, ``set_text_failed`` when the field refused,
-                ``password_field`` without *replace* on a password field,
-                whose text the service cannot read.
+                ``password_field`` without *replace* on any other password
+                field, saying what it reports.
         """
         params: JsonObject = {"text": text, "replace": replace}
         return TextTarget.model_validate((await self.channel.call("set_text", params)).result)

@@ -306,10 +306,11 @@ public final class DeviceService extends AccessibilityService {
     }
 
     /**
-     * The node with input focus, as the system resolves it: the focused view of the window that has
-     * input focus. {@code {"focused": null}} when no view has it. Its window id and the node's hash
-     * ({@code AccessibilityNodeInfo.hashCode()}, computed from the view's accessibility id and its
-     * window, so the same while that view lives) tell whether two answers name the same field.
+     * The node with input focus ({@link #inputFocus}): the focused view of the window that has input
+     * focus, never one of the input method's, or the page's field with focus in a WebView. {@code
+     * {"focused": null}} when no view has it. Its window id and the node's hash ({@code AccessibilityNodeInfo.hashCode()}, computed from
+     * the view's accessibility id and its window, so the same while that view lives) tell whether
+     * two answers name the same field.
      *
      * <p>With {@code "field_bounds": true}, an editable node also comes with the bounds of the field
      * as the person sees it ({@code field_bounds_in_screen}): its largest ancestor whose subtree
@@ -327,7 +328,7 @@ public final class DeviceService extends AccessibilityService {
         Integer windowAtPoint = withField && params.has("x") && params.has("y")
                 ? windowAt(params.optInt("x"), params.optInt("y"))
                 : null;
-        AccessibilityNodeInfo node = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+        AccessibilityNodeInfo node = inputFocus();
         if (node == null) {
             return Reply.of(Json.obj("focused", null));
         }
@@ -355,27 +356,124 @@ public final class DeviceService extends AccessibilityService {
     }
 
     /**
-     * ACTION_SET_TEXT on the editable field with input focus. With {@code "replace": true} (the
-     * default) the text replaces the field's whole text; with false it replaces the field's
-     * selection, or goes at the cursor, which then follows it. A password field hides its text from
-     * the service, so text cannot go at its cursor.
+     * The node with input focus, looked for only in the window that has input focus: an app's, a
+     * dialog's, the notification shade's, never the input method's. The service's own node cache
+     * answers {@code findFocus} with the last node it fetched that had focus, in any window
+     * (measured on the API 33 emulator, 2026-11-03): once keys with characters take the screen out
+     * of touch mode, Gboard gives one of its own views focus, and after the next tree capture the
+     * cache names that view; a tap does not clear it. So the focused window's root is fetched
+     * afresh, and its {@code findFocus(FOCUS_INPUT)} answers, unless that node takes no text and
+     * an editable node of the window has focus, which it is then: the window is walked breadth
+     * first for one, looking at {@link #MAX_FIELD_NODES} nodes at most (10-20 ms on a MiniWoB
+     * page). A WebView names itself while a field of its page has focus: its provider does not
+     * resolve input focus to the page's nodes, and after a tap on a field (or on the field that has
+     * focus) the cache names the page's root until a walk fetches the field again. Every node and
+     * window obtained but the node returned is recycled before API 33.
+     */
+    private AccessibilityNodeInfo inputFocus() {
+        AccessibilityNodeInfo root = focusedWindowRoot();
+        if (root == null) {
+            return null;
+        }
+        AccessibilityNodeInfo named = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+        AccessibilityNodeInfo field = named == null || !named.isEditable() ? focusedFieldUnder(root) : null;
+        if (Build.VERSION.SDK_INT < 33) {
+            root.recycle(); // pooled before API 33
+            if (field != null && named != null) {
+                named.recycle();
+            }
+        }
+        return field != null ? field : named;
+    }
+
+    /** The root of the window that has input focus, fetched afresh; null when no window has it. */
+    private AccessibilityNodeInfo focusedWindowRoot() {
+        List<AccessibilityWindowInfo> windows = getWindows();
+        try {
+            for (AccessibilityWindowInfo window : windows) {
+                if (window.isFocused()) {
+                    return window.getRoot();
+                }
+            }
+            return null;
+        } finally {
+            if (Build.VERSION.SDK_INT < 33) {
+                for (AccessibilityWindowInfo window : windows) {
+                    window.recycle(); // pooled before API 33
+                }
+            }
+        }
+    }
+
+    /** The editable node with focus below {@code root}, breadth first; null when none. */
+    private static AccessibilityNodeInfo focusedFieldUnder(AccessibilityNodeInfo root) {
+        List<AccessibilityNodeInfo> obtained = new ArrayList<>();
+        AccessibilityNodeInfo found = null;
+        try {
+            ArrayDeque<AccessibilityNodeInfo> pending = new ArrayDeque<>();
+            pending.add(root);
+            while (found == null && !pending.isEmpty()) {
+                AccessibilityNodeInfo node = pending.poll();
+                for (int i = 0; found == null && i < node.getChildCount(); i++) {
+                    if (obtained.size() >= MAX_FIELD_NODES) {
+                        return null;
+                    }
+                    AccessibilityNodeInfo child = node.getChild(i);
+                    if (child == null) {
+                        continue;
+                    }
+                    obtained.add(child);
+                    if (child.isFocused() && child.isEditable()) {
+                        found = child;
+                    } else {
+                        pending.add(child);
+                    }
+                }
+            }
+            return found;
+        } finally {
+            if (Build.VERSION.SDK_INT < 33) {
+                for (AccessibilityNodeInfo node : obtained) {
+                    if (node != found) {
+                        node.recycle(); // pooled before API 33
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * ACTION_SET_TEXT on the editable field with input focus ({@link #inputFocus}). With {@code
+     * "replace": true} (the default) the text replaces the field's whole text; with false it
+     * replaces the field's selection, or goes at the cursor, which then follows it. A password field
+     * hides its text from the service, so the text goes at its cursor only when the field is empty:
+     * it reports no text, and no cursor or its cursor at 0 (an empty field of a WebView's page
+     * reports its cursor at 0, Android's own EditText no cursor for a password; measured on the API
+     * 33 emulator, 2026-11-03), and the text replaces nothing. A password field that holds text
+     * reports as many characters, so any other refuses ({@code password_field}), saying what it
+     * reports: text cannot go at a cursor in text the service cannot read.
      */
     private Reply setText(JSONObject params) throws Failure {
         String text = text(params);
         boolean replace = params.optBoolean("replace", true);
-        AccessibilityNodeInfo field = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+        AccessibilityNodeInfo field = inputFocus();
         try {
             if (field == null || !field.isEditable()) {
                 throw new Failure("no_focused_field", "no editable field has input focus");
             }
             int cursor = -1;
             if (!replace) {
-                if (field.isPassword()) {
-                    throw new Failure("password_field", "a password field hides its text, so text cannot go at its cursor");
-                }
                 CharSequence current = field.isShowingHintText() || field.getText() == null ? "" : field.getText();
                 int start = field.getTextSelectionStart();
                 int end = field.getTextSelectionEnd();
+                boolean empty = current.length() == 0 && (start < 0 || end < 0 || (start == 0 && end == 0));
+                if (field.isPassword() && !empty) {
+                    throw new Failure("password_field", "a password field hides its text, so text goes at its "
+                            + "cursor only when the field is empty, with no text and no cursor or one at the "
+                            + "start; this one " + (current.length() > 0
+                                    ? "holds " + current.length() + " characters"
+                                    : "reports no text but its selection at " + start + "-" + end));
+                }
                 if (start < 0 || end < 0 || start > current.length() || end > current.length()) {
                     start = end = current.length(); // no cursor: at the end
                 }

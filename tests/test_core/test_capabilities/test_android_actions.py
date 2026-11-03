@@ -32,6 +32,7 @@ from spectragent.core.capabilities.android.actions import (
     SystemKey,
 )
 from spectragent.core.capabilities.android.capability import AndroidCapability
+from spectragent.core.capabilities.android.device.channel import JsonObject
 from spectragent.core.capabilities.android.effects import (
     AndroidTextEffect,
     AndroidTouchEffect,
@@ -49,6 +50,7 @@ from tests._helpers.android_device import (
     settings_forest,
 )
 from tests._helpers.fake_adb import ShellResult
+from tests._helpers.fake_device_side import Answer
 
 #: The actions that mean what the browser's of the same relative name mean.
 SHARED = ("click", "click_coordinate", "drag", "type", "type_coordinate", "scroll", "wait")
@@ -782,6 +784,88 @@ async def test_typing_waits_for_a_field_that_takes_focus_a_moment_later(
     assert phone.inputs[-1] == "service set_text 'hi' replace"
 
 
+@dataclass
+class _PageField(ScriptedPhone):
+    """A WebView's page with the keyboard up: the input method's connection stays through a tap,
+    and the service names a node that takes no text (the WebView itself) for *late* reads after
+    the tap, then the field the page gave focus (measured 2026-11-03)."""
+
+    late: int = 2
+    #: How many times the service was asked for the focus since the last tap.
+    reads: int = 0
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.on_tap = self._page_focuses_its_field_later
+
+    def _page_focuses_its_field_later(self) -> None:
+        self.reads, self.field_editable = 0, False
+
+    async def _focus(self, params: JsonObject) -> Answer:
+        self.reads += 1
+        if self.reads > self.late:
+            self.field_editable = True
+        return await super()._focus(params)
+
+
+async def test_set_text_waits_for_the_field_a_webviews_page_gives_focus_after_the_tap() -> None:
+    """M3A's ``type`` in the sweep: the shared rule lets the text in at once (the connection is
+    there, the point in the focused field), and set_text waits, within the same wait, until the
+    service names an editable node."""
+    phone = _PageField(text_field=True, field_bounds=(0, 450, 1080, 600))
+    async with phone_server(phone) as adb, android_capability(adb) as capability:
+        await observe_tree(capability)  # element 1 is at (0, 450)-(1080, 600)
+        phone.inputs.clear()
+        result = await act(capability, "type", index=1, text="hi", clear=False)
+
+    assert result.success, result.error
+    assert phone.reads == 3, "two reads named the WebView itself, the third the field"
+    assert phone.inputs == [
+        "helper stroke (540,525)@0 (540,525)@50",
+        "service set_text 'hi' at the cursor",
+    ]
+
+
+async def test_commit_text_types_through_the_input_connection_without_that_wait() -> None:
+    phone = _PageField(text_field=True, late=1000)
+    async with (
+        phone_server(phone) as adb,
+        android_capability(adb, typing_backend=CommitTextBackend()) as capability,
+    ):
+        started = time.monotonic()
+        result = await act(
+            capability, "type_coordinate", coordinate_x=540, coordinate_y=160, text="hi"
+        )
+
+    assert result.success, result.error
+    assert time.monotonic() - started < 1.0
+    assert phone.inputs[-1] == "service commit_text 'hi' replace"
+
+
+async def test_a_backend_that_enters_nothing_fails_the_action_and_its_effect_keeps_the_tap() -> (
+    None
+):
+    """The service never names an editable node: once the wait runs out the text is entered as
+    asked, set_text refuses, and the action fails with its reason and reports its tap."""
+    phone = _PageField(text_field=True, late=1000)
+    async with phone_server(phone) as adb, android_capability(adb) as capability:
+        capability.actions = [AndroidTypeCoordinateAction(focus_wait_ms=300)]
+        started = time.monotonic()
+        result = await act(
+            capability, "type_coordinate", coordinate_x=540, coordinate_y=160, text="hi"
+        )
+
+    assert (result.success, result.error) == (
+        False,
+        "RemoteError: set_text: no_focused_field: no editable field has input focus",
+    )
+    assert time.monotonic() - started >= 0.3, "the wait was spent first"
+    effect = result.effect
+    assert isinstance(effect, AndroidTextEffect) and not effect.text_entered
+    assert effect.tap is not None and effect.tap.start == ScreenPoint(x=540, y=160)
+    assert effect.describe() == "Tapped (540, 160). No text was entered."
+
+
 async def test_a_tap_that_gives_no_text_field_focus_types_nothing(
     capability: AndroidCapability, phone: ScriptedPhone
 ) -> None:
@@ -854,6 +938,7 @@ async def test_typing_where_the_device_cannot_tell_types_as_asked(
     capability: AndroidCapability, phone: ScriptedPhone
 ) -> None:
     """The input method's client did not answer: only a measured "no text field" refuses."""
+    capability.actions = [AndroidTypeCoordinateAction(focus_wait_ms=200)]
     phone.text_field = None
 
     result = await act(capability, "type_coordinate", text="hi", clear=False)

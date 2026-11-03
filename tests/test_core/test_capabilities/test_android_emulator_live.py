@@ -32,7 +32,14 @@ runs. The one boot covers, in file order:
   label, which leaves focus in it: the label is inside the field as drawn;
   with WPA/WPA2-Personal chosen, the dialog holds a password field too, and a
   tap on the "Password" label, outside the "Network name" field as drawn, is
-  refused with the name untouched;
+  refused with the name untouched; text at the cursor of the empty password
+  field goes in, though the field reports no cursor, and once the field holds
+  text the next is refused (``set_text`` cannot read it), saying how much the
+  field holds, and the field keeps it; after keys
+  with characters from the shell helper, which leave touch mode and let the
+  keyboard give one of its own views focus, the node with input focus is still
+  the dialog's: a tap on the "Password" label is refused naming the name field,
+  and a tap on the password field types there;
 - a scroll down that shows what is further down, measured on the screenshots,
   its effect naming the injector that delivered it;
 - the UI tree of Settings' main page, cleaned and printed by the configured
@@ -498,15 +505,7 @@ async def test_typing_at_a_point_on_another_fields_label_is_refused(booted: Boot
     fields, so the walk from the name stops below their shared layout. A tap on the "Password"
     label (a text view, which takes no focus) is outside the name's field: refused."""
     await _skip_unless_measured_layout(booted)
-    client = AdbClient(booted.session.endpoint.host, booted.session.endpoint.port)
-    await client.shell(booted.session.serial, "am force-stop com.android.settings")
-    await client.shell(booted.session.serial, "am start -W -a android.settings.WIFI_SETTINGS")
-    for text in ("Add network", "None", "WPA/WPA2-Personal"):
-        point = await _text_at(booted, text)
-        tapped = await _act(
-            booted, "click_coordinate", coordinate_x=point[0], coordinate_y=point[1]
-        )
-        assert tapped.success, tapped.error
+    await _add_network_with_a_password(booted)
     name = await _text_at(booted, "Enter the SSID")
     named = await _act(
         booted, "type_coordinate", coordinate_x=name[0], coordinate_y=name[1], text="CafeNet"
@@ -524,8 +523,98 @@ async def test_typing_at_a_point_on_another_fields_label_is_refused(booted: Boot
     assert name_now == "CafeNet", "nothing was cleared or typed"
 
 
+async def test_typing_at_the_cursor_of_an_empty_android_password_field_enters_the_text(
+    booted: Booted,
+) -> None:
+    """set_text cannot read a password field's text, so text goes at its cursor (``clear:
+    false``, as M3A always sends) only into an empty one, where it replaces nothing: no text,
+    and no cursor or one at the start. Android's own EditText reports no cursor for a password,
+    even an empty one (measured 2026-11-03), and takes the text; once the field holds text,
+    text at its cursor is refused, saying how much the field holds, and the field keeps it."""
+    await _skip_unless_measured_layout(booted)
+    await _add_network_with_a_password(booted)
+    x, y = await _view_at(booted, PASSWORD)
+
+    typed = await _act(
+        booted, "type_coordinate", coordinate_x=x, coordinate_y=y, text="hunter22", clear=False
+    )
+    assert typed.success, typed.error
+    assert len(await _field_text(booted, PASSWORD) or "") == 8
+    held = await _act(
+        booted, "type_coordinate", coordinate_x=x, coordinate_y=y, text="x", clear=False
+    )
+
+    assert (held.success, held.error) == (
+        False,
+        "RemoteError: set_text: password_field: a password field hides its text, so text goes "
+        "at its cursor only when the field is empty, with no text and no cursor or one at the "
+        "start; this one holds 8 characters",
+    )
+    assert len(await _field_text(booted, PASSWORD) or "") == 8, "nothing was typed"
+
+
+async def test_after_keys_with_characters_focus_is_the_apps_field_not_the_keyboards_view(
+    booted: Booted,
+) -> None:
+    """Keys with characters, the shell helper's, take the screen out of touch mode, and Gboard
+    then gives one of its own views focus; after the next tree capture the service's node cache
+    named that view (2026-11-03). Input focus is looked for only in the window that has it, the
+    app's: a tap on the "Password" label is refused naming the name field, and a tap on the
+    password field types there."""
+    await _skip_unless_measured_layout(booted)
+    await _add_network_with_a_password(booted)
+    x, y = await _text_at(booted, "Enter the SSID")
+    assert (await _act(booted, "click_coordinate", coordinate_x=x, coordinate_y=y)).success
+    side = booted.capability._side
+    assert side is not None
+    for code in ("KEYCODE_C", "KEYCODE_A", "KEYCODE_F", "KEYCODE_E"):
+        await side.helper.key(code)
+    await _observe(booted, UI_TREE)  # the observation after the keys
+    label = await _text_at(booted, "Password")
+
+    refused = await _act(
+        booted, "type_coordinate", coordinate_x=label[0], coordinate_y=label[1], text="x"
+    )
+    field = await _view_at(booted, PASSWORD)
+    typed = await _act(
+        booted, "type_coordinate", coordinate_x=field[0], coordinate_y=field[1], text="hunter22"
+    )
+
+    assert refused.error is not None
+    assert "focus stayed on EditText com.android.settings:id/ssid" in refused.error
+    assert typed.success, typed.error
+    assert await _field_text(booted, "com.android.settings:id/ssid") == "cafe"
+    assert len(await _field_text(booted, PASSWORD) or "") == 8
+
+
+#: The Add network dialog's password field, once a security with a password is chosen.
+PASSWORD = "com.android.settings:id/password"
+
+
+async def _add_network_with_a_password(booted: Booted) -> None:
+    """Settings' Add network dialog, with WPA/WPA2-Personal chosen: a name and a password field."""
+    client = AdbClient(booted.session.endpoint.host, booted.session.endpoint.port)
+    await client.shell(booted.session.serial, "am force-stop com.android.settings")
+    await client.shell(booted.session.serial, "am start -W -a android.settings.WIFI_SETTINGS")
+    for text in ("Add network", "None", "WPA/WPA2-Personal"):
+        point = await _text_at(booted, text)
+        tapped = await _act(
+            booted, "click_coordinate", coordinate_x=point[0], coordinate_y=point[1]
+        )
+        assert tapped.success, tapped.error
+
+
 async def _text_at(booted: Booted, text: str) -> tuple[int, int]:
     """The centre of the visible node whose text is *text*, once the service's tree has it."""
+    return await _node_at(booted, lambda node: node.text == text)
+
+
+async def _view_at(booted: Booted, view_id: str) -> tuple[int, int]:
+    """The centre of the visible node with the view id *view_id*, once the service's tree has it."""
+    return await _node_at(booted, lambda node: node.view_id_resource_name == view_id)
+
+
+async def _node_at(booted: Booted, wanted: Callable[[Node], bool]) -> tuple[int, int]:
     side = booted.capability._side
     assert side is not None
     async with asyncio.timeout(10):
@@ -533,7 +622,7 @@ async def _text_at(booted: Booted, text: str) -> tuple[int, int]:
             capture = await side.service.tree()
             for window in capture.forest.windows:
                 for node in window.tree.nodes:
-                    if node.text == text and node.is_visible_to_user:
+                    if wanted(node) and node.is_visible_to_user:
                         box = node.bounds_in_screen
                         return (box.left + box.right) // 2, (box.top + box.bottom) // 2
             await asyncio.sleep(0.2)

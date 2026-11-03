@@ -26,13 +26,20 @@ class SetTextBackend(AndroidTypingBackendBase):
     """``ACTION_SET_TEXT`` on the editable field with input focus, from our accessibility service.
 
     The field's text changes in one step, without the keyboard: no key event
-    and no input method is involved.
+    and no input method is involved. The field is the editable node the
+    service's ``focus`` names, which can lag the input method's connection:
+    after a tap in a WebView the page gives its field focus a moment later,
+    while the connection of a keyboard already up stays.
     """
 
     __registry_key__ = "set_text"
 
     def unsupported(self, sdk_int: int) -> str | None:
         return None
+
+    async def finds_field(self, device: DevicePrograms) -> bool:
+        node = await device.service.focus()
+        return node is not None and node.is_editable
 
     async def enter(self, device: DevicePrograms, text: str, *, replace: bool) -> TextTarget:
         return await device.service.set_text(text, replace=replace)

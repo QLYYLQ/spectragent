@@ -166,6 +166,10 @@ class InputInjection(Protocol):
         """Enter *text* into the field with input focus: over its text with *replace*, else at its cursor."""
         ...
 
+    async def finds_field(self) -> bool:
+        """Whether the typing backend finds a field to enter text into now (``AndroidTypingBackend.finds_field``)."""
+        ...
+
     async def focused_field(
         self, *, field_bounds: bool = False, at: tuple[int, int] | None = None
     ) -> FocusedNode | None:
@@ -269,6 +273,9 @@ class DeviceInput:
 
     async def enter_text(self, text: str, *, replace: bool) -> TextTarget:
         return await self.typing_backend.enter(self.side, text, replace=replace)
+
+    async def finds_field(self) -> bool:
+        return await self.typing_backend.finds_field(self.side)
 
     async def focused_field(
         self, *, field_bounds: bool = False, at: tuple[int, int] | None = None
