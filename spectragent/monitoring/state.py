@@ -36,6 +36,9 @@ class ProgressState:
         self._policy_steps = 0
         self._error: str | None = None
         self._max_steps: int | None = None
+        # The most policy steps the Loop allows the current task; it differs
+        # from the configured ceiling when the task brings a lower budget.
+        self._step_budget: int | None = None
         self._continue_steps: int | None = None
         self._branch: Any = None
         self._token_limit: int | str | None = None
@@ -86,6 +89,7 @@ class ProgressState:
         self._run_outcome = None
         self._error = None
         self._max_steps = None
+        self._step_budget = None
         self._continue_steps = None
         self._branch = None
         self._run_started = time.monotonic()
@@ -130,6 +134,8 @@ class ProgressState:
         max_steps = identity.pop("max_steps", None)
         if isinstance(max_steps, int):
             self._max_steps = max_steps
+        budget = identity.pop("step_budget", None)
+        self._step_budget = budget if isinstance(budget, int) else None
         continuation = identity.pop("continue_steps", None)
         self._continue_steps = continuation if isinstance(continuation, int) else None
         self._branch = identity.pop("branch", None)
@@ -225,6 +231,7 @@ class ProgressState:
                 "tasks": self._tasks,
                 "steps": steps,
                 "max_steps": self._max_steps,
+                "step_budget": self._step_budget,
                 "continue_steps": self._continue_steps,
                 "branch": self._branch.model_dump(mode="json")
                 if hasattr(self._branch, "model_dump")
