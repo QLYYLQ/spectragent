@@ -23,6 +23,10 @@ One capture serves every negotiated fragment of an observation cycle:
   ``AndroidAccessibilityForest`` form, the elements the configured cleaner
   numbered, the configured serializer's text of them, and the tree source that
   captured it (``producer``, §14.4). Captured only in a run that negotiates it.
+
+The screenshot, the foreground app and the UI tree also carry how the wait
+before their capture ended (:class:`AndroidCaptureFragment`), in the trace
+and never shown to the agent.
 """
 
 from __future__ import annotations
@@ -52,7 +56,33 @@ CAPTURE_STATE = "android.capture_state"
 UI_TREE = "android.ui_tree"
 
 
-class AndroidScreenshotObs(FragmentBase):
+class AndroidCaptureFragment(FragmentBase):
+    """What every fragment of one capture of the screen shares: how the wait before it ended.
+
+    One capture serves every negotiated fragment of an observation cycle,
+    after one wait for a still screen (``settle.py``). ``settle`` records that
+    wait: whether it ended still, at its limit or on an error, and how long
+    it took. The capability sets it on each fragment of the capture, the same
+    record on each, so a reader finds it on whichever of these fragments the
+    run negotiated, ``capture_state`` or not. No agent renders it: the
+    browser's ``settle`` is the same record (``docs/architecture_design.md``
+    §4.14, §11.2). ``None``, and then left out of the trace JSON: the wait is
+    turned off (``settle_max_wait_s: 0``), or no capture served the fragment
+    (a test built it).
+    """
+
+    __abstract__ = True
+
+    settle: SettleState | None = None
+
+    def trace_json_exclude(self) -> set[str]:
+        # Left out when there is no record, so a capture without a wait
+        # writes what it always wrote.
+        excluded = super().trace_json_exclude()
+        return excluded if self.settle is not None else excluded | {"settle"}
+
+
+class AndroidScreenshotObs(AndroidCaptureFragment):
     """The screen; its viewport is the screen in the pixels taps are given in."""
 
     __registry_key__ = SCREENSHOT
@@ -99,7 +129,7 @@ class AndroidScreenshotObs(FragmentBase):
         return f"{self.viewport_width}x{self.viewport_height} by {self.producer or 'unknown'}"
 
 
-class AndroidForegroundAppObs(FragmentBase):
+class AndroidForegroundAppObs(AndroidCaptureFragment):
     """The app and window in front, as the window manager reports them.
 
     ``None`` fields are facts the device did not report: no focused app (a
@@ -180,7 +210,7 @@ class AndroidCaptureStateObs(CaptureStateFragment):
         return None
 
 
-class AndroidUITreeObs(FragmentBase):
+class AndroidUITreeObs(AndroidCaptureFragment):
     """The screen's UI tree, as the configured cleaner kept it and the configured serializer printed it.
 
     ``forest`` and ``elements`` are the cleaned tree

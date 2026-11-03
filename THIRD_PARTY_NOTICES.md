@@ -324,14 +324,20 @@ SOFTWARE.
   element index, `press_key`, `open_app`, `wait`) and the Loop's `loop.done`, which ends
   the run for `answer` (its text as the answer, no claim) as for `status` (`complete`
   claims success, `infeasible` failure); the summary of a step is written when the next
-  step's observation arrives, from that observation, instead of 2 s after the action; a
-  failed summary call fails the step rather than becoming a history line. Where the
-  behaviour departs from AndroidWorld's (the list in `spectragent/agents/m3a/reply.py`
-  and `docs/architecture_design.md` §4.1 "M3A"): `click`, `long_press` and `input_text`
-  given a point instead of an index are refused, as is a point beside an index, while
-  the other action types ignore a point; a `scroll` with index 0 scrolls element 0
-  (AndroidWorld's `if action.index` reads 0 as none); typing waits for a text field with
-  focus and is refused when none takes it, where AndroidWorld types regardless; the
+  step's observation arrives, from that observation, instead of 2 s after the action (a
+  run that sets the Android capability's `settle_min_after_action_ms: 2000` takes that
+  observation no sooner); a failed summary call fails the step rather than becoming a
+  history line. Where the behaviour departs from AndroidWorld's (the list in
+  `spectragent/agents/m3a/reply.py` and `docs/architecture_design.md` §4.1 "M3A"):
+  `click`, `long_press` and `input_text` given a point instead of an index are refused,
+  as is a point beside an index, while the other action types ignore a point; a `scroll`
+  with index 0 scrolls element 0 (AndroidWorld's `if action.index` reads 0 as none); an
+  element index names an element of the UI tree the agent saw, and the action touches
+  where that element was then, where AndroidWorld reads the element list again just
+  before it runs the action and takes the element with that index in the new list
+  (another element when the screen changed after the agent saw it); typing waits for a
+  text field with focus and is refused when none takes it, where AndroidWorld types
+  regardless; the
   action types the prompt does not teach (`double_tap`, `swipe`, `unknown`), and
   `input_text` without text, `scroll` without a direction, `click` or `long_press` with
   neither an index nor a point, and `open_app` without an app name, are refused before

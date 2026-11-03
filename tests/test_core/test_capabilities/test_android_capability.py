@@ -36,7 +36,11 @@ from spectragent.core.capabilities.android.device.apk import (
     TEST_KEY_CERTIFICATE_SHA256,
     ServiceApkError,
 )
-from spectragent.core.capabilities.android.device.channel import PROTOCOL_VERSION, RemoteError
+from spectragent.core.capabilities.android.device.channel import (
+    PROTOCOL_VERSION,
+    JsonObject,
+    RemoteError,
+)
 from spectragent.core.capabilities.android.device.lifecycle import DeviceSideError
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
 from spectragent.core.capabilities.android.input._registrar import TypingBackendUnsupported
@@ -74,6 +78,7 @@ from spectragent.schemas.task import SetupTaskText
 from tests._helpers.android_device import (
     APK_BYTES,
     FINGERPRINT,
+    FOREST,
     INPUT_METHOD,
     SERIAL,
     FakeServerProvider,
@@ -88,6 +93,7 @@ from tests._helpers.android_device import (
 )
 from tests._helpers.assembly import AGENT_ID, NoModel, make_env, make_run
 from tests._helpers.fake_adb import FakeAdbServer, ShellResult
+from tests._helpers.fake_device_side import Answer
 
 SERVICE = "org.spectragent.device/.DeviceService"
 
@@ -415,6 +421,271 @@ def test_a_quiet_period_the_wait_could_never_reach_is_refused() -> None:
     ):
         AndroidCapability(service_apk="a.apk", settle_quiet_ms=3000, settle_max_wait_s=2)
     AndroidCapability(service_apk="a.apk", settle_quiet_ms=3000, settle_max_wait_s=0)  # wait off
+
+
+#: The system's "Open with" chooser in front: its package, ``android``, has no dot.
+CHOOSER = "android/com.android.internal.app.ResolverActivity"
+
+
+async def test_with_the_open_with_chooser_in_front_every_capture_still_waits() -> None:
+    """Its frame count once raised before the poll noted the app in front: every later poll
+    failed, and every later capture of the run came 0.07-0.5 s after its action (BrowserDraw and
+    BrowserMaze in AndroidWorld's seed-42 sweep).
+
+    The device reports no frame count for ``android`` (``No process found for: android`` on the
+    emulator), so a capture with the chooser in front waits to the limit; the next one settles.
+    """
+    phone = ScriptedPhone(focused="com.google.android.documentsui/.files.FilesActivity")
+    settles = []
+    async with (
+        phone_server(phone) as adb,
+        android_capability(
+            adb, fragments={SCREENSHOT}, settle_max_wait_s=0.5, settle_quiet_ms=50
+        ) as capability,
+    ):
+        for cycle, (focused, frames) in enumerate(
+            (
+                (phone.focused, 36),
+                (CHOOSER, None),
+                ("com.android.chrome/com.google.android.apps.chrome.Main", 36),
+            ),
+            start=1,
+        ):
+            phone.focused, phone.frames = focused, frames
+            await capability.begin_observation(cycle)
+            screenshot = await capability.resolve_fragment(SCREENSHOT)
+            assert isinstance(screenshot, AndroidScreenshotObs)
+            settles.append(screenshot.settle)
+
+    files, chooser, chrome = settles
+    assert files is not None and files.outcome == "settled"
+    assert chooser is not None and (chooser.outcome, chooser.pending) == ("capped", ("frames",))
+    assert chrome is not None and chrome.outcome == "settled"
+    assert "dumpsys gfxinfo android" in _services(adb)
+
+
+async def test_a_frame_count_that_fails_is_no_count_and_the_wait_goes_on() -> None:
+    """No count is "not drawn yet" (``settle.py``): the wait lasts to its limit, every time."""
+    phone = ScriptedPhone(focused="com.android.settings/.Settings")
+
+    async def counts_fail(command: str) -> ShellResult:
+        if command.startswith("dumpsys gfxinfo "):
+            return ShellResult(stderr=b"Can't find service: gfxinfo\n", exit_code=1)
+        return await phone(command)
+
+    settles = []
+    async with (
+        FakeAdbServer(
+            {SERIAL: counts_fail},
+            streams={SERIAL: phone.side.streams},
+            sockets={SERIAL: phone.side.sockets},
+        ) as adb,
+        android_capability(
+            adb, fragments={SCREENSHOT}, settle_max_wait_s=0.3, settle_quiet_ms=50
+        ) as capability,
+    ):
+        for cycle in (1, 2):
+            await capability.begin_observation(cycle)
+            screenshot = await capability.resolve_fragment(SCREENSHOT)
+            assert isinstance(screenshot, AndroidScreenshotObs)
+            settles.append(screenshot.settle)
+
+    for settle in settles:
+        assert settle is not None and (settle.outcome, settle.pending) == ("capped", ("frames",))
+        assert settle.waited_ms >= 300
+
+
+@pytest.mark.parametrize(
+    ("action", "succeeds"),
+    [
+        (
+            Action(name="android.click_coordinate", params={"coordinate_x": 1, "coordinate_y": 2}),
+            True,
+        ),
+        (Action(name="android.open_app", params={"app_name": "nothing"}), False),
+        (Action(name="android.wait", params={"seconds": 0}), True),
+    ],
+    ids=["a tap", "a failed action", "a wait"],
+)
+async def test_after_an_action_the_screen_is_not_still_before_the_minimum(
+    action: Action, succeeds: bool
+) -> None:
+    """A run that runs M3A as AndroidWorld does waits at least its 2 s after every action.
+
+    An action that failed counts, since it may have touched the screen before it failed; so
+    does a wait, which touches nothing.
+    """
+    phone = ScriptedPhone(focused="com.android.settings/.Settings")
+    async with (
+        phone_server(phone) as adb,
+        android_capability(
+            adb,
+            fragments={SCREENSHOT},
+            settle_max_wait_s=3,
+            settle_quiet_ms=50,
+            settle_min_after_action_ms=1500,
+        ) as capability,
+    ):
+        clock = asyncio.get_running_loop().time
+        await capability.begin_observation(1)
+        first = await capability.resolve_fragment(SCREENSHOT)
+        result = await capability.execute_action(action)
+        acted = clock()
+        await capability.begin_observation(2)
+        after = await capability.resolve_fragment(SCREENSHOT)
+        captured = clock()
+
+    assert result.success is succeeds, result.error
+    assert isinstance(first, AndroidScreenshotObs) and first.settle is not None
+    assert first.settle.outcome == "settled"
+    assert first.settle.waited_ms < 1500, "no action came before the first capture"
+    assert isinstance(after, AndroidScreenshotObs) and after.settle is not None
+    assert after.settle.outcome == "settled"
+    assert captured - acted >= 1.49
+
+
+def test_a_minimum_after_an_action_the_wait_could_never_reach_is_refused() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"settle_min_after_action_ms \(3000\) is longer than settle_max_wait_s \(2 s\)",
+    ):
+        AndroidCapability(service_apk="a.apk", settle_min_after_action_ms=3000, settle_max_wait_s=2)
+    with pytest.raises(ValueError, match=r"settle_max_wait_s \(0 s\).*0 turns the wait off"):
+        AndroidCapability(service_apk="a.apk", settle_min_after_action_ms=2000, settle_max_wait_s=0)
+    AndroidCapability(service_apk="a.apk", settle_min_after_action_ms=2000, settle_max_wait_s=2)
+
+
+@dataclass
+class _TreesPhone(ScriptedPhone):
+    """A phone whose service answers each ``tree`` with the next of *trees*, then the last for ever."""
+
+    trees: list[JsonObject] = field(default_factory=list)
+
+    async def _tree(self, params: JsonObject) -> Answer:
+        self.forest = self.trees.pop(0) if len(self.trees) > 1 else self.trees[0]
+        return await super()._tree(params)
+
+
+#: What the service reported right after a tap opened a page: the status bar alone.
+_STATUS_BAR_ALONE: JsonObject = {
+    "windows": [
+        {
+            "bounds_in_screen": {"right": 1080, "bottom": 128},
+            "id": 10,
+            "window_type": "TYPE_SYSTEM",
+            "tree": {
+                "nodes": [
+                    {
+                        "bounds_in_screen": {"left": 50, "right": 148, "bottom": 128},
+                        "class_name": "android.widget.TextView",
+                        "package_name": "com.android.systemui",
+                        "text": "12:09",
+                        "window_id": 10,
+                        "is_visible_to_user": True,
+                        "is_important": True,
+                    }
+                ]
+            },
+        }
+    ]
+}
+#: An app's window before its content came: the root alone.
+_EMPTY_APP_WINDOW: JsonObject = {
+    "windows": [
+        {
+            "bounds_in_screen": {"right": 1080, "bottom": 2400},
+            "id": 16,
+            "title": "Joplin",
+            "window_type": "TYPE_APPLICATION",
+            "tree": {
+                "nodes": [
+                    {
+                        "bounds_in_screen": {"right": 1080, "bottom": 2400},
+                        "class_name": "android.widget.FrameLayout",
+                        "package_name": "net.cozic.joplin",
+                        "window_id": 16,
+                        "is_visible_to_user": True,
+                        "is_important": True,
+                    }
+                ]
+            },
+        }
+    ]
+}
+
+
+async def test_a_capture_whose_tree_shows_no_app_waits_again_and_is_taken_again() -> None:
+    """The agent saw the status bar alone 2.3 s after a tap that opened a page (SystemWifiTurnOn
+    in AndroidWorld's seed-42 sweep): the screen had not finished changing."""
+    phone = _TreesPhone(focused="com.android.settings/.Settings", trees=[_STATUS_BAR_ALONE, FOREST])
+    async with (
+        phone_server(phone) as adb,
+        android_capability(
+            adb, fragments={SCREENSHOT, UI_TREE}, settle_max_wait_s=3, settle_quiet_ms=50
+        ) as capability,
+    ):
+        shots = phone.helper_calls("screenshot")
+        await capability.begin_observation(1)
+        tree = await capability.resolve_fragment(UI_TREE)
+        screenshot = await capability.resolve_fragment(SCREENSHOT)
+        taken = phone.helper_calls("screenshot") - shots
+
+    assert isinstance(tree, AndroidUITreeObs) and "Network & internet" in tree.serialized
+    assert (len(phone.tree_reads), taken) == (2, 2), "the whole capture was taken again"
+    assert tree.settle is not None and tree.settle.outcome == "settled"
+    assert isinstance(screenshot, AndroidScreenshotObs) and screenshot.settle == tree.settle
+
+
+async def test_a_tree_that_never_shows_an_app_ends_the_wait_at_its_limit_and_says_so() -> None:
+    phone = _TreesPhone(focused="net.cozic.joplin/.MainActivity", trees=[_EMPTY_APP_WINDOW])
+    async with (
+        phone_server(phone) as adb,
+        android_capability(
+            adb, fragments={UI_TREE}, settle_max_wait_s=0.6, settle_quiet_ms=50
+        ) as capability,
+    ):
+        await capability.begin_observation(1)
+        tree = await capability.resolve_fragment(UI_TREE)
+
+    assert isinstance(tree, AndroidUITreeObs) and tree.settle is not None
+    assert tree.settle.outcome == "capped" and tree.settle.pending[-1] == "app_window"
+    assert len(phone.tree_reads) >= 2, "it waited again and looked again"
+    assert tree.settle.waited_ms >= 400, "each wait again counts from the first, within one limit"
+
+
+async def test_every_fragment_of_a_capture_records_its_wait_without_capture_state() -> None:
+    """Recorded in the trace and never shown to the agent: the browser's ``settle`` is the same."""
+    phone = ScriptedPhone(focused="com.android.settings/.Settings")
+    async with (
+        phone_server(phone) as adb,
+        android_capability(
+            adb,
+            fragments={SCREENSHOT, UI_TREE, FOREGROUND_APP},
+            settle_max_wait_s=2,
+            settle_quiet_ms=50,
+        ) as capability,
+    ):
+        await capability.begin_observation(1)
+        fragments = [
+            await capability.resolve_fragment(key) for key in (SCREENSHOT, UI_TREE, FOREGROUND_APP)
+        ]
+    async with phone_server(ScriptedPhone()) as adb, android_capability(adb) as capability:
+        await capability.begin_observation(1)
+        unwaited = await capability.resolve_fragment(SCREENSHOT)
+
+    screenshot = fragments[0]
+    assert isinstance(screenshot, AndroidScreenshotObs) and screenshot.settle is not None
+    assert screenshot.settle.outcome == "settled"
+    assert [getattr(fragment, "settle", None) for fragment in fragments] == [screenshot.settle] * 3
+    binary = screenshot.trace_binary()
+    assert binary is not None
+    payload = screenshot.model_dump(mode="json", exclude=screenshot.trace_json_exclude())
+    assert payload["settle"]["outcome"] == "settled"
+    assert AndroidScreenshotObs.from_trace(payload, binary[1]) == screenshot
+    assert isinstance(unwaited, AndroidScreenshotObs) and unwaited.settle is None
+    assert "settle" not in unwaited.model_dump(exclude=unwaited.trace_json_exclude()), (
+        "a capture without a wait writes what it always wrote"
+    )
 
 
 async def test_a_screenshot_reads_back_from_its_trace_files_as_it_was() -> None:
@@ -820,6 +1091,22 @@ def test_a_run_names_its_apk_its_input_strategies_and_its_tree_cleaner_and_seria
     assert isinstance(capability.ui_tree_cleaner, AndroidWorldCleaner)
     assert isinstance(capability.ui_tree_serializer, T3ASerializer)
     assert capability.service_apk == "spectragent-device.apk"
+
+
+def test_a_run_sets_the_minimum_after_an_action_and_raises_the_wait_s_limit() -> None:
+    """AndroidWorld's M3A sleeps 2 s after every action; its runner waits up to 6 s for the
+    element list to stop changing."""
+    raw: dict[str, JsonValue] = {
+        "capability": [_android_block(settle_min_after_action_ms=2000, settle_max_wait_s=6)]
+    }
+    capability = ConfigComposer.for_config(raw).compose(raw).single("capability")
+    assert isinstance(capability, AndroidCapability)
+    assert (capability.settle_min_after_action_ms, capability.settle_max_wait_s) == (2000, 6)
+
+    left_out: dict[str, JsonValue] = {"capability": [_android_block()]}
+    default = ConfigComposer.for_config(left_out).compose(left_out).single("capability")
+    assert isinstance(default, AndroidCapability)
+    assert (default.settle_min_after_action_ms, default.settle_max_wait_s) == (0, 2.0)
 
 
 def test_open_apps_table_takes_packages_and_components_and_refuses_anything_else() -> None:

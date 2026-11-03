@@ -5,18 +5,25 @@ scripted; the quiet periods are short real waits, because the passing of time
 is what is being tested. Each source has a test that fails without it, from
 what the emulator showed (``settle.py``'s docstring): a cold start that sends
 no event while the window manager reports no focused window, then an app with
-no frame drawn; the keyboard, seen only through its events.
+no frame drawn; the keyboard, seen only through its events. So do the two
+rules after them: no still screen before the minimum after an action, and
+which trees show no app, from the captures of AndroidWorld's seed-42 sweep.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Iterable
 
+from spectragent.core.capabilities.android.device.forest import AndroidAccessibilityForest
 from spectragent.core.capabilities.android.settle import (
     EventsEnded,
     ScreenPoll,
+    shows_an_app,
     wait_until_still,
+    without_an_app,
 )
+from spectragent.schemas.observation.capture_state import SettleState
 
 SETTINGS = "com.android.settings"
 LAUNCHER = "com.google.android.apps.nexuslauncher"
@@ -143,3 +150,106 @@ async def test_what_cannot_be_read_ends_the_wait_as_unknown_with_the_reason() ->
         "unknown",
         "EventsEnded: the service's event stream ended: the channel was closed",
     )
+
+
+async def test_the_screen_is_not_still_before_the_minimum_after_an_action() -> None:
+    """AndroidWorld's M3A sleeps 2 s after every action before it looks again."""
+    clock = asyncio.get_running_loop().time
+    acted = clock()
+
+    held = await wait_until_still(
+        polls([still()]), quiet_s=0.05, max_wait_s=5, not_before=acted + 0.3
+    )
+    ended = clock()
+    capped = await wait_until_still(
+        polls([still()]), quiet_s=0.05, max_wait_s=0.1, not_before=clock() + 5
+    )
+
+    assert held.outcome == "settled"
+    assert ended - acted >= 0.3
+    assert (capped.outcome, capped.pending) == ("capped", ("after_action",))
+
+
+async def test_a_wait_that_goes_on_counts_from_where_it_began() -> None:
+    """A capture that showed no app waits again within the limit of its first wait."""
+    clock = asyncio.get_running_loop().time
+    began = clock() - 0.4
+
+    within = await wait_until_still(polls([still()]), quiet_s=0.05, max_wait_s=5, started=began)
+    past = await wait_until_still(
+        polls([still(since_event_ms=10)]), quiet_s=0.05, max_wait_s=0.2, started=began
+    )
+
+    assert within.outcome == "settled" and within.waited_ms >= 450
+    assert (past.outcome, past.pending) == ("capped", ("events", "focus", "frames"))
+
+
+def _window(window_type: str, *nodes: dict[str, object]) -> dict[str, object]:
+    return {"window_type": window_type, "tree": {"nodes": list(nodes)}}
+
+
+def _forest(*windows: dict[str, object]) -> AndroidAccessibilityForest:
+    return AndroidAccessibilityForest.model_validate({"windows": list(windows)})
+
+
+#: The status bar: a system window that says the time.
+STATUS_BAR = _window("TYPE_SYSTEM", {"class_name": "android.widget.TextView", "text": "12:09"})
+#: An app window whose content has not come yet: its root and a layout container.
+EMPTY_APP = _window(
+    "TYPE_APPLICATION",
+    {"class_name": "android.widget.FrameLayout", "child_ids": [1], "is_important": True},
+    {"unique_id": 1, "class_name": "android.widget.LinearLayout", "depth": 1},
+)
+
+
+def test_a_tree_shows_an_app_once_an_app_window_has_content() -> None:
+    def app(**node: object) -> dict[str, object]:
+        return _window("TYPE_APPLICATION", {"class_name": "android.view.View", **node})
+
+    assert not shows_an_app(_forest())
+    assert not shows_an_app(_forest(STATUS_BAR)), "the status bar alone: a transition"
+    assert not shows_an_app(_forest(EMPTY_APP, STATUS_BAR)), "the window's empty root"
+    for content in (
+        {"text": "Display brightness"},  # the brightness slider, a screen of one element
+        {"content_description": "Video player. Tap to show controls."},
+        {"is_clickable": True},  # a button nobody labelled
+        {"is_long_clickable": True},
+        {"is_editable": True},
+        {"is_scrollable": True},
+        {"is_checkable": True},
+    ):
+        assert shows_an_app(_forest(app(**content), STATUS_BAR)), content
+    assert not shows_an_app(_forest(app(text="   "))), "white space says nothing"
+    assert shows_an_app(_forest(EMPTY_APP, app(text="Open with"))), "one window with content"
+
+
+def test_the_window_with_input_focus_counts_whatever_its_type() -> None:
+    """The notification shade pulled down is a system window that takes focus; on the emulator
+    no app window is listed behind it (2026-11-03). Quick settings and system dialogs are the same."""
+    shade = {
+        **_window(
+            "TYPE_SYSTEM",
+            {"class_name": "android.widget.TextView", "text": "23:46"},
+            {"class_name": "android.widget.Switch", "content_description": "Wi-Fi"},
+        ),
+        "is_focused": True,
+    }
+
+    assert shows_an_app(_forest(shade)), "the shade alone"
+    assert shows_an_app(_forest(EMPTY_APP, shade)), "the shade over an app whose window is empty"
+    assert not shows_an_app(_forest({**_window("TYPE_SYSTEM"), "is_focused": True})), (
+        "a focused window with nothing in it: the shade collapsing"
+    )
+    assert not shows_an_app(_forest(STATUS_BAR)), "a system window without focus still says nothing"
+
+
+def test_a_wait_that_saw_no_app_and_waits_no_more_says_so() -> None:
+    settled = SettleState(outcome="settled", waited_ms=900, loaded=None)
+    capped = SettleState(outcome="capped", waited_ms=2000, loaded=None, pending=("frames",))
+    unknown = SettleState(outcome="unknown", waited_ms=3, loaded=None, detail="TimeoutError")
+
+    assert without_an_app(settled) == SettleState(
+        outcome="capped", waited_ms=900, loaded=None, pending=("app_window",)
+    )
+    assert without_an_app(capped).pending == ("frames", "app_window")
+    assert without_an_app(unknown) == unknown, "a wait that could not read the screen stays so"

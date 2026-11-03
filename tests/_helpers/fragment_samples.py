@@ -129,6 +129,7 @@ def _android_ui_tree() -> AndroidUITreeObs:
         node_count=168,
         omitted_offscreen=2,
         capture_ms=69,
+        settle=SettleState(outcome="unknown", waited_ms=3, loaded=None, detail="TimeoutError"),
     )
 
 
@@ -366,6 +367,9 @@ SAMPLES: dict[str, dict[str, Callable[[], FragmentBase]]] = {
             capture_ms=17,
             encode_ms=85,
             waited_ms=0,
+            settle=SettleState(
+                outcome="capped", waited_ms=2000, loaded=None, pending=("app_window",)
+            ),
         ),
     },
     "android.foreground_app": {
@@ -373,6 +377,7 @@ SAMPLES: dict[str, dict[str, Callable[[], FragmentBase]]] = {
             package="com.android.settings",
             activity="com.android.settings.Settings",
             window="com.android.settings/com.android.settings.Settings",
+            settle=SettleState(outcome="settled", waited_ms=420, loaded=None),
         ),
         "nothing_focused": AndroidForegroundAppObs,
     },
