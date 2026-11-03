@@ -252,11 +252,20 @@ def test_with_alignment_every_restored_observation_matches_the_recording(
         assert comparison.restored_paused is recorded_paused
         assert comparison.restored_time is not None
         assert abs(comparison.restored_time - recorded_time) < 0.5
-    # The paused checkpoint frame is the recorded frame.
+    # The paused page matches the recorded one within one frame's hash change;
+    # the media checks above pin the position, since this page's dHash barely
+    # moves with the video. A video paused while playing keeps the frame Chrome
+    # last presented, which runs up to about 40 ms ahead of currentTime (now
+    # and then one behind), while a seek shows the frame that contains its
+    # target: a recording paused that close to a frame boundary shows the next
+    # frame, and the replay aligned to its currentTime the one before. One
+    # frame of this clip moves this page's dHash by at most 1 between 5 and
+    # 7.5 s, where the recording pauses.
     paused = trace.step(2)
     assert paused is not None and paused.restoration is not None
     (evidence,) = paused.restoration.evidence
-    assert isinstance(evidence, BrowserRestorationEvidence) and evidence.screenshot_distance == 0
+    assert isinstance(evidence, BrowserRestorationEvidence)
+    assert evidence.screenshot_distance is not None and evidence.screenshot_distance <= 1
 
 
 def test_nothing_after_the_checkpoint_is_aligned(branches: Branches) -> None:
