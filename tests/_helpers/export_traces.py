@@ -48,6 +48,7 @@ from spectragent.schemas.observation.fragments import StepInfoObs, TaskObs
 from spectragent.schemas.observation.geometry import PointFrame
 from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
 from spectragent.schemas.step_record import StepRecord
+from spectragent.schemas.task import SetupTaskText
 from tests._helpers.trace_builder import agent_result, write_verdict
 
 TASK_TEXT = "Put the blue kettle in the cart"
@@ -160,12 +161,14 @@ def write_run(
     verdicts: dict[str, EvalResult] | None = None,
     secrets_recorded: bool = False,
     input_platform: BrowserPlatform = "macos",
+    task_text: SetupTaskText | None = None,
 ) -> Path:
     """Commit one recorded run under ``root/<run_id>`` and return its directory.
 
     ``status`` is the trace's ledger (``writing``: never closed out;
     ``incomplete`` closes it with *incomplete_reason*); ``agent_done`` the
-    agent's, written as ``result.json`` (``None``: none).
+    agent's, written as ``result.json`` (``None``: none). *task_text* is the
+    text a capability's setup completed (§4.10), committed before step 0.
     """
     recorded_negotiation = (
         TraceNegotiation(
@@ -202,8 +205,11 @@ def write_run(
             task_setup=setup_record() if task_setup is _DEFAULT else task_setup,
             branch=branch,
             secrets_recorded=secrets_recorded,
+            task_text_setter=task_text.capability_id if task_text is not None else None,
         )
     )
+    if task_text is not None:
+        wal.commit_task_text(task_text)
     for index, spec in enumerate(steps):
         results = (
             spec.results

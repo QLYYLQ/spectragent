@@ -12,6 +12,7 @@ from spectragent.core.trace.wal import WALWriter
 from spectragent.inspection import RepositoryError, open_repository
 from spectragent.schemas.recording import RecordingPlan
 from spectragent.schemas.step_record import StepRecord
+from spectragent.schemas.task import SetupTaskText
 from tests._helpers.trace_builder import (
     PNG_BYTES,
     agent_result,
@@ -94,6 +95,32 @@ def test_unreadable_trace_stays_visible_and_does_not_hide_healthy_runs(tmp_path:
     assert rows["broken"]["trace_status"] == "unreadable"
     assert "000.json" in rows["broken"]["read_error"]
     assert rows["healthy"]["trace_status"] == "complete"
+
+
+def _run_with_setup_text(base: Path, run_id: str, *, record: bool) -> None:
+    """A run whose setup was to complete its task text, with its record or with it lost."""
+    wal = WALWriter(base, run_id)
+    wal.init_run(
+        TraceConfig(task="Follow the instructions.", task_id="t-1", task_text_setter="android")
+    )
+    if record:
+        wal.commit_task_text(
+            SetupTaskText(capability_id="android", text="Follow the instructions: Click Submit.")
+        )
+    wal.commit_step(0, step_record(0))
+    wal.write_result(agent_result(task_id="t-1"))
+
+
+def test_a_run_shows_the_task_text_its_setup_completed_and_refuses_a_lost_one(
+    tmp_path: Path,
+) -> None:
+    """Never the loader's half for a run whose agent was given the whole text (§4.10)."""
+    _run_with_setup_text(tmp_path, "made", record=True)
+    _run_with_setup_text(tmp_path, "lost", record=False)
+    rows = {row["key"]: row for row in open_repository(tmp_path).list_runs()}
+    assert rows["made"]["task"] == "Follow the instructions: Click Submit."
+    assert rows["lost"]["trace_status"] == "unreadable"
+    assert "has no task_text.json" in rows["lost"]["read_error"]
 
 
 @pytest.mark.parametrize("key", ["../outside", "/etc", "run/../../escape", "..\\outside"])

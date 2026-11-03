@@ -10,8 +10,8 @@ from pydantic import ValidationError
 
 from spectragent.core.archive.privacy import RedactionLedger
 from spectragent.core.composer import ConfigComposer
-from spectragent.core.trace.models import TaskSetupRecord
-from spectragent.core.trace.sources import TaskIdentity
+from spectragent.core.trace.models import TaskSetupRecord, TraceConfig
+from spectragent.core.trace.sources import TaskIdentity, task_identity
 from spectragent.export.benchmarks import BenchmarkLoaders
 from spectragent.export.errors import ExportConfigError, ExportEmptyError
 from spectragent.export.settings import BenchmarkRef, Decontamination, SplitSettings
@@ -246,6 +246,17 @@ class TestDecontamination:
             "Find the kettle",
             "Buy a kettle",
         )
+
+    def test_a_run_whose_setup_completed_its_text_stands_for_both_instructions(self) -> None:
+        """The benchmark's data knows the task by its loader's text (§4.10)."""
+        loaded = "Follow the instructions shown on the top of the screen."
+        made = f"{loaded.removesuffix('.')}: Click on Submit."
+        config = TraceConfig(benchmark="b", subset="s", task_id="t", task=loaded)
+        assert task_identity(config).instructions == (loaded,)
+        assert task_identity(config, task=loaded).instructions == (loaded,)
+        identity = task_identity(config, task=made)
+        assert (identity.task, identity.loader_task) == (made, loaded)
+        assert identity.instructions == (made, loaded)
 
     def test_the_documents_loaders_are_the_ones_read(
         self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

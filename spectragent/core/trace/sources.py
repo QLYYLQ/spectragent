@@ -120,7 +120,10 @@ class TaskIdentity:
     ``task`` is the instruction the run itself was given. A branch run under a
     task variant was given another instruction than its source task's
     (``BranchProvenance.task_variant``); ``source_task`` keeps the source's,
-    which the benchmark, subset and task id above belong to.
+    which the benchmark, subset and task id above belong to. A run whose
+    setup completed its text (``docs/architecture_design.md`` §4.10) was given
+    that text; ``loader_task`` keeps the loader's, the one the benchmark's own
+    data knows the task by.
     """
 
     benchmark: str
@@ -129,17 +132,22 @@ class TaskIdentity:
     task: str
     start_url: str | None
     source_task: str | None = None
+    loader_task: str | None = None
 
     @property
     def instructions(self) -> tuple[str, ...]:
-        """Every instruction the run stands for: its own, and its source's under a task variant.
+        """Every instruction the run stands for: its own, its source's, its loader's.
 
         Decontamination by instruction checks each one: a variant's text is
-        new, but the screens it was cut from were recorded on the source task.
+        new, but the screens it was cut from were recorded on the source task;
+        a text setup completed is new, but the benchmark lists the task by its
+        loader's text.
         """
-        if self.source_task is None or self.source_task == self.task:
-            return (self.task,)
-        return (self.task, self.source_task)
+        found = [self.task]
+        for other in (self.source_task, self.loader_task):
+            if other is not None and other not in found:
+                found.append(other)
+        return tuple(found)
 
     @property
     def key(self) -> str:
@@ -155,14 +163,19 @@ class TaskIdentity:
         return host.lower() if host else None
 
 
-def task_identity(config: TraceConfig) -> TaskIdentity:
+def task_identity(config: TraceConfig, *, task: str | None = None) -> TaskIdentity:
     """The task *config*'s run was recorded on; for a branch run, its source task.
 
     The start URL is the recorded task setup's (M28: value-level redaction
     leaves the host alone); a branch run's own setup context is its source
     task's, re-resolved. A task-variant branch's ``task`` is the variant it
-    ran and ``source_task`` the source run's instruction.
+    ran and ``source_task`` the source run's instruction. *task* is the run's
+    own text when a caller read it (``RunTrace.task_text``): when setup
+    completed it, it differs from ``config.task``, which becomes
+    ``loader_task``.
     """
+    own = config.task if task is None else task
+    loader_task = config.task if own != config.task else None
     setup = config.task_setup
     start_url = setup.context.get("start_url") if setup is not None else None
     branch = config.branch
@@ -172,16 +185,18 @@ def task_identity(config: TraceConfig) -> TaskIdentity:
             benchmark=branch.source_benchmark,
             subset=branch.source_subset,
             task_id=branch.source_task_id,
-            task=config.task,
+            task=own,
             start_url=start_url if isinstance(start_url, str) else None,
             source_task=variant.source_task_text if variant is not None else None,
+            loader_task=loader_task,
         )
     return TaskIdentity(
         benchmark=config.benchmark,
         subset=config.subset,
         task_id=config.task_id,
-        task=config.task,
+        task=own,
         start_url=start_url if isinstance(start_url, str) else None,
+        loader_task=loader_task,
     )
 
 

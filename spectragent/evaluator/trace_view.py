@@ -105,8 +105,8 @@ class TraceView:
 
     @cached_property
     def task_text(self) -> str:
-        """The instruction the agent was given."""
-        return self._trace.config.task or self._result.task
+        """The instruction the agent was given: the text its setup completed, if one did."""
+        return self._trace.task_text() or self._result.task
 
     # ── Outcome ─────────────────────────────────────────────────────
 

@@ -637,7 +637,7 @@ class StudentRenderer:
     def _open(self, item: TrajectoryStep, index: int) -> _Segment:
         """A new segment: the student's memory cleared and seeded for the task."""
         self.memory.clear()
-        self.memory.add_messages(self.runtime.seed_messages(item.trace.config.task))
+        self.memory.add_messages(self.runtime.seed_messages(item.trace.task_text()))
         return _Segment(index=index)
 
     def _with_loop_fragments(
@@ -661,7 +661,7 @@ class StudentRenderer:
             observation,
             loop_sourced=frozenset(self.negotiated.loop_sourced),
             builders=loop_fragment_builders(
-                task=item.trace.config.task,
+                task=item.trace.task_text(),
                 step=shown_step,
                 max_steps=max_steps,
                 today=today,

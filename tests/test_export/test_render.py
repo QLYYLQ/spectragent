@@ -40,6 +40,7 @@ from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation.fragments import StepInfoObs
 from spectragent.schemas.observation.geometry import PointFrame, PointGrid
 from spectragent.schemas.prompt import PromptContribution, ReactPromptContext
+from spectragent.schemas.task import SetupTaskText
 from tests._helpers.export_runs import STUDENT_CONFIG, student_root
 from tests._helpers.export_traces import (
     UI_TARS_NEGOTIATION,
@@ -569,6 +570,19 @@ class TestTheDoneClaim:
         (only,) = await renderer.render(_trajectory(trace))
         assert only.sample.step == 0
         assert renderer.stats.untranslatable == {"unrepresentable": 1}
+
+
+class TestTheTaskText:
+    async def test_the_student_is_given_the_text_the_runs_setup_completed(
+        self, composer: ConfigComposer, tmp_path: Path
+    ) -> None:
+        """What the teacher's agent was given, not the loader's half (§4.10)."""
+        made = SetupTaskText(capability_id="browser", text="Put the blue kettle in the cart: now")
+        renderer = _renderer(composer)
+        first, *_ = await renderer.render(_trajectory(_three_steps(tmp_path, task_text=made)))
+        assert first.sample.task == made.text
+        assert first.context[0].text == renderer.runtime.seed_messages(made.text)[0].text
+        assert made.text in str(first.context[0].text)
 
 
 class TestStepInfo:
