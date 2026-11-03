@@ -397,3 +397,48 @@ def test_a_list_the_run_writes_in_a_top_level_section_is_refused_against_a_part(
     assert refused.issue.path == "environment[0].capabilities[0].actions"
     assert "takes the run configuration's top-level 'action' section" in str(refused)
     assert "write the actions in the capability block" in str(refused)
+
+
+def _browser_run(part_matcher: JsonValue) -> dict[str, JsonValue]:
+    """A browser run whose block and benchmark both write the archive source's matcher settings."""
+    browser: Block = {
+        "capability_id": "browser",
+        "backend": {"provider_id": "local_chrome"},
+        "dom_cleaner": {"cleaner_type": "browser_use"},
+        "dom_serializer": {"serializer_type": "text"},
+        "network_source": {"source_id": "archive", "matcher": {"fuzzy_threshold": 0.7}},
+    }
+    part: Block = {
+        "capability_id": "browser",
+        "network_source": {"source_id": "archive", "matcher": part_matcher},
+    }
+    benchmark: Block = {
+        "benchmark_id": "online_mind2web",
+        "task_loader": {"benchmark_name": "online_mind2web"},
+        "capability": [part],
+    }
+    return {
+        "environment": [{"env_type": "browser", "capabilities": [browser]}],
+        "benchmark": [benchmark],
+    }
+
+
+def test_a_block_of_settings_both_write_is_merged_field_by_field() -> None:
+    """``matcher`` is typed as a settings block: each side's fields are taken, as for a strategy."""
+    raw = _browser_run({"levels": ["exact"]})
+
+    dumped = ConfigComposer.for_config(raw).validate(raw).model_dump(mode="json")
+
+    matcher = dumped["environment"][0]["capabilities"][0]["network_source"]["matcher"]
+    assert (matcher["levels"], matcher["fuzzy_threshold"]) == (["exact"], 0.7)
+
+
+def test_a_setting_inside_such_a_block_two_sides_write_differently_is_refused_at_its_field() -> (
+    None
+):
+    refused = _refused(_browser_run({"fuzzy_threshold": 0.4}))
+
+    assert refused.issue is not None and refused.issue.code == "capability_setting_conflict"
+    assert refused.issue.path == (
+        "environment[0].capabilities[0].network_source.matcher.fuzzy_threshold"
+    )

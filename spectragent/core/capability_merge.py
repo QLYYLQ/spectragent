@@ -16,7 +16,9 @@ that capability (:meth:`CapabilityMerge.merge`):
 - a field two sides write with different values is refused, naming the field
   and both sides: there is no precedence, as two providers of one action are
   refused (§4.3 "消歧靠拒绝"); a strategy block both write (``backend``) is
-  merged inside when both name the same strategy, refused when they name two;
+  merged inside when both name the same strategy, refused when they name two,
+  and so is a block of settings a field is typed as (``network_source.matcher``),
+  while a free-form map (``open_app``'s ``apps``) is one value;
 - a list of strategy blocks (``actions``) is the run configuration's, or the
   whole default list when it leaves the list out: a part may set options on an
   entry already there, matched by its discriminator (``action_id``), and never
@@ -38,13 +40,15 @@ from __future__ import annotations
 import copy
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import cast
+from types import UnionType
+from typing import Annotated, Union, cast, get_args, get_origin
 
 from conscribe import LayerRegistrar
 from conscribe.introspect import WiringSlot, wiring_slots
-from pydantic import JsonValue, ValidationError
+from pydantic import BaseModel, JsonValue, ValidationError
+from pydantic.fields import FieldInfo
 
-from spectragent.core.configuration_catalog import ConfigurationCatalog
+from spectragent.core.configuration_catalog import ComponentDefinition, ConfigurationCatalog
 
 #: The top-level section of capability blocks, and an environment's receptor of them.
 CAPABILITY_SECTION = "capability"
@@ -206,7 +210,7 @@ class CapabilityMerge:
                 )
                 continue
             assert isinstance(capability_id, str)
-            implementation = self._catalog.components[CAPABILITY_SECTION][capability_id]
+            definition = self._catalog.components[CAPABILITY_SECTION][capability_id]
             side = _Side(contribution.source, contribution.path)
             for target in targets:
                 problems += self._merge_block(
@@ -214,7 +218,8 @@ class CapabilityMerge:
                     target.fields,
                     contribution.block,
                     side,
-                    implementation.implementation,
+                    definition.implementation,
+                    definition.config_model,
                     here="",
                 )
         if missing:
@@ -231,17 +236,20 @@ class CapabilityMerge:
         into: dict[str, JsonValue],
         part: Mapping[str, JsonValue],
         side: _Side,
-        owner: type,
+        owner: type | None,
+        model: type | None,
         *,
         here: str,
     ) -> list[MergeProblem]:
-        """Merge *part*, a block of the component *owner*, into *into* (inside *target* at *here*).
+        """Merge *part* into *into* (inside *target* at *here*).
 
-        A field *part* writes ``null`` is not written: ``null`` says an
-        optional setting is not set.
+        *part* is a block of the component *owner* (``None``: a block of plain
+        settings, which has no receptors), validated by *model*. A field
+        *part* writes ``null`` is not written: ``null`` says an optional
+        setting is not set.
         """
         problems: list[MergeProblem] = []
-        slots = wiring_slots(owner)
+        slots = wiring_slots(owner) if owner is not None else {}
         for name, value in part.items():
             if value is None:
                 continue
@@ -271,6 +279,14 @@ class CapabilityMerge:
             ):
                 assert entry is not None
                 problems += self._merge_strategy(target, existing, value, side, entry, at=at)
+            elif (
+                isinstance(value, Mapping)
+                and isinstance(existing, dict)
+                and (settings := _settings_model(model, name)) is not None
+            ):
+                problems += self._merge_block(
+                    target, existing, value, side, None, settings, here=at
+                )
             elif existing != value:
                 problems.append(self._conflict(target, at, existing, value, side))
         return problems
@@ -297,10 +313,18 @@ class CapabilityMerge:
         mine, theirs = existing.get(discriminator), value.get(discriminator)
         if mine is not None and theirs is not None and mine != theirs:
             return [self._conflict(target, f"{at}.{discriminator}", mine, theirs, side)]
-        owner = self._implementation(layer, mine if mine is not None else theirs)
-        if owner is None:
+        definition = self._definition(layer, mine if mine is not None else theirs)
+        if definition is None:
             return [] if existing == value else [self._conflict(target, at, existing, value, side)]
-        return self._merge_block(target, existing, value, side, owner, here=at)
+        return self._merge_block(
+            target,
+            existing,
+            value,
+            side,
+            definition.implementation,
+            definition.config_model,
+            here=at,
+        )
 
     def _merge_list(
         self,
@@ -370,12 +394,20 @@ class CapabilityMerge:
                     )
                 )
                 continue
-            owner = self._implementation(layer, key)
-            if owner is None:
+            definition = self._definition(layer, key)
+            if definition is None:
                 if existing != item:
                     problems.append(self._conflict(target, where, existing, item, side))
                 continue
-            problems += self._merge_block(target, existing, item, side, owner, here=where)
+            problems += self._merge_block(
+                target,
+                existing,
+                item,
+                side,
+                definition.implementation,
+                definition.config_model,
+                here=where,
+            )
         return problems
 
     @staticmethod
@@ -396,14 +428,13 @@ class CapabilityMerge:
             and entry.slot.shape == "scalar"
         )
 
-    def _implementation(self, layer: str, key: JsonValue) -> type | None:
-        """The implementation of *key* in *layer*; with no key, the layer's only one."""
+    def _definition(self, layer: str, key: JsonValue) -> ComponentDefinition | None:
+        """The implementation of *key* in *layer* and its config model; with no key, the layer's only one."""
         components = self._catalog.components.get(layer, {})
         if key is None:
             only = list(components.values())
-            return only[0].implementation if len(only) == 1 else None
-        definition = components.get(key) if isinstance(key, str) else None
-        return None if definition is None else definition.implementation
+            return only[0] if len(only) == 1 else None
+        return components.get(key) if isinstance(key, str) else None
 
     def _conflict(
         self, target: _Block, at: str, existing: object, value: object, side: _Side
@@ -457,6 +488,36 @@ def _json(block: dict[object, object]) -> dict[str, JsonValue]:
 def _entry(discriminator: str, key: str) -> JsonValue:
     """A list entry that names *key* and writes nothing else: the default's form of it."""
     return {discriminator: key}
+
+
+def _settings_model(model: type | None, name: str) -> type | None:
+    """The block of settings field *name* of *model* is typed as, or ``None`` when it is no such block.
+
+    A pydantic model or a pydantic dataclass (``MatcherConfig``), alone or in
+    an optional: its fields are merged one by one. Anything else, a free-form
+    map (``dict[str, str]``) included, is one value.
+    """
+    info = _fields(model).get(name) if model is not None else None
+    if info is None:
+        return None
+    annotation = info.annotation
+    if get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    members = (
+        [member for member in get_args(annotation) if member is not type(None)]
+        if get_origin(annotation) in (Union, UnionType)
+        else [annotation]
+    )
+    blocks = [member for member in members if isinstance(member, type) and _fields(member)]
+    return blocks[0] if len(blocks) == 1 and len(members) == 1 else None
+
+
+def _fields(model: object) -> Mapping[str, FieldInfo]:
+    """The fields of a pydantic model or a pydantic dataclass; empty for anything else."""
+    if isinstance(model, type) and issubclass(model, BaseModel):
+        return model.model_fields
+    found = getattr(model, "__pydantic_fields__", None)
+    return cast(Mapping[str, FieldInfo], found) if isinstance(found, Mapping) else {}
 
 
 def _discriminator(registrar: type[LayerRegistrar[object]] | None) -> str | None:
