@@ -255,8 +255,11 @@ def broadcast_in_the_foreground(execute: Execute) -> Execute:
     broadcast's adb command 10 s, which android_env tries twice and then
     raises on: 14 of 92 MiniWoB++ tasks failed their initialize or first
     episode question on it (2026-11-03), and MarkorCreateNoteFromClipboard its
-    initialize, on ``clipper.set`` (2026-11-04; ``docs/architecture_design.md``
-    §11.2).
+    initialize, on ``clipper.set`` (2026-11-04). With the flag, that
+    initialize's ``clipper.set`` and ``clipper.get`` finished 4-102 ms after
+    they were enqueued, 8 times on four fresh boots; on the first boot a
+    broadcast sent to the background queue meanwhile waited 13.7 s
+    (2026-11-04; ``docs/architecture_design.md`` §11.2).
 
     Every adb command the service runs goes through ``execute_command``:
     AndroidWorld's through ``adb_utils.issue_generic_request`` (the MiniWoB++
