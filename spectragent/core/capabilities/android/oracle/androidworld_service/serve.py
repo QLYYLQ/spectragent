@@ -353,6 +353,39 @@ def wait_for_the_cover(
     )
 
 
+def start_the_episode(
+    task_name: str,
+    env: object,
+    *,
+    start: Callable[[object, list[str]], object],
+    shown: Callable[[object], Collection[str]],
+    read: Callable[[object], str],
+    warn: Callable[[str], object],
+    sleep: Callable[[float], object] = time.sleep,
+    wait_s: float = PAGE_WAIT_S,
+    poll_s: float = PAGE_POLL_S,
+) -> str:
+    """AndroidWorld's MiniWoB++ initialize after its task's own part, step by step, with the two waits.
+
+    ``MiniWoBTask.initialize_task`` loads the page of the task *task_name*,
+    sleeps a fixed 1 s, sends ``reset`` and ``step``, and reads the
+    instruction. This takes the same steps in the same order with *start*
+    (AndroidWorld's ``start_activity`` of the MiniWoB++ app's activity, given
+    *env* and the intent's extras), *sleep* and *read* (its
+    ``_get_episode_utterance``), and waits for the cover to be there before
+    the reset and gone before the read (:func:`wait_for_the_cover`, through
+    *shown*, *warn*, *wait_s* and *poll_s*). It returns the instruction.
+    """
+    task_config = f'{{"task":"{task_name}"}}'
+    start(env, ["--es", "RL_TASK_APP_CONFIG", f"'{task_config}'"])
+    sleep(1)
+    wait_for_the_cover(lambda: shown(env), there=True, warn=warn, wait_s=wait_s, poll_s=poll_s)
+    start(env, ["--ez", "reset", "true"])
+    start(env, ["--ez", "step", "true"])
+    wait_for_the_cover(lambda: shown(env), there=False, warn=warn, wait_s=wait_s, poll_s=poll_s)
+    return read(env)
+
+
 def reward_ends_episode(raw: str) -> bool:
     """Whether a MiniWoB++ page's stored raw reward *raw* ends its episode, as AndroidWorld's runner says.
 
@@ -534,26 +567,21 @@ def _patch(args: argparse.Namespace) -> None:
             "AndroidWorld does not all define"
         )
 
-    def shown(env) -> set[str]:  # env: AndroidWorld's AsyncEnv
+    def start(env, extras: list[str]) -> None:  # env: AndroidWorld's AsyncEnv
+        adb_utils.start_activity(miniwob_base._MAIN_ACTIVITY, extras, env.controller)
+
+    def shown(env) -> set[str]:
         elements = env.controller.get_ui_elements()  # visible ones, from its forwarder's tree
         return {element.resource_name for element in elements if element.resource_name}
 
+    def read(env) -> str:
+        return miniwob_base._get_episode_utterance(env.controller)
+
     def initialize_task(self, env) -> None:  # self: a MiniWoBTask
-        # AndroidWorld's MiniWoBTask.initialize_task, step by step, with a wait
-        # for the page before its reset and one for the episode before its read.
         super(task_class, self).initialize_task(env)
-        task_name = self.params["task_name"]
-        task_config = f'{{"task":"{task_name}"}}'
-        activity = miniwob_base._MAIN_ACTIVITY
-        adb_utils.start_activity(
-            activity, ["--es", "RL_TASK_APP_CONFIG", f"'{task_config}'"], env.controller
+        self._params["utterance"] = start_the_episode(
+            self.params["task_name"], env, start=start, shown=shown, read=read, warn=warn
         )
-        time.sleep(1)
-        wait_for_the_cover(lambda: shown(env), there=True, warn=warn)
-        adb_utils.start_activity(activity, ["--ez", "reset", "true"], env.controller)
-        adb_utils.start_activity(activity, ["--ez", "step", "true"], env.controller)
-        wait_for_the_cover(lambda: shown(env), there=False, warn=warn)
-        self._params["utterance"] = miniwob_base._get_episode_utterance(env.controller)
 
     task_class.initialize_task = initialize_task
 

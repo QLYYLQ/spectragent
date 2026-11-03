@@ -804,6 +804,63 @@ def test_the_launcher_fails_initialize_on_a_page_that_never_gets_there(
     assert page.notes == []
 
 
+@dataclass
+class _MiniWoBApp:
+    """The MiniWoB++ app and AndroidWorld's UI tree, faked for the launcher's steps that start an episode."""
+
+    #: What each look sees on the screen, in turn; the last one repeats.
+    screens: list[set[str]]
+    env: object = field(default_factory=object)
+    #: Each step, in order: an intent's extras, a sleep, a look or the read.
+    steps: list[object] = field(default_factory=list)
+
+    def start(self, env: object, extras: list[str]) -> None:
+        assert env is self.env
+        self.steps.append(extras)
+
+    def sleep(self, seconds: float) -> None:
+        self.steps.append(("sleep", seconds))
+
+    def shown(self, env: object) -> set[str]:
+        assert env is self.env
+        self.steps.append("look")
+        return self.screens.pop(0) if len(self.screens) > 1 else self.screens[0]
+
+    def read(self, env: object) -> str:
+        assert env is self.env
+        self.steps.append("read")
+        return "Select hPh22 and click Submit."
+
+
+def test_the_launcher_starts_an_episode_in_androidworlds_order_with_its_two_waits() -> None:
+    """The order is the fix: the reset waits for the loaded page, the read for the started episode."""
+    app = _MiniWoBApp(screens=[_LOADING, _COVERED, _COVERED, _RUNNING])
+
+    instruction = _launcher().start_the_episode(
+        "click-option",
+        app.env,
+        start=app.start,
+        shown=app.shown,
+        read=app.read,
+        warn=lambda note: None,
+        sleep=app.sleep,
+        poll_s=0.01,
+    )
+
+    assert instruction == "Select hPh22 and click Submit."
+    assert app.steps == [
+        ["--es", "RL_TASK_APP_CONFIG", """'{"task":"click-option"}'"""],
+        ("sleep", 1),
+        "look",  # still loading
+        "look",  # the cover is there: the page has loaded
+        ["--ez", "reset", "true"],
+        ["--ez", "step", "true"],
+        "look",  # the cover is still there
+        "look",  # the cover is gone: the episode has started
+        "read",
+    ]
+
+
 async def test_a_service_that_builds_another_task_is_refused_and_stopped(
     root: Path, tmp_path: Path
 ) -> None:
