@@ -53,6 +53,19 @@ def test_an_unknown_alias_names_the_shipped_ones() -> None:
         read_benchmark("online_mindweb")
     assert "no shipped benchmark has this alias" in str(refused.value)
     assert "online_mind2web" in str(refused.value)
+    assert "otherwise pass the path of a benchmark YAML" in str(refused.value)
+
+
+def test_without_a_source_checkout_an_alias_says_to_pass_a_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An installed wheel ships no configs/benchmarks/.
+    monkeypatch.setattr("spectragent.benchmarks.selection.ALIAS_DIR", tmp_path / "absent")
+    with pytest.raises(BenchmarkSelectionError) as refused:
+        read_benchmark("online_mind2web")
+    message = str(refused.value)
+    assert "the YAMLs under configs/benchmarks/ of a source checkout" in message
+    assert "otherwise pass the path of a benchmark YAML" in message
 
 
 def test_a_path_reads_the_users_own(tmp_path: Path) -> None:

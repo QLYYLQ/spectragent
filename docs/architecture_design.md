@@ -3225,6 +3225,7 @@ a 在 b、c 之前；b 与 c 并行；d 在 a 之后；e 在 a、b、c 之后。
 - 生成的单任务起始参数（§4.9 "起始参数"）与"任务的起始点归 capability"（§4.10）。
 - 分叉 sweep 的任务来源：一份分叉 YAML 只写 `benchmark: [{benchmark_id: trace_branches, task_loader: {benchmark_name: trace_branches, …}}]`。发布的五份分叉配置的 `task_loader` 段挪进了四份分叉 YAML（`configs/flywheel/branches_all_steps.yaml` 配 `branch_ui_tars_archive.yaml`，`branches_last_step.yaml` 配 `same_path_ui_tars_archive.yaml`；`configs/lookahead/branches_same_task.yaml` 配 `branch_same_task.yaml`，`branches_task_variants.yaml` 由两个任务变体配置共用，它们原来的加载器段一模一样）；运行配置里的分叉 Loop、恢复器与 hook 不变。分叉 run 记下的 `TraceConfig.benchmark` 照旧是 `trace_branches`，它的源任务照旧在 `TraceConfig.branch`；继承源基准的开局布置组件与判分器在 b、c 段。
 - 度量链：`tasks.benchmark` 收基准的 alias 或 path（必填），`tasks.subset` 写了就交给录制段的 `--subset`；分叉段多一个 `benchmark` 字段，点名它的分叉 YAML，链改写那份 YAML 里 `trace_branches` 加载器的 `data_dir`，写到 `<root>/configs/<段>_branches.yaml`，经 `--benchmark` 交给 bench；两次导出都带 `--benchmark <tasks.benchmark>`（§4.16）。
+- alias 只在源码检出里有：安装的 wheel 不带 `configs/benchmarks/`，这时 alias 被拒，消息说 alias 来自源码检出，否则给基准 YAML 的路径。
 
 a 段没做的：Android 的起始点与 `--start-app`（它说什么还没定，§4.10）。
 

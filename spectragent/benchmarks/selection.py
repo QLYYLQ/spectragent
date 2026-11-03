@@ -2,11 +2,12 @@
 
 A benchmark YAML is one more document of the run root, holding only a
 ``benchmark:`` section with one block. An alias names a shipped one,
-``configs/benchmarks/<alias>.yaml``; a path names the user's own. The selection
-is a path when it ends in ``.yaml`` / ``.yml`` or holds a path separator, and
-an alias otherwise. The run configuration never holds a benchmark: a
-``benchmark:`` section in it is refused when the run is composed
-(:func:`run_root`), whether or not ``--benchmark`` was given.
+``configs/benchmarks/<alias>.yaml`` in a source checkout (an installed wheel
+ships none); a path names the user's own. The selection is a path when it ends
+in ``.yaml`` / ``.yml`` or holds a path separator, and an alias otherwise. The
+run configuration never holds a benchmark: a ``benchmark:`` section in it is
+refused when the run is composed (:func:`run_root`), whether or not
+``--benchmark`` was given.
 
 ``--subset`` selects which of the benchmark's tasks run, and is the one knob
 the command line sets on a benchmark: it is written into the selected block's
@@ -63,10 +64,16 @@ def read_benchmark(selection: str, *, subset: str | None = None) -> dict[str, An
     else:
         path = ALIAS_DIR / f"{selection}.yaml"
         if not path.is_file():
+            shipped = aliases()
+            where = (
+                f"aliases: {', '.join(shipped)}, the YAMLs in {ALIAS_DIR}"
+                if shipped
+                else f"this installation has no benchmark YAMLs in {ALIAS_DIR}: aliases are "
+                f"the YAMLs under configs/benchmarks/ of a source checkout"
+            )
             raise BenchmarkSelectionError(
-                f"--benchmark {selection}: no shipped benchmark has this alias (aliases: "
-                f"{', '.join(aliases()) or 'none'}, in {ALIAS_DIR}); a benchmark YAML of your "
-                f"own is named by its path"
+                f"--benchmark {selection}: no shipped benchmark has this alias ({where}); "
+                f"otherwise pass the path of a benchmark YAML"
             )
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
