@@ -128,6 +128,7 @@ AVD_VARIABLE = "SPECTRAGENT_TEST_AVD"
 APK_VARIABLE = "SPECTRAGENT_TEST_SERVICE_APK"
 #: The typing backend to compose, by its ``typing_id``; ``set_text`` when unset.
 TYPING_VARIABLE = "SPECTRAGENT_TEST_TYPING_BACKEND"
+TYPING_BACKEND = os.environ.get(TYPING_VARIABLE, "set_text")
 SETTINGS = "com.android.settings"
 #: Settings' search: Google's on the API 31 and 33 images, AOSP's on API 30's.
 SETTINGS_SEARCH = ("com.google.android.settings.intelligence", "com.android.settings.intelligence")
@@ -233,7 +234,7 @@ async def booted() -> AsyncIterator[Booted]:
                 },
                 "service_apk": apk,
                 "tap_injector": {"injector_id": "accessibility_gesture"},
-                "typing_backend": {"typing_id": os.environ.get(TYPING_VARIABLE, "set_text")},
+                "typing_backend": {"typing_id": TYPING_BACKEND},
                 "ui_tree_cleaner": {"cleaner_id": "androidworld"},
                 "ui_tree_serializer": {"serializer_id": "m3a"},
                 "task_oracle": {"oracle_id": "none"},
@@ -537,7 +538,8 @@ async def test_typing_at_the_cursor_of_an_empty_android_password_field_enters_th
     false``, as M3A always sends) only into an empty one, where it replaces nothing: no text,
     and no cursor or one at the start. Android's own EditText reports no cursor for a password,
     even an empty one (measured 2026-11-03), and takes the text; once the field holds text,
-    text at its cursor is refused, saying how much the field holds, and the field keeps it."""
+    text at its cursor is refused, saying how much the field holds, and the field keeps it.
+    The refusal is set_text's own: key events and commit_text put the text at the cursor."""
     await _skip_unless_measured_layout(booted)
     await _add_network_with_a_password(booted)
     x, y = await _view_at(booted, PASSWORD)
@@ -551,6 +553,10 @@ async def test_typing_at_the_cursor_of_an_empty_android_password_field_enters_th
         booted, "type_coordinate", coordinate_x=x, coordinate_y=y, text="x", clear=False
     )
 
+    if TYPING_BACKEND != "set_text":
+        assert held.success, held.error
+        assert len(await _field_text(booted, PASSWORD) or "") == 9
+        return
     assert (held.success, held.error) == (
         False,
         "RemoteError: set_text: password_field: a password field hides its text, so text goes "
