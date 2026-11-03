@@ -8,7 +8,7 @@ params. Seven do: ``click``, ``click_coordinate``, ``drag``, ``type``,
 ``type_coordinate`` without a point (user ruling 2026-11-01). Three are
 Android's own (§11.2, "动作"): ``long_press``, ``press_key`` (system keys) and
 ``open_app`` (by name; the table of what a name opens is this action's, never
-an agent's). Points are physical screen pixels, the space touches take and the
+an agent's: a benchmark's, or the device's home screen's names). Points are physical screen pixels, the space touches take and the
 screenshot's viewport. A gesture's duration is a setting on the action
 instance, never a model param. There is no ``done``: the Loop's ``loop.done``
 ends a run (§4.5).
@@ -36,7 +36,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -768,57 +769,69 @@ class AndroidPressKeyAction(ActionBase):
         return ActionResult(success=True)
 
 
-#: The launcher apps of the stock Google APIs image (API 33), by their name on
-#: the home screen; read off the device with ``cmd package query-activities``.
-STOCK_APPS: dict[str, str] = {
-    "Calendar": "com.google.android.calendar",
-    "Camera": "com.android.camera2",
-    "Chrome": "com.android.chrome",
-    "Clock": "com.google.android.deskclock",
-    "Contacts": "com.google.android.contacts",
-    "Drive": "com.google.android.apps.docs",
-    "Files": "com.google.android.documentsui",
-    "Gmail": "com.google.android.gm",
-    "Google": "com.google.android.googlequicksearchbox",
-    "Maps": "com.google.android.apps.maps",
-    "Messages": "com.google.android.apps.messaging",
-    "Phone": "com.google.android.dialer",
-    "Photos": "com.google.android.apps.photos",
-    "Settings": "com.android.settings",
-    "YouTube": "com.google.android.youtube",
-    "YouTube Music": "com.google.android.apps.youtube.music",
-}
-
-
-def stock_apps() -> dict[str, str]:
-    """A fresh copy of :data:`STOCK_APPS`: ``open_app``'s default table."""
-    return dict(STOCK_APPS)
-
-
 #: What a name in ``open_app``'s table opens: a package, or a component
 #: (``package/activity``).
 AppTarget = Annotated[str, PydanticField(pattern=rf"^{PACKAGE_PATTERN}(?:/{ACTIVITY_PATTERN})?$")]
 
 
+def app_target(apps: Mapping[str, str], app_name: str) -> tuple[str, str | None] | None:
+    """The package and activity *app_name* names in *apps*, or ``None`` when it names none there.
+
+    A name matches ignoring case and extra spaces. The activity is ``None``
+    where the table names only the package: its launcher activity opens.
+    """
+    wanted = " ".join(app_name.split()).casefold()
+    for name, target in apps.items():
+        if " ".join(name.split()).casefold() == wanted:
+            package, _, activity = target.partition("/")
+            return package, activity or None
+    return None
+
+
+async def open_app(
+    capability: AndroidCapability, apps: Mapping[str, str], app_name: str
+) -> str | None:
+    """Open the app *app_name* names in *apps*, or the installed package of that name.
+
+    Only the table names an activity: a name of one's own is a package or
+    nothing. Returns why nothing opened, or ``None`` once the app is shown.
+    """
+    package, activity = app_target(apps, app_name) or (app_name.strip(), None)
+    launcher = capability.bridge.launcher
+    try:
+        installed = await launcher.is_installed(package)
+    except ValueError:  # neither a known name nor a package name
+        installed = False
+    if not installed:
+        return (
+            f"no app {app_name!r} is installed; apps by name: {', '.join(sorted(apps))}, or an "
+            f"installed package name"
+        )
+    await launcher.launch(package, activity)
+    return None
+
+
 @dataclass
 class AndroidOpenAppAction(ActionBase):
-    """Open an app by its name; what a name opens is this action's table."""
+    """Open an app by its name; what a name opens is this action's table, or the home screen's."""
 
     __registry_key__ = "android.open_app"
 
     apps: Annotated[
-        dict[str, AppTarget],
+        dict[str, AppTarget] | None,
         trace_safe(
             "app names and the packages or components they open, not credentials",
             description=(
                 "The apps an agent can open by name: name -> package, which opens the "
                 "package's launcher activity, or name -> component (package/activity), which "
                 "starts that activity, as AndroidWorld opens its apps. A name matches ignoring "
-                "case and extra spaces; an installed package name opens too. The default "
-                "lists the launcher apps of the stock Google APIs image."
+                "case and extra spaces; an installed package name opens too. None (the "
+                "default): the names the device's home screen shows, read from the device at "
+                "setup, each opening its launcher activity. A benchmark may give the table "
+                "(AndroidWorld gives its own)."
             ),
         ),
-    ] = field(default_factory=stock_apps)
+    ] = None
 
     class Params(BaseModel):
         model_config = ConfigDict(extra="forbid")
@@ -832,39 +845,14 @@ class AndroidOpenAppAction(ActionBase):
             **context,
         )
 
-    def component_of(self, app_name: str) -> tuple[str, str | None] | None:
-        """The package and activity *app_name* names in :attr:`apps`, or ``None``.
-
-        The activity is ``None`` where the table names only the package: its
-        launcher activity opens.
-        """
-        wanted = " ".join(app_name.split()).casefold()
-        for name, target in self.apps.items():
-            if " ".join(name.split()).casefold() == wanted:
-                package, _, activity = target.partition("/")
-                return package, activity or None
-        return None
-
     async def execute(
         self, params: dict[str, Any], *, capability: AndroidCapability
     ) -> ActionResult:
         app_name = self.Params.model_validate(params).app_name
-        # Only the table names an activity: an agent's own name is a package or nothing.
-        package, activity = self.component_of(app_name) or (app_name.strip(), None)
-        launcher = capability.bridge.launcher
-        try:
-            installed = await launcher.is_installed(package)
-        except ValueError:  # neither a known name nor a package name
-            installed = False
-        if not installed:
-            return ActionResult(
-                success=False,
-                error=(
-                    f"no app {app_name!r} is installed; apps by name: "
-                    f"{', '.join(sorted(self.apps))}, or an installed package name"
-                ),
-            )
-        await launcher.launch(package, activity)
+        apps = self.apps if self.apps is not None else capability.launcher_apps
+        refused = await open_app(capability, apps, app_name)
+        if refused is not None:
+            return ActionResult(success=False, error=refused)
         return ActionResult(success=True)
 
 

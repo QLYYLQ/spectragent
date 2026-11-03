@@ -62,6 +62,7 @@ from spectragent.core.capabilities.android.observations import (
 )
 from spectragent.core.capabilities.android.session import CaptureError
 from spectragent.core.capabilities.android.settle import ScreenPoll
+from spectragent.core.capabilities.android.task_setup import AndroidSetup
 from spectragent.core.capabilities.android.ui_tree.cleaning import AndroidWorldCleaner
 from spectragent.core.capabilities.android.ui_tree.serializers import M3ASerializer, T3ASerializer
 from spectragent.core.capabilities.android.ui_tree.source import AccessibilityServiceTreeSource
@@ -1378,3 +1379,89 @@ async def test_an_event_stream_that_ended_is_subscribed_afresh_on_a_new_channel(
     assert isinstance(again, AndroidCaptureStateObs) and again.settle is not None
     assert again.settle.outcome == "settled"
     assert phone.service_calls("subscribe") == 2
+
+
+# ── the task's start app ──────────────────────────────────────────────
+
+
+async def test_the_start_app_opens_by_its_name_on_the_home_screen_before_the_first_step(
+    tmp_path: Path,
+) -> None:
+    phone = ScriptedPhone()
+    async with phone_server(phone) as adb:
+        capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+        configured(capability, adb)
+        await capability.setup(start_app="settings")
+        try:
+            assert phone.focused == "com.android.settings/com.android.settings.Settings"
+        finally:
+            await capability.teardown()
+
+
+async def test_a_start_app_no_name_opens_fails_setup_naming_the_names_and_releases_the_device(
+    tmp_path: Path,
+) -> None:
+    phone = ScriptedPhone()
+    async with phone_server(phone) as adb:
+        capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+        configured(capability, adb)
+        with pytest.raises(ValueError, match="the task starts in 'Notes'") as refused:
+            await capability.setup(start_app="Notes")
+
+    assert "apps by name: Settings" in str(refused.value)
+    assert not capability.is_alive
+
+
+async def test_a_table_of_its_own_names_the_start_app_and_no_name_is_read_from_the_device(
+    tmp_path: Path,
+) -> None:
+    phone = ScriptedPhone()
+    async with phone_server(phone) as adb:
+        capability = AndroidCapability(
+            service_apk=str(fake_service_apk(tmp_path)),
+            actions=[AndroidOpenAppAction(apps={"Preferences": "com.android.settings"})],
+        )
+        configured(capability, adb)
+        await capability.setup(start_app="Preferences")
+        try:
+            assert phone.focused == "com.android.settings/.Settings"
+            assert phone.service_calls("launcher_apps") == 0
+            with pytest.raises(RuntimeError, match="has a table of its own"):
+                capability.launcher_apps  # noqa: B018 — the read is the assertion
+        finally:
+            await capability.teardown()
+
+
+async def test_a_run_that_opens_no_app_reads_no_names(tmp_path: Path) -> None:
+    phone = ScriptedPhone()
+    async with phone_server(phone) as adb:
+        capability = AndroidCapability(
+            service_apk=str(fake_service_apk(tmp_path)),
+            actions=[
+                action
+                for action in AndroidCapability(service_apk="x").actions
+                if action.action_id != "android.open_app"
+            ],
+        )
+        configured(capability, adb)
+        await capability.setup()
+        await capability.teardown()
+
+    assert phone.service_calls("launcher_apps") == 0
+
+
+def test_a_blank_start_app_is_refused_before_anything_starts(tmp_path: Path) -> None:
+    capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+    env = make_env(AndroidEnvironment, {"android#0": capability})
+
+    with pytest.raises(ValueError, match="start_app '  ' names no app"):
+        env.check_setup({"start_app": "  "})
+
+
+def test_the_start_app_is_the_tasks_start_point() -> None:
+    setup = AndroidSetup(start_app="  Simple  Calendar ")
+
+    assert setup.to_context() == {"start_app": "  Simple  Calendar "}
+    assert AndroidSetup.start_point(setup.to_context()) == "simple calendar"
+    assert AndroidSetup.start_point({}) is None
+    assert AndroidSetup.start_point({"oracle_task": {"task": "SystemBrightnessMax"}}) is None

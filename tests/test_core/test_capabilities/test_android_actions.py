@@ -1121,15 +1121,40 @@ async def test_system_keys_press_their_android_key_codes(
     ]
 
 
-async def test_an_app_opens_by_its_name_or_its_package(
+async def test_an_app_opens_by_its_name_on_the_home_screen_or_its_package(
     capability: AndroidCapability, phone: ScriptedPhone
 ) -> None:
+    """With no table of its own, open_app takes the names the home screen shows, read at setup."""
+    assert phone.service_calls("launcher_apps") == 1
+    assert capability.launcher_apps == {
+        "Settings": "com.android.settings/com.android.settings.Settings"
+    }
     assert (await act(capability, "open_app", app_name="  settings ")).success
-    assert phone.focused == "com.android.settings/.Settings"
+    assert phone.focused == "com.android.settings/com.android.settings.Settings"
 
     await act(capability, "press_key", key="home")
     assert (await act(capability, "open_app", app_name="com.android.settings")).success
     assert phone.focused == "com.android.settings/.Settings"
+
+
+async def test_a_label_two_apps_share_is_written_with_each_package() -> None:
+    phone = ScriptedPhone(
+        launchable={
+            "com.example.gallery": "com.example.gallery/.Main",
+            "org.other.gallery": "org.other.gallery/.Start",
+        },
+        labels={"com.example.gallery": "Gallery", "org.other.gallery": "Gallery"},
+    )
+    async with phone_server(phone) as adb, android_capability(adb) as capability:
+        assert capability.launcher_apps == {
+            "Gallery (com.example.gallery)": "com.example.gallery/com.example.gallery.Main",
+            "Gallery (org.other.gallery)": "org.other.gallery/org.other.gallery.Start",
+        }
+        refused = await act(capability, "open_app", app_name="Gallery")
+        assert not refused.success and refused.error is not None
+        assert "Gallery (com.example.gallery), Gallery (org.other.gallery)" in refused.error
+        assert (await act(capability, "open_app", app_name="gallery (org.other.gallery)")).success
+        assert phone.focused == "org.other.gallery/org.other.gallery.Start"
 
 
 async def test_a_name_the_table_gives_an_activity_starts_that_activity(
@@ -1153,7 +1178,7 @@ async def test_a_name_the_table_gives_an_activity_starts_that_activity(
 async def test_an_app_that_is_not_there_is_refused_naming_the_apps_that_are_known(
     capability: AndroidCapability,
 ) -> None:
-    for name in ("Notes app", "Chrome"):  # unknown, and known but not installed on this phone
+    for name in ("Notes app", "Chrome"):  # neither is on this phone's home screen
         result = await act(capability, "open_app", app_name=name)
         assert not result.success
         assert result.error is not None and "Settings" in result.error

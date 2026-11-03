@@ -98,6 +98,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, cast
@@ -109,7 +110,11 @@ from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.actions.base import BaseAction
 from spectragent.core.archive import ArchiveBatch, ArchiveGap, ArchiverBase
 from spectragent.core.capabilities._registrar import CapabilityBase
-from spectragent.core.capabilities.android.actions import ACTIONS
+from spectragent.core.capabilities.android.actions import (
+    ACTIONS,
+    AndroidOpenAppAction,
+    open_app,
+)
 from spectragent.core.capabilities.android.adb import AdbClient
 from spectragent.core.capabilities.android.archive import ui_tree_raw  # noqa: F401 — registration
 from spectragent.core.capabilities.android.archive.base import (
@@ -205,6 +210,8 @@ logger = logging.getLogger(__name__)
 
 #: Every action this capability offers; a YAML ``actions:`` block narrows it.
 ACTION_KEYS = tuple(action.__registry_key__ for action in ACTIONS)
+#: The action whose table names the apps an agent opens, and a task starts in.
+OPEN_APP = AndroidOpenAppAction.__registry_key__
 
 
 class _AndroidReceptors:
@@ -315,6 +322,8 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     _archive_sessions: list[AndroidArchiveSession]
     #: The benchmark's setup component this capability hosts (``bind_setup``); ``None``: none.
     _setup: AndroidBenchmarkSetup | None
+    #: The home screen's names, read at setup when the run names apps by them.
+    _launcher_apps: dict[str, str] | None
 
     def __init__(
         self,
@@ -500,6 +509,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._archive = None
         self._archive_sessions = []
         self._setup = None
+        self._launcher_apps = None
         self.actions = actions
         self.ui_tree_source = default_ui_tree_source()
 
@@ -672,6 +682,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                     typing_backend, level, f"the {backend.provider_id!r} provider's device"
                 )
         ServiceApk.load(self.service_apk)
+        start_app = context.get("start_app")
+        if start_app is not None and not (isinstance(start_app, str) and start_app.strip()):
+            raise ValueError(f"start_app {start_app!r} names no app")
         task: OracleTask | None = context.get("oracle_task")
         if setup is not None:
             setup.check_setup(task)
@@ -692,14 +705,22 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._setup = _hostable(setup)
 
     async def setup(
-        self, *, negotiation: Any = None, oracle_task: Mapping[str, JsonValue] | None = None
+        self,
+        *,
+        negotiation: Any = None,
+        oracle_task: Mapping[str, JsonValue] | None = None,
+        start_app: str | None = None,
     ) -> None:
         """Bring the device and its device side up, read the facts that do not change, start the
-        benchmark's setup component.
+        benchmark's setup component, open the task's start app.
 
         *oracle_task* is the task's data for the bound setup component
-        (``AndroidSetup``), handed over unread. The recording's archive context
-        and the bound archivers' sessions open first: pure construction.
+        (``AndroidSetup``), handed over unread. *start_app* is the app the task
+        starts in, by a name the run's ``open_app`` takes, opened last. The
+        home screen's names are read from the device when the run names apps
+        by them: ``open_app`` given no table of its own, or a start app to find.
+        The recording's archive context and the bound archivers' sessions open
+        first: pure construction.
         """
         await super().setup(negotiation=negotiation)
         component = self._setup
@@ -707,7 +728,8 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         tap_injector, typing_backend, *_ = self._strategies()
         self._ui_tree, self._actions_since_tree = None, 0
         self._polled_package = self._acted_at = None
-        self._check({"oracle_task": oracle_task}, component)
+        self._launcher_apps = None
+        self._check({"oracle_task": oracle_task, "start_app": start_app}, component)
         self._archive = AndroidArchiveContext(trees=TreeStore())
         self._archive_sessions = [archiver.open(self._archive) for archiver in self._archivers]
         self._apk = apk = ServiceApk.load(self.service_apk)
@@ -739,6 +761,13 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             if self._reads_events:
                 self._events = await side.service.events()
                 self._newest_event_ms = None
+            if self._configured_apps is None and (OPEN_APP in self._actions_by_name or start_app):
+                self._launcher_apps = await device.run(
+                    lambda: _launcher_names(side),
+                    what="reading the home screen's apps",
+                    wait_s=self.queue_wait_s,
+                    run_s=self.query_timeout_s,
+                )
             if component is not None:
                 await component.start(session, oracle_task)
                 # AndroidWorld's own service writes its forwarder over the
@@ -757,9 +786,55 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 facts=queries,
             )
             self._device = device
+            if start_app is not None:
+                await self._open_start_app(device, start_app)
         except BaseException:
             await self.teardown()
             raise
+
+    @property
+    def launcher_apps(self) -> Mapping[str, str]:
+        """The names the device's home screen shows, read at setup: label → launcher component.
+
+        A label two apps share is written ``label (package)`` for each.
+
+        Raises:
+            RuntimeError: The run read none: its ``open_app`` has a table of its own.
+        """
+        apps = self._launcher_apps
+        if apps is None:
+            raise RuntimeError(
+                "the home screen's apps were not read: the run's open_app has a table of its own"
+            )
+        return apps
+
+    @property
+    def _configured_apps(self) -> Mapping[str, str] | None:
+        """The run's ``open_app`` table, as configured or given by a benchmark; ``None`` without one."""
+        action = self._actions_by_name.get(OPEN_APP)
+        return action.apps if isinstance(action, AndroidOpenAppAction) else None
+
+    async def _open_start_app(self, device: DeviceSession, start_app: str) -> None:
+        """Open *start_app*, as ``open_app`` would, before the agent's first step.
+
+        Raises:
+            ValueError: No app has that name, and no installed package either.
+        """
+        apps = self._configured_apps
+        names = apps if apps is not None else self.launcher_apps
+
+        async def job() -> str | None:
+            await self._keep_service()
+            return await open_app(self, names, start_app)
+
+        refused = await device.run(
+            job,
+            what=f"opening the start app {start_app!r}",
+            wait_s=self.queue_wait_s,
+            run_s=self.action_timeout_s,
+        )
+        if refused is not None:
+            raise ValueError(f"the task starts in {start_app!r}, and {refused}")
 
     async def teardown(self) -> None:
         """Stop the setup component, drain the device's queue, stop the device side, release the
@@ -1301,6 +1376,23 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             else None,
             service_apk_signing_certificate_sha256=apk.info.signing_certificate_sha256,
         )
+
+
+async def _launcher_names(side: DeviceSide) -> dict[str, str]:
+    """The home screen's names from the service: label → ``package/activity``.
+
+    A label two launcher activities share would name neither, so each is
+    written with its package: ``Gallery (com.example.gallery)``.
+    """
+    apps = await side.service.launcher_apps()
+    shared = Counter(app.label for app in apps)
+    return {
+        (app.label if shared[app.label] == 1 else f"{app.label} ({app.package})"): (
+            f"{app.package}/{app.activity}"
+        )
+        for app in apps
+        if app.label.strip()
+    }
 
 
 def _hostable(setup: BenchmarkSetup | None) -> AndroidBenchmarkSetup | None:

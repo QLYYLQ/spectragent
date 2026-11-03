@@ -35,11 +35,20 @@ STRATEGY_AXES = {
 #: it without importing the Android implementation.
 TASK_SETUP = AndroidSetup
 
-#: No single-task start flag yet: the Android setup takes no key that says where a
-#: task starts. ``--start-app`` comes with the app name table, when AndroidWorld
-#: becomes a full benchmark; the task then starts in that app
-#: (``docs/architecture_design.md`` §4.10 "任务的起始点归 capability").
-START_FLAGS: tuple[StartFlag, ...] = ()
+#: The single-task start flag: the app the task starts in, by its name on the
+#: home screen (or its package name), opened before the agent's first step;
+#: that app is the task's start point (``docs/architecture_design.md`` §4.9
+#: "起始参数", §4.10 "任务的起始点归 capability").
+START_FLAGS: tuple[StartFlag, ...] = (
+    StartFlag(
+        flag="--start-app",
+        key="start_app",
+        help=(
+            "The app the task starts in, by its name on the home screen (or its package name), "
+            "opened before the agent's first step"
+        ),
+    ),
+)
 
 #: No module of this package needs an optional extra.
 OPTIONAL_EXTRA_MODULES: tuple[str, ...] = ()

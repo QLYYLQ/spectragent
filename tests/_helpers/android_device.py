@@ -169,6 +169,8 @@ class ScriptedPhone:
         frames: How many frames the app in front has rendered; ``None``: its
             process reports none (it has not started).
         launchable: Installed packages with their launcher activities.
+        labels: The label the home screen shows for each of those packages;
+            one it leaves out is labelled with its package name.
         helper_screenshots: Whether the helper takes screenshots (API 31-33);
             otherwise it answers ``unsupported`` and the service takes them.
         screenshot_fails: Every screenshot fails from now on.
@@ -227,6 +229,7 @@ class ScriptedPhone:
     launchable: dict[str, str] = field(
         default_factory=lambda: {"com.android.settings": "com.android.settings/.Settings"}
     )
+    labels: dict[str, str] = field(default_factory=lambda: {"com.android.settings": "Settings"})
     helper_screenshots: bool = True
     screenshot_fails: bool = False
     screen: bytes | None = None
@@ -261,6 +264,7 @@ class ScriptedPhone:
                 "tree": self._tree,
                 "set_text": self._text("set_text"),
                 "commit_text": self._text("commit_text"),
+                "launcher_apps": self._launcher_apps,
             },
             helper_methods={
                 "ping": self._helper_ping,
@@ -311,6 +315,19 @@ class ScriptedPhone:
 
     async def _service_ping(self, params: JsonObject) -> Answer:
         return Answer({"uptime_ms": self.uptime_ms, "next_seq": 0})
+
+    async def _launcher_apps(self, params: JsonObject) -> Answer:
+        apps: list[JsonValue] = []
+        for package, component in self.launchable.items():
+            activity = component.partition("/")[2]
+            apps.append(
+                {
+                    "label": self.labels.get(package, package),
+                    "package": package,
+                    "activity": f"{package}{activity}" if activity.startswith(".") else activity,
+                }
+            )
+        return Answer({"apps": apps})
 
     async def _helper_ping(self, params: JsonObject) -> Answer:
         return Answer({"uptime_ms": self.uptime_ms})

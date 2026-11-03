@@ -2,7 +2,8 @@
 
 ``docs/architecture_design.md`` §11.2 ("设备端"). The accessibility service
 (:class:`ServiceClient`) is the main route: the window forest, every
-accessibility event, gestures, global actions, screenshots and text. The
+accessibility event, gestures, global actions, screenshots, text and the apps
+the home screen lists. The
 shell helper (:class:`HelperClient`) adds what the service cannot do:
 screenshots without the service's limit of one per 333 ms, any key, text
 typed as key events and touches injected as ``input`` injects them, and
@@ -172,6 +173,18 @@ class FocusedNode(_Result):
             self.view_id_resource_name,
             self.class_name,
         ) == (other.window_id, other.node_hash, other.view_id_resource_name, other.class_name)
+
+
+class LauncherApp(_Result):
+    """An app the home screen lists: its label there, its package, and the activity it starts."""
+
+    label: str
+    package: str
+    activity: str
+
+
+class _LauncherApps(_Result):
+    apps: list[LauncherApp]
 
 
 class _Focus(_Result):
@@ -384,6 +397,11 @@ class ServiceClient:
         """
         params: JsonObject = {"text": text, "replace": replace}
         return TextTarget.model_validate((await self.channel.call("commit_text", params)).result)
+
+    async def launcher_apps(self) -> list[LauncherApp]:
+        """Every launcher activity on the device, with the label the home screen shows for it."""
+        reply = await self.channel.call("launcher_apps")
+        return _LauncherApps.model_validate(reply.result).apps
 
     async def events(self, *, max_buffered: int = 100_000) -> ServiceEvents:
         """Start the event stream; once per channel (:meth:`Channel.subscribe`)."""

@@ -84,3 +84,16 @@ def test_config_check_refuses_a_flag_of_a_capability_the_configuration_lacks(
     error = json.loads(capsys.readouterr().out)["error"]
     assert error["stage"] == "validation"
     assert "names no browser capability" in error["message"]
+
+
+def test_start_app_is_the_android_capabilitys_and_refused_for_a_run_without_one(capsys) -> None:
+    assert [flag.flag for flag in start_flags()["android"]] == ["--start-app"]
+    assert main(["config", "check", "--help"]) == 0
+    text = capsys.readouterr().out
+    assert "android start flags" in text and "--start-app" in text
+
+    argv = ["config", "check", str(BROWSER_CONFIG), "--json", "--start-app", "Settings"]
+    assert main(argv) == 2
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["stage"] == "validation"
+    assert "--start-app is a start flag of the android capability" in error["message"]
