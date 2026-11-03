@@ -841,7 +841,9 @@ benchmark:
 `--subset` (on `bench`, and on `run` with `--task-id`) is the one benchmark knob the
 command line sets: it is written into the selected block's task loader before the run is
 composed, so the resolved configuration, its `config_hash` and every run's identity record
-it as if the YAML had said it. For another data directory, copy the YAML and pass its path. Each benchmark is a package, `spectragent/benchmarks/<benchmark_id>/`,
+it as if the YAML had said it. For another data directory, copy the YAML and pass its path.
+`config check` / `config explain` take `--benchmark` alone too: the configuration and the
+benchmark are composed together and prepared with no task context. Each benchmark is a package, `spectragent/benchmarks/<benchmark_id>/`,
 imported only when a configuration names it. A branch sweep's tasks come from a branches
 YAML of the same shape (`benchmark_id: trace_branches`, see
 [Branching a recorded run](#branching-a-recorded-run)).

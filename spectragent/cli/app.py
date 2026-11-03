@@ -462,8 +462,8 @@ def create_app() -> typer.Typer:
         _checked(_output(ctx, json_output), inspect)
 
     benchmark_help = (
-        "A benchmark (shipped alias or benchmark YAML path) whose task --task-id selects; "
-        "composed with the configuration as a run composes it."
+        "A benchmark (shipped alias or benchmark YAML path), composed with the configuration "
+        "as a run composes it; alone, it prepares with no task context."
     )
     task_id_help = "Prepare with this task of --benchmark: its environment and loop inputs."
 

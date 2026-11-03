@@ -36,15 +36,17 @@ def explain_config(
     """Check *path* as a run composes and prepares it, without launching anything.
 
     *start* holds the given start flags (flag → value) of the run's
-    capabilities (§4.9 "起始参数"); *benchmark* and *task_id* select a task of a
-    benchmark instead, whose context the check prepares with.
+    capabilities (§4.9 "起始参数"), the context of a task written on the
+    command line. *benchmark* is composed with the configuration as ``bench``
+    composes it; alone, the check prepares with no task context, and with
+    *task_id* it prepares with that task's.
     """
-    if (benchmark is None) != (task_id is None):
-        raise ValueError("--benchmark and --task-id go together: they select one benchmark task")
-    if task_id is not None and start:
+    if task_id is not None and benchmark is None:
+        raise ValueError("--task-id selects a task of a benchmark: give --benchmark with it")
+    if benchmark is not None and start:
         raise ValueError(
-            f"{', '.join(start)}: a benchmark task's start comes from its benchmark; leave the "
-            f"start flags out with --task-id"
+            f"{', '.join(start)}: a benchmark's tasks start where the benchmark says; leave "
+            f"the start flags out with --benchmark"
         )
     with inspection_stage("yaml"):
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
