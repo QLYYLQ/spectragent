@@ -21,7 +21,7 @@ from typing import ClassVar
 from spectragent.benchmarks.androidworld import scoring
 from spectragent.benchmarks.androidworld.service import PINNED_COMMIT, AndroidWorldError
 from spectragent.benchmarks.androidworld.setup import AndroidWorldSetup
-from spectragent.core.capabilities.android.backends.base import AndroidProviderSession
+from spectragent.core.capabilities.android.backends.base import AndroidProviderSession, DeviceNeeds
 from spectragent.core.capabilities.android.benchmark_setup import AndroidBenchmarkSetup
 from spectragent.schemas.verdict import Judgment, VerifierIdentity
 from spectragent.verifiers._registrar import VerifierBase
@@ -41,6 +41,13 @@ class AndroidWorldVerifier(VerifierBase):
     @property
     def capability_id(self) -> str:
         return _ANDROID
+
+    @property
+    def device_needs(self) -> DeviceNeeds:
+        # AndroidWorld's check reads apps' databases and settings as root, through
+        # its service's connection to the emulator over its gRPC. Requirements
+        # only: the androidworld setup component boots the device with them.
+        return DeviceNeeds(emulator_grpc=True, root=True)
 
     def identity(self) -> VerifierIdentity:
         """AndroidWorld at the pinned commit its service runs; no setting of its changes a verdict."""

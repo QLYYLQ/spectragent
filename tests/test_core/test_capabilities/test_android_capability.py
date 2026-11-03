@@ -838,10 +838,16 @@ class _RecordingVerifier:
     calls: list[str] = field(default_factory=list)
     verifier_id: str = "recording_judge"
     needs: frozenset[VerifierNeed] = frozenset({"live_environment", "answer"})
+    #: What it requires of the device; the recording setup's device offers root and Wi-Fi.
+    needs_of_device: DeviceNeeds = field(default_factory=lambda: DeviceNeeds(root=True))
 
     @property
     def capability_id(self) -> str:
         return "android"
+
+    @property
+    def device_needs(self) -> DeviceNeeds:
+        return self.needs_of_device
 
     def identity(self) -> VerifierIdentity:
         return VerifierIdentity(verifier_id=self.verifier_id)
@@ -1126,6 +1132,43 @@ def test_prepare_refuses_a_device_the_provider_cannot_give_naming_setup_needs_an
     )
     assert "measured on macOS only" in message and "fresh: read_only is false" in message
     assert setup.calls == [], "the device comes first: the setup's own check never ran"
+
+
+def test_prepare_refuses_a_live_verifier_whose_needs_the_device_will_not_offer() -> None:
+    """The device boots with what the setup needs; a verifier's needs are checked, never added."""
+    setup = _RecordingSetup(needs=DeviceNeeds(root=True, guest_wifi=True))
+    verifier = _RecordingVerifier(needs_of_device=DeviceNeeds(emulator_grpc=True, root=True))
+    env = make_env(AndroidEnvironment, {"android#0": unset_capability()})
+
+    with pytest.raises(UnmetDeviceNeeds) as refused:
+        env.check_setup({"oracle_task": {"a": 1}}, setups=[setup], live_verifiers=[verifier])
+
+    assert str(refused.value) == (
+        "the live verifier 'recording_judge' needs emulator_grpc of the device, and this run's "
+        "device offers only what the benchmark setup 'recording' needs (root, guest_wifi): a "
+        "verifier states what it requires and never changes how the device boots"
+    )
+    assert setup.calls == [], "refused before the setup's own check"
+
+
+def test_without_a_setup_a_verifier_needing_more_than_adb_is_refused() -> None:
+    verifier = _RecordingVerifier(needs_of_device=DeviceNeeds(root=True))
+    with pytest.raises(
+        UnmetDeviceNeeds,
+        match="offers nothing beyond ADB, as no benchmark setup component asks for more",
+    ):
+        unset_capability().check_setup({}, live_verifiers=[verifier])
+
+
+def test_a_verifier_whose_needs_the_setup_already_asks_for_is_hosted(tmp_path: Path) -> None:
+    setup = _RecordingSetup(needs=DeviceNeeds(root=True, guest_wifi=True))
+    capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+
+    capability.check_setup(
+        {"oracle_task": {"a": 1}}, setup=setup, live_verifiers=[_RecordingVerifier()]
+    )
+
+    assert setup.calls == ["check_setup"]
 
 
 # ── the device side and its strategies ────────────────────────────────

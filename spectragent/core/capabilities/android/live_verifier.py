@@ -10,6 +10,12 @@ before the teardown, the capability hands it what it gives the benchmark's
 setup component: the booted device, and the setup component that prepared the
 task on it (:meth:`AndroidLiveVerifier.judge`). A verifier never ends the run
 and never changes it.
+
+What it needs of the device beyond ADB (:attr:`AndroidLiveVerifier.device_needs`)
+is a requirement, never a setting (``docs/architecture_design.md`` §4.10.1
+"capability 配置合并"): the device boots with what the setup component needs, and
+the capability refuses, in ``prepare()``, a verifier whose needs that device
+will not offer, naming the verifier and the needs.
 """
 
 from __future__ import annotations
@@ -17,7 +23,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from spectragent.core.capabilities.android.backends.base import AndroidProviderSession
+    from spectragent.core.capabilities.android.backends.base import (
+        AndroidProviderSession,
+        DeviceNeeds,
+    )
     from spectragent.core.capabilities.android.benchmark_setup import AndroidBenchmarkSetup
     from spectragent.schemas.verdict import Judgment
 
@@ -31,6 +40,11 @@ class AndroidLiveVerifier(Protocol):
 
     @property
     def capability_id(self) -> str: ...
+
+    @property
+    def device_needs(self) -> DeviceNeeds:
+        """What the device must offer beyond ADB for it to judge; only checked, never asked of the provider."""
+        ...
 
     async def judge(
         self,

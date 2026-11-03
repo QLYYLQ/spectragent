@@ -43,6 +43,7 @@ from spectragent.core.capabilities.android.backends.base import (
     DeviceNeeds,
     EmulatorAccess,
     EmulatorGrpc,
+    UnmetDeviceNeeds,
 )
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
 from spectragent.schemas.verdict import Judgment, Verdict, VerifierIdentity
@@ -1342,6 +1343,16 @@ def test_the_verifier_judges_live_on_the_answer_as_androidworld_at_its_commit() 
     )
     # The slug every run's verdict file is named by, before and after the verifier landed.
     assert verifier.identity().slug == "androidworld_44136fa3"
+
+
+def test_the_verifier_needs_of_the_device_only_what_the_setup_boots_it_with(root: Path) -> None:
+    """Requirements, checked in ``prepare()``: the androidworld setup's device meets them."""
+    verifier, setup = AndroidWorldVerifier(), _setup(root)
+    assert verifier.device_needs == DeviceNeeds(emulator_grpc=True, root=True)
+    assert set(verifier.device_needs.named()) <= set(setup.device_needs.named())
+    env = make_env(AndroidEnvironment, {"android": unset_capability()})
+    with pytest.raises(UnmetDeviceNeeds, match="'androidworld' needs emulator_grpc, root of the"):
+        env.check_setup({}, live_verifiers=[verifier])  # no setup: nothing beyond ADB
 
 
 # ── before anything starts: check_setup ──────────────────────────────

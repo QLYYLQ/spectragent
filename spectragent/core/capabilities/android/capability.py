@@ -645,19 +645,23 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         live_verifiers: Sequence[LiveVerifier] = (),
     ) -> None:
         """Refuse now what setup would: a device the provider cannot give the setup component or
-        the typing backend, the APK, then the task (``LiveVerifierHost``).
+        the typing backend, a live verifier the device will not serve, the APK, then the task
+        (``LiveVerifierHost``).
 
         *setup* is the benchmark setup component about to be bound, ``None``
         when the run's benchmark has none: then a task carrying data for one
         (``oracle_task``) is refused, as nothing would prepare it.
-        *live_verifiers* are the live verifiers about to be bound.
+        *live_verifiers* are the live verifiers about to be bound; each one's
+        device needs are requirements the device booted for *setup* must
+        already meet.
 
         Raises:
             TypeError: *setup* or a verifier is no component this capability
                 can host.
             UnmetDeviceNeeds: The provider cannot meet what the component
-                needs of the device; names the component, the needs and the
-                provider.
+                needs of the device (naming the component, the needs and the
+                provider), or a verifier needs what the device will not offer
+                (naming the verifier, the needs and what the device offers).
             TypingBackendUnsupported: The device's API level, as the provider
                 reads it from configuration, cannot run the typing backend.
             ServiceApkError: ``service_apk`` names no APK with a sidecar that
@@ -666,11 +670,16 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             ValueError: A task carrying ``oracle_task`` with no component.
             Exception: The component's own refusal of its installation or task.
         """
-        _judging(live_verifiers)
-        self._check(context, _hostable(setup))
+        self._check(context, _hostable(setup), _judging(live_verifiers))
 
-    def _check(self, context: Mapping[str, Any], setup: AndroidBenchmarkSetup | None) -> None:
-        """:meth:`check_setup` with *setup* already known to be a component this capability hosts."""
+    def _check(
+        self,
+        context: Mapping[str, Any],
+        setup: AndroidBenchmarkSetup | None,
+        verifiers: Sequence[AndroidLiveVerifier] = (),
+    ) -> None:
+        """:meth:`check_setup` with *setup* and *verifiers* already known to be components this
+        capability hosts."""
         try:  # setup refuses a capability without a backend or a typing backend itself
             backend: BaseAndroidProvider | None = self.backend
         except AttributeError:
@@ -694,6 +703,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 _check_typing(
                     typing_backend, level, f"the {backend.provider_id!r} provider's device"
                 )
+        _check_requirements(verifiers, setup)
         ServiceApk.load(self.service_apk)
         start_app = context.get("start_app")
         if start_app is not None and not (isinstance(start_app, str) and start_app.strip()):
@@ -750,7 +760,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._ui_tree, self._actions_since_tree = None, 0
         self._polled_package = self._acted_at = None
         self._launcher_apps = None
-        self._check({"oracle_task": oracle_task, "start_app": start_app}, component)
+        self._check(
+            {"oracle_task": oracle_task, "start_app": start_app}, component, self._live_verifiers
+        )
         self._archive = AndroidArchiveContext(trees=TreeStore())
         self._archive_sessions = [archiver.open(self._archive) for archiver in self._archivers]
         self._apk = apk = ServiceApk.load(self.service_apk)
@@ -1446,6 +1458,41 @@ def _hostable(setup: BenchmarkSetup | None) -> AndroidBenchmarkSetup | None:
         f"the benchmark setup {setup.setup_id!r} names the android capability as its host, and "
         f"it is no setup component the android capability can host (AndroidBenchmarkSetup)"
     )
+
+
+def _check_requirements(
+    verifiers: Sequence[AndroidLiveVerifier], setup: AndroidBenchmarkSetup | None
+) -> None:
+    """Refuse a live verifier whose device needs the run's device will not offer.
+
+    The device boots with what *setup* needs (nothing beyond ADB without one),
+    and a verifier only states what it requires (``docs/architecture_design.md``
+    §4.10.1 "capability 配置合并"), so its needs are never added to the boot.
+
+    Raises:
+        UnmetDeviceNeeds: Naming every verifier, what it needs and what the
+            device offers.
+    """
+    offered = DeviceNeeds() if setup is None else setup.device_needs
+    if setup is None:
+        source = "nothing beyond ADB, as no benchmark setup component asks for more"
+    else:
+        source = (
+            f"only what the benchmark setup {setup.setup_id!r} needs "
+            f"({', '.join(offered.named()) or 'nothing beyond ADB'})"
+        )
+    problems: list[str] = []
+    for verifier in verifiers:
+        missing = [need for need in verifier.device_needs.named() if need not in offered.named()]
+        if missing:
+            problems.append(
+                f"the live verifier {verifier.verifier_id!r} needs {', '.join(missing)} of the device"
+            )
+    if problems:
+        raise UnmetDeviceNeeds(
+            "; ".join(problems) + f", and this run's device offers {source}: a verifier states "
+            "what it requires and never changes how the device boots"
+        )
 
 
 def _judging(verifiers: Sequence[LiveVerifier]) -> tuple[AndroidLiveVerifier, ...]:
