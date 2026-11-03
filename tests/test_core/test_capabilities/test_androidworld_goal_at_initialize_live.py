@@ -262,9 +262,9 @@ async def test_a_miniwob_goal_made_on_the_page_reaches_the_agent_and_the_page_en
     assert ran.model_goals and set(ran.model_goals) == {made.text}, "every prompt had the goal"
     assert trace.result is not None and trace.result.task == made.text
 
-    (score,) = trace.oracle_scores()
-    assert (score.status, score.score) == ("scored", 1.0), score.detail
-    assert score.provenance["goal"] == made.text
+    (score,) = trace.verdicts().values()
+    assert (score.status, score.score) == ("judged", 1.0), score.detail
+    assert score.evidence["goal"] == made.text
     policy = [record for record in trace.step_records if record.origin == "policy"]
     over = [answer for _, answer, _ in ran.times.asked]
     assert over[-1] is True and len(over) == len(policy)
@@ -325,6 +325,6 @@ async def test_a_goal_whose_date_initialize_rewords_is_the_runs_text(tmp_path: P
     (call,) = model.calls
     said = _all_text(call)
     assert drawn["goal"] in said and listed.task_text not in said, "seeded with the reworded goal"
-    (score,) = trace.oracle_scores()
-    assert (score.status, score.score) == ("scored", 1.0), score.detail
+    (score,) = trace.verdicts().values()
+    assert (score.status, score.score) == ("judged", 1.0), score.detail
     print(f"{task}: listed {listed.task_text!r}; ran on {trace.task_text()!r}; score {score.score}")

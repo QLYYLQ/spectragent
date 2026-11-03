@@ -1,8 +1,9 @@
-"""The ``none`` task oracle: the device is not prepared, scored or ended for any benchmark.
+"""The ``none`` task oracle: the device is not prepared, judged or ended for any benchmark.
 
-The default. A run on it reads no score and leaves no scoring record
-(``docs/architecture_design.md`` §11.2). A task that carries data for an oracle
-is refused: it would run unprepared and unscored, and nothing would say so.
+The default. A run on it is not judged at the scoring point and leaves no
+verdict (``docs/architecture_design.md`` §11.2). A task that carries data for
+an oracle is refused: it would run unprepared and unjudged, and nothing would
+say so.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from spectragent.core.capabilities.android.oracle._registrar import (
     AndroidTaskOracleBase,
     OracleTask,
 )
-from spectragent.schemas.oracle_score import OracleReading
+from spectragent.schemas.verdict import Judgment, VerifierIdentity
 
 
 class NoTaskOracle(AndroidTaskOracleBase):
@@ -51,8 +52,11 @@ class NoTaskOracle(AndroidTaskOracleBase):
     async def episode_over(self) -> bool:
         return False
 
-    async def read_score(self, *, answer: str | None) -> OracleReading | None:
+    def identity(self) -> VerifierIdentity | None:
         return None
+
+    async def read_score(self, *, answer: str | None) -> Judgment:
+        raise RuntimeError("no task oracle judges this run: its identity is None")
 
     async def stop(self) -> None:
         return None

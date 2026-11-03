@@ -6,7 +6,7 @@ The family root is the key before its first dot: ``browser_use.dom`` and
 ``browser_use.dom_vision`` both read ``agents/browser_use/``, and an
 undotted key (``ui_tars``) is its own family (:func:`agent_prompt_dir`).
 
-The mirror of :mod:`spectragent.evaluator.prompts`, and for the same
+The mirror of :mod:`spectragent.verifiers.prompts`, and for the same
 reason. Before this module every agent carried its own
 ``_PROMPT_DIR = PROMPT_PATH / "browser" / "agents" / <name>`` constant: a
 literal path fragment repeated three times, naming a ``browser/`` domain
@@ -16,7 +16,7 @@ model family drives desktops and phones. Deriving the directory from
 ``self.__registry_key__`` deletes the constant, the domain segment, and
 the possibility of the two drifting.
 
-The one thing the evaluator tree does not have to solve is the engine
+The one thing the verifier tree does not have to solve is the engine
 split: ``browser_use`` and ``ui_tars`` templates are ``str.format``,
 ``skyvern``'s is Jinja2. The engine is **declared**
 (``AgentBase.__prompt_engine__``), never sniffed from the template text.

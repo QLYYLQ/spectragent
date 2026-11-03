@@ -95,10 +95,10 @@ def test_a_start_flag_reaches_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
     assert seen["config_path"] == Path("run.yaml") and seen["task_id"] is None
 
 
-def test_the_oracle_timeout_flag_reaches_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_verify_timeout_flag_reaches_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
     argv = ["--config", "run.yaml", "--task", "score it"]
-    assert _main_kwargs(monkeypatch, argv)["oracle_timeout"] == run_cli.ORACLE_TIMEOUT_S
-    assert _main_kwargs(monkeypatch, [*argv, "--oracle-timeout", "9"])["oracle_timeout"] == 9.0
+    assert _main_kwargs(monkeypatch, argv)["verify_timeout"] == run_cli.VERIFY_TIMEOUT_S
+    assert _main_kwargs(monkeypatch, [*argv, "--verify-timeout", "9"])["verify_timeout"] == 9.0
 
 
 @pytest.mark.parametrize(

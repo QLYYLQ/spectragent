@@ -15,11 +15,11 @@ the answer to AndroidWorld before it asks for the score
 is worked out under its own interpreter, for the same instance:
 
 - the expected answer scores 1, and the score says the answer was sent while
-  ``oracle_scores.json`` holds no answer text; ``result.json`` holds it;
+  the verdict holds no answer text; ``result.json`` holds it;
 - a wrong answer scores 0;
 - the expected answer with a stray double quote scores 1 too, as AndroidWorld's
   own runner scores it: the launcher keeps answers off the device's screen,
-  whose shell failed on the quote (HTTP 500, the run not scored).
+  whose shell failed on the quote (HTTP 500, the run not judged).
 """
 
 from __future__ import annotations
@@ -132,20 +132,20 @@ async def test_the_expected_answer_scores_1_and_its_text_stays_in_the_result(
 ) -> None:
     trace = await _run(listed, listed.expected, tmp_path)
 
-    (score,) = trace.oracle_scores()
-    assert (score.status, score.score) == ("scored", 1.0), score.detail
-    assert (score.provenance["task"], score.provenance["answer"]) == (TASK, "sent")
+    (score,) = trace.verdicts().values()
+    assert (score.status, score.score) == ("judged", 1.0), score.detail
+    assert (score.evidence["task"], score.evidence["answer"]) == (TASK, "sent")
     assert trace.result is not None and trace.result.answer == listed.expected
-    assert listed.expected not in (trace.trace_dir / "oracle_scores.json").read_text()
+    assert listed.expected not in (trace.trace_dir / "verdicts" / f"{score.slug}.json").read_text()
     print(f"{TASK}: answer {listed.expected!r} scored {score.score} in {score.duration_ms} ms")
 
 
 async def test_a_wrong_answer_scores_0(listed: Listed, tmp_path: Path) -> None:
     trace = await _run(listed, "Something else entirely", tmp_path)
 
-    (score,) = trace.oracle_scores()
-    assert (score.status, score.score) == ("scored", 0.0), score.detail
-    assert score.provenance["answer"] == "sent"
+    (score,) = trace.verdicts().values()
+    assert (score.status, score.score) == ("judged", 0.0), score.detail
+    assert score.evidence["answer"] == "sent"
     print(f"{TASK}: a wrong answer scored {score.score} in {score.duration_ms} ms")
 
 
@@ -155,6 +155,6 @@ async def test_an_answer_with_a_stray_double_quote_is_scored_as_androidworld_sco
     answer = listed.expected + '"'
     trace = await _run(listed, answer, tmp_path)
 
-    (score,) = trace.oracle_scores()
-    assert (score.status, score.score) == ("scored", 1.0), score.detail
+    (score,) = trace.verdicts().values()
+    assert (score.status, score.score) == ("judged", 1.0), score.detail
     print(f"{TASK}: answer {answer!r} scored {score.score} in {score.duration_ms} ms")

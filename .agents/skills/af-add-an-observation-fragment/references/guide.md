@@ -152,7 +152,7 @@ Three methods carry a fragment to the trace and back, all on `FragmentBase`
 - `from_trace(payload, artifact) -> Self` (classmethod) — the documented inverse
   of the two: rebuild the fragment from its sidecar (the parsed JSON) and the
   artifact bytes. It is what `RunTrace.observation_fragment` calls, so what an
-  evaluator reads back is the type that was written. The default validates the
+  offline verifier reads back is the type that was written. The default validates the
   sidecar and **refuses** an artifact rather than dropping it: bytes there mean
   the class overrode `trace_binary` without overriding `from_trace`, and the
   sidecar alone would read back as a fragment with its payload silently missing.
@@ -691,7 +691,7 @@ Two shipped examples:
 This is not optional polish. Silent truncation makes **"the page did not have
 it"** indistinguishable from **"we cut it"** — the lying-trace class of defect.
 `42 interactive elements` in a trace is ambiguous between "the page had 42" and
-"the page had 900 and the run paid for 42", and the evaluator reading it months
+"the page had 900 and the run paid for 42", and the verifier reading it months
 later cannot tell.
 
 So `DOMObs.budget: DOMBudgetReport | None` (`observations.py:440`), where

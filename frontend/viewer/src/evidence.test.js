@@ -5,6 +5,8 @@ import {
   restoredActionOutcome,
   trailingCallCount,
   verdictLabel,
+  verdictScore,
+  attachmentLabel,
   cursorLabel,
   historyExplanation,
   everywhereLabel,
@@ -131,23 +133,25 @@ test("policy and terminal action labels retain their own meaning", () => {
   );
 });
 
-test("synthetic evaluation outcomes never become measured task failures", () => {
-  assert.equal(
-    verdictLabel({ verdict_source: "evaluation_error", predicted_label: 0 }),
-    "evaluation_error",
-  );
-  assert.equal(
-    verdictLabel({ verdict_source: "not_evaluated", predicted_label: 0 }),
-    "not_evaluated",
-  );
-  assert.equal(
-    verdictLabel({ verdict_source: "graded", predicted_label: 0 }),
-    "failure",
-  );
-  assert.equal(
-    verdictLabel({ verdict_source: "graded", predicted_label: 1 }),
-    "success",
-  );
+test("a verdict that judged nothing, or found only a score, never reads as a failed task", () => {
+  for (const reason of ["timeout", "error"]) {
+    const nothing = { status: "not_judged", reason, label: null, score: null };
+    assert.equal(verdictLabel(nothing), "not_judged");
+    assert.equal(verdictScore(nothing), null);
+  }
+  const scored = { status: "judged", label: null, score: 0.5 };
+  assert.equal(verdictLabel(scored), null);
+  assert.equal(verdictScore(scored), "分数 0.5");
+  assert.equal(verdictScore({ ...scored, score: 0 }), "分数 0");
+});
+
+test("a judged label is a pass or a fail, shown beside its score when it has one", () => {
+  assert.equal(verdictLabel({ status: "judged", label: 0, score: null }), "failure");
+  const both = { status: "judged", label: 1, score: 85 };
+  assert.equal(verdictLabel(both), "success");
+  assert.equal(verdictScore(both), "分数 85");
+  assert.equal(attachmentLabel("live"), "活体判分");
+  assert.equal(attachmentLabel("offline"), "离线判分");
 });
 
 test("trailing call counts respect channel selection and preserve measured zero", () => {

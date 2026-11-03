@@ -21,9 +21,10 @@ exporter:
       agent_outcome: any             # done | max_steps | error | timeout | vetoed (the run's result.json);
                                      # an exported step is always one its trace is closed and complete through
       # null: no verdict filter, so a run the teacher failed is exported too
-      # (each sample still carries labels.step_status and any verdicts, so a
-      # trainer can filter later). Example: { evaluator_id: online_mind2web,
-      # label: 1, slug: null } keeps only runs that evaluator graded 1.
+      # (each sample still carries labels.step_status and labels.verdicts, every
+      # judged verdict in its run's verdicts/, so a trainer can filter later).
+      # Example: { verifier_id: online_mind2web, label: 1, slug: null } keeps
+      # only runs that verifier judged 1 (slug pins one verifier's settings).
       require_eval: null
       exclude_restoration_diverged: true
       max_document_misses: 0         # unlimited: no replay-log filter

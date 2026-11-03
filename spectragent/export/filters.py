@@ -154,11 +154,11 @@ def filtered_out(
     if outcome is not None:
         return outcome
     need = filters.require_eval
-    if need is not None and not need.satisfied_by(origin.trace.evals()):
+    if need is not None and not need.satisfied_by(origin.trace.verdicts()):
         whose = f"its source run {origin.rel}" if origin is not source else "it"
         pinned = f", slug {need.slug!r}" if need.slug is not None else ""
         return (
-            f"{whose} has no graded verdict from {need.evaluator_id!r} with predicted_label "
+            f"{whose} has no judged verdict from {need.verifier_id!r} with label "
             f"{need.label}{pinned} (require_eval)"
         )
     if filters.exclude_restoration_diverged:

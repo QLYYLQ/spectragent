@@ -702,8 +702,8 @@ capture. **Do not hold a lock across a resolve, and do not assume you are alone.
 capabilities are sampled concurrently, one observation holds samples taken at different
 instants. Wall clock, not `perf_counter`, so it is comparable to `StepRecord.timestamp`
 (`schemas/observation/_registrar.py:116-127`). Without it the skew is invisible at runtime
-*and* absent from the trace, and an evaluator replaying the run cannot tell how far apart
-the halves were.
+*and* absent from the trace, and an offline verifier reading the run cannot tell how far
+apart the halves were.
 
 **`__invalidated_by_foreign_actions__` defaults to `False`** (`_registrar.py:101`,
 `base.py:34-48`). Capabilities are independent worlds: a `browser.click` does not change

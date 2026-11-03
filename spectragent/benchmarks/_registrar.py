@@ -1,18 +1,23 @@
 """The benchmark registry: one registered component per benchmark (``docs/architecture_design.md`` §4.10.1).
 
-A benchmark owns where its tasks come from: its task loader, and the eval
-loader that gives verdicts their reference answers. Both are written inside
-its block, never as top-level sections, and a benchmark YAML holds that one
-block under ``benchmark:``. A run selects it with ``--benchmark <alias|path>``;
-the run configuration never holds one (:mod:`spectragent.benchmarks.selection`).
+A benchmark owns where its tasks come from — its task loader, and the eval
+loader that gives verdicts their reference answers — the verifiers that judge
+its runs, and which of their verdicts is its brief result: its primary verdict
+and success rule (§4.10.1 "主判定"). All are written inside its block, or
+declared by its class, never as top-level
+sections, and a benchmark YAML holds that one block under ``benchmark:``. A
+run selects it with ``--benchmark <alias|path>``; the run configuration never
+holds one (:mod:`spectragent.benchmarks.selection`).
 
 Each benchmark is a class in its own package, ``spectragent/benchmarks/<benchmark_id>/``,
 imported only when a configuration names it (§4.2.1), and writes its complete
-``__wiring__``: the task loader keys, and the eval loader keys, it takes.
+``__wiring__``: the task loader keys, the eval loader keys and the verifier
+kinds it takes. A verifier of its own lives in its package too.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from conscribe import create_registrar
@@ -21,6 +26,10 @@ from spectragent.core.data_loader.eval._registrar import EvalLoaderBase, EvalLoa
 from spectragent.core.data_loader.eval.base import BaseEvalLoader
 from spectragent.core.data_loader.task._registrar import TaskLoaderBase
 from spectragent.core.data_loader.task.base import BaseTaskLoader
+from spectragent.schemas.agent_result import AgentResult
+from spectragent.schemas.verdict import Verdict
+from spectragent.verifiers._registrar import VerifierBase
+from spectragent.verifiers.base import OfflineVerifier, attachment_of
 
 
 @runtime_checkable
@@ -37,6 +46,23 @@ class Benchmark(Protocol):
         """The reference data its verdicts are scored against, or ``None`` when it has none."""
         ...
 
+    def offline_verifiers(self) -> list[OfflineVerifier]:
+        """Its verifiers that judge a run from the recorded trace, in the order its block lists them."""
+        ...
+
+    @property
+    def primary_verifier(self) -> str | None:
+        """The verifier kind whose verdict is its brief result; ``None`` when it declares none."""
+        ...
+
+    def primary_verdict(self, verdicts: Mapping[str, Verdict]) -> Verdict | None:
+        """Its primary verdict among a run's *verdicts* (slug → verdict); ``None`` when there is none."""
+        ...
+
+    def success(self, verdict: Verdict, result: AgentResult | None) -> float | None:
+        """Its success rule: how far the run succeeded by its primary *verdict*, from 0 to 1."""
+        ...
+
 
 BenchmarkRegistrar = create_registrar(
     "benchmark",
@@ -46,32 +72,49 @@ BenchmarkRegistrar = create_registrar(
 
 
 class BenchmarkBase(metaclass=BenchmarkRegistrar.Meta):
-    """Common base of every benchmark: its task loader and, optionally, its eval loader.
+    """Common base of every benchmark: its task loader, its eval loader and its verifiers.
 
     A concrete benchmark sets ``__registry_key__`` and writes its complete
-    ``__wiring__``, naming the task loader key it takes and, when it has
-    reference data, the eval loader key. ``task_loader`` is required: the
-    block says where the tasks come from and with which knobs (``subset``,
-    ``data_dir``). ``eval_loader`` may be left out (:meth:`reference_loader`).
+    ``__wiring__``, naming the task loader key it takes, the eval loader key
+    when it has reference data, and the verifier kinds that can judge its
+    runs. ``task_loader`` is required: the block says where the tasks come
+    from and with which knobs (``subset``, ``data_dir``). ``eval_loader`` may
+    be left out (:meth:`reference_loader`), and so may ``verifiers``: none
+    judges its runs then. A verifier writes no setting of the run, so its
+    block is never part of the run's configuration identity
+    (``docs/architecture_design.md`` §5.3 "实验身份").
     """
 
     __abstract__ = True
     #: The ``benchmark_id`` this benchmark registers under.
     __registry_key__: ClassVar[str]
     __wiring__: ClassVar[dict[str, Any]] = {}
+    #: The verifier kind whose verdict is its brief result, its primary verdict
+    #: (§4.10.1 "主判定"); ``None``: it declares none. Every verdict is kept;
+    #: this only says which one a summary reports.
+    __primary_verifier__: ClassVar[str | None] = None
 
     # Receptors, annotation only: conscribe installs a ``WiredField`` and the
     # Composer injects the configured instances. ``__init__`` sets the eval
     # loader's in-Python default.
     task_loader: TaskLoaderBase
     eval_loader: EvalLoaderBase | None
+    # Optional in the schema: a block that leaves it out lists none. Never
+    # ``None`` on an instance: ``__init__`` sets ``[]``, and the Composer
+    # replaces it only with the verifiers a block lists.
+    verifiers: list[VerifierBase] | None
 
     def __init__(self) -> None:
         self.eval_loader = None
+        self.verifiers = []
 
     @property
     def benchmark_id(self) -> str:
         return self.__registry_key__
+
+    @property
+    def primary_verifier(self) -> str | None:
+        return type(self).__primary_verifier__
 
     def reference_loader(self) -> EvalLoaderBase | None:
         """The reference data this benchmark's verdicts are scored against.
@@ -90,6 +133,51 @@ class BenchmarkBase(metaclass=BenchmarkRegistrar.Meta):
         tasks = self.task_loader
         loader_cls = EvalLoaderRegistrar.get_or_none(tasks.benchmark_name)
         return None if loader_cls is None else loader_cls(subset=tasks.subset)
+
+    def offline_verifiers(self) -> list[OfflineVerifier]:
+        """Its verifiers attached offline (needing no live environment), in its block's order.
+
+        They judge its runs from the committed traces: after a sweep
+        (``spectragent bench``) or any time later (``spectragent eval``).
+        """
+        return [
+            verifier
+            for verifier in self.verifiers or []
+            if attachment_of(verifier) == "offline" and isinstance(verifier, OfflineVerifier)
+        ]
+
+    def primary_verdict(self, verdicts: Mapping[str, Verdict]) -> Verdict | None:
+        """Its primary verdict among a run's *verdicts* (slug → verdict); ``None`` when there is none.
+
+        The verdict of the first verifier its block lists of its primary kind
+        (``__primary_verifier__``); when the block lists none of that kind,
+        the run's one live verdict of that kind, judged at the scoring point.
+        """
+        kind = self.primary_verifier
+        if kind is None:
+            return None
+        listed = [v.identity().slug for v in self.verifiers or [] if v.verifier_id == kind]
+        if listed:
+            return verdicts.get(listed[0])
+        live = [
+            verdict
+            for verdict in verdicts.values()
+            if verdict.verifier.verifier_id == kind and verdict.attachment == "live"
+        ]
+        return live[0] if len(live) == 1 else None
+
+    def success(self, verdict: Verdict, result: AgentResult | None) -> float | None:
+        """Its success rule: how far the run succeeded by its primary *verdict*, from 0 to 1.
+
+        ``None`` when the verdict judged nothing, which is never a failed
+        task. The default reads the verdict's label: 1 passed, 0 failed. A
+        benchmark whose primary verifier gives a score, or whose own runner
+        counts the agent's ending too, states its own rule; *result* is the
+        run's ``result.json``, ``None`` when the run wrote none.
+        """
+        if verdict.status != "judged" or verdict.label is None:
+            return None
+        return float(verdict.label)
 
 
 __all__ = ["Benchmark", "BenchmarkBase", "BenchmarkRegistrar"]

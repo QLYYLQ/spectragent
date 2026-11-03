@@ -55,10 +55,10 @@ from spectragent.core.trace.models import (
     recorded_prefix,
 )
 from spectragent.core.trace.redaction import redact_config, trace_safe
+from spectragent.core.trace.verdicts import write_verdict
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas.agent_result import AgentUsage
 from spectragent.schemas.config_source import ConfigSource
-from spectragent.schemas.oracle_score import OracleScore
 from spectragent.schemas.recording import (
     ExecutionError,
     RecordingHealth,
@@ -69,6 +69,7 @@ from spectragent.schemas.recording import (
 from spectragent.schemas.restoration import BranchProvenance
 from spectragent.schemas.step_record import ActionSpan, StepRecord, TokenUsage
 from spectragent.schemas.task import SetupTaskText
+from spectragent.schemas.verdict import Verdict
 
 logger = logging.getLogger(__name__)
 _RunVersions = dict[str, tuple[int, str, int]]
@@ -138,7 +139,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
     __intercepts__ = [
         Intercept("ainvoke", role="llm", advice="around"),
         Intercept("act", role="env", advice="around"),
-        Intercept("read_oracle_scores", role="env", advice="after"),
+        Intercept("verify_live", role="env", advice="after"),
         Intercept("task_text_from_setup", role="env", advice="after"),
         Intercept("execute_step", role="loop", advice="around"),
         Intercept("observe_terminal", role="loop", advice="around"),
@@ -259,7 +260,8 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         self._archive_keys: frozenset[str] = frozenset()
         self._archive_owners: frozenset[str] = frozenset()
         self._collections = 0
-        self._oracle_scores: list[OracleScore] = []
+        #: The scoring point's verdicts, until the close-out writes them.
+        self._live_verdicts: list[Verdict] = []
         #: The task text setup completed, until the worker commits it.
         self._pending_task_text: SetupTaskText | None = None
         self._storage: RecordingStorage | None = None
@@ -280,7 +282,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
 
         The ``EnvironmentInterceptor`` declaration. An env-less run executes no
         action, so its measured steps carry ``action_spans == []``, and it has
-        no task oracle to score with and no setup to complete its task text:
+        no environment to judge live and no setup to complete its task text:
         no ``env`` interception could ever fire.
         """
         intercepts = [item for item in type(self).__intercepts__ if present or item.role != "env"]
@@ -505,19 +507,24 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                 except Exception as exc:
                     self._problem(step, "timing", "capture", exc)
 
-    async def after_read_oracle_scores(
+    async def after_verify_live(
         self, result: Any, *, args: tuple, kwargs: dict, **ctx: Any
     ) -> None:
-        """Keep the scores the scoring point read; the close-out commits them before ``result.json``.
+        """Keep the scoring point's verdicts; the close-out writes them before ``result.json``.
 
-        Whatever the recording plan selects: the record is small and evaluation
-        depends on it (``docs/architecture_design.md`` §5.3 "判分记录"). Never
-        raises into the scoring point; a fault is an ``oracle_scores`` problem.
+        Whatever the recording plan selects: a live verdict cannot be had
+        again once the environment is torn down (``docs/architecture_design.md``
+        §5.3 "判定统一存放"). Never raises into the scoring point; a fault is a
+        ``verdicts`` problem.
         """
         try:
-            self._oracle_scores = list(result)
+            verdicts = list(result)
+            for verdict in verdicts:
+                if not isinstance(verdict, Verdict):
+                    raise TypeError(f"verify_live() returned a {type(verdict).__name__}")
+            self._live_verdicts = verdicts
         except Exception as exc:
-            self._problem(None, "oracle_scores", "capture", exc)
+            self._problem(None, "verdicts", "capture", exc)
 
     async def after_task_text_from_setup(
         self, result: Any, *, args: tuple, kwargs: dict, **ctx: Any
@@ -1038,13 +1045,15 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         # right after setup) goes first, as it would have before step 0.
         await self._commit_task_text()
         wal = self.wal
-        # The scores first: committed before ``result.json``, and early enough
-        # that the result's recording health says whether they were.
-        if self._oracle_scores and wal is not None and wal.manifest is not None:
-            try:
-                await self._offload(wal.commit_oracle_scores, self._oracle_scores)
-            except Exception as exc:
-                self._problem(None, "oracle_scores", "closeout", exc)
+        # The live verdicts first: into the run's verdict store, outside the
+        # manifest, before ``result.json``, and early enough that the result's
+        # recording health says whether each was written.
+        if wal is not None and wal.manifest is not None:
+            for verdict in self._live_verdicts:
+                try:
+                    await self._offload(write_verdict, wal.run_dir, verdict)
+                except Exception as exc:
+                    self._problem(None, "verdicts", "closeout", exc)
         self._refresh_health()
         self._enrich_result()
         if wal is None or wal.manifest is None:

@@ -19,7 +19,7 @@ trace stay on the machine that recorded them and are not searched (arch §5.6).
 
 **Every number has its denominator.** A ratio over nothing is ``null`` with
 the reason, never ``0`` — "not measured" must not read as "measured zero"
-(the ``evaluator/summary.py`` rule). A percentile of no values raises. A
+(the ``verifiers/report.py`` rule). A percentile of no values raises. A
 measure that skips a run's damaged evidence says so in its ``skipped``, and
 every measure a recommendation rests on counts the distinct ``sites`` its data
 came from: the report's breadth rule reads it.
@@ -169,9 +169,9 @@ class ChainLayout:
 
     ``traces/{record,control,same_path,branch}/``, ``datasets/{first,second}/``,
     ``report/{report.json,report.md}``, ``configs/<stage>.yaml`` (the
-    configuration each stage actually ran), ``evals/<stage>/`` (verdicts of
-    a stage that evaluates) and ``chain.json`` (provenance; nothing in the
-    report reads it).
+    configuration each stage actually ran) and ``chain.json`` (provenance;
+    nothing in the report reads it). A stage that evaluates keeps each
+    verdict in its run's own store, under ``traces/<stage>/``.
     """
 
     root: Path
@@ -197,9 +197,6 @@ class ChainLayout:
     @property
     def configs_dir(self) -> Path:
         return self.root / "configs"
-
-    def evals(self, stage: str) -> Path:
-        return self.root / "evals" / stage
 
     @property
     def chain_record(self) -> Path:
@@ -2091,7 +2088,6 @@ _CATEGORY_OF_KIND: dict[str, str] = {
     "manifest": "run",
     "config": "run",
     "result": "run",
-    "oracle_scores": "run",
     "task_text": "run",
     "step": "steps",
     "extra_index": "steps",

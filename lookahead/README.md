@@ -126,8 +126,9 @@ record their actual values and the source commit, rules and learned-file digests
 source browser was Chrome 143, pinned UTC/en-US with host-default zh-CN, cursor off and a
 1280×720 window. These facts differ from the next-round choices. Do not apply the new
 browser identity to an old archive; derive an old-run branch configuration from that source's
-own recorded settings. Existing v7 history, frames and thinking remain reviewable without
-re-recording.
+own recorded settings. The 10/25 sources are trace format 7, and the current reader opens
+format 8 only: their history, frames and thinking stay reviewable with the version that
+wrote them, and using one here (viewer, branching, export, judging) means recording it again.
 
 For the same ten-site task set, preserve the explicit eight seeded sites and two fresh sites
 (Tonghuashun and Steam). `All` describes the public task dataset, not an anonymous browser.
@@ -174,16 +175,17 @@ OPENAI_API_KEY="$LOOKAHEAD_JUDGE_API_KEY" uv run python -m lookahead variants \
   --steps-per-run 2 --per-step 2 --judge-config "$ROUND_DIR/configs/judge_deepseek.yaml" \
   --out "$ROUND_DIR/variants/variants.json"
 # Each arm's tasks come from its branches YAML; the two variant arms share one, so they
-# share a task list, and the same-task forks have their own.
+# share a task list, and the same-task forks have their own. A branch sweep lists no
+# verifier, so it judges nothing and needs no --no-eval.
 tasks_of() { case "$1" in branch_same_task) echo branches_same_task ;; *) echo branches_task_variants ;; esac; }
 for arm in branch_same_task branch_task_variants branch_task_variants_without_source_thoughts; do
   uv run spectragent bench --config "$ROUND_DIR/configs/$arm.yaml" \
-    --benchmark "$ROUND_DIR/configs/$(tasks_of "$arm").yaml" --no-eval --list \
+    --benchmark "$ROUND_DIR/configs/$(tasks_of "$arm").yaml" --list \
     > "$ROUND_DIR/logs/$arm-list.txt"
 done
 for arm in branch_same_task branch_task_variants branch_task_variants_without_source_thoughts; do
   uv run spectragent bench --config "$ROUND_DIR/configs/$arm.yaml" \
-    --benchmark "$ROUND_DIR/configs/$(tasks_of "$arm").yaml" --no-eval --timeout 1500 \
+    --benchmark "$ROUND_DIR/configs/$(tasks_of "$arm").yaml" --timeout 1500 \
     --session-dir "$ROUND_DIR/sessions/$arm" > "$ROUND_DIR/logs/$arm.log" 2>&1
 done
 

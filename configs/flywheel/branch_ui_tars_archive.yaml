@@ -8,15 +8,16 @@
 # (replay_ui_tars_archive.yaml). Run a sweep:
 #
 #   spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
-#     --benchmark configs/flywheel/branches_all_steps.yaml --no-eval
+#     --benchmark configs/flywheel/branches_all_steps.yaml
 #
 # The tasks come from the branches YAML (branches_all_steps.yaml, the
 # trace_branches task loader) — one per selected step of every recorded run
 # under its data_dir, id <source_run_id>/s<t>/b<i>. Each task's context carries
 # the source's setup (start_url), replay_archive (the source run directory) and
-# the checkpoint; no start flag is needed. There is no eval loader for branch
-# tasks yet, so pass --no-eval (a configured evaluator is refused before
-# anything runs). docs/architecture_design.md §4.1 BranchLoop, §4.10
+# the checkpoint; no start flag is needed. A branch sweep lists no verifier, so
+# it judges nothing and needs no --no-eval; a branch run is judged afterwards
+# with spectragent eval, against its source task's reference.
+# docs/architecture_design.md §4.1 BranchLoop, §4.10
 # trace_branches, §4.10.1, §4.14 "恢复：重定位与校验"; configs/README.md.
 #
 # What changes against the recording:

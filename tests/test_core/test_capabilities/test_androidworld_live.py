@@ -16,7 +16,7 @@ its cached forwarder; ``docs/architecture_design.md`` §11.2), and
 - our accessibility service is bound beside AndroidWorld's forwarder, which
   AndroidWorld's service wrote over the setting when it started;
 - the unsolved task scores 0 and, once the brightness is set over adb, 1, with
-  the oracle's version and the task in the score's provenance;
+  the oracle's version in the verdict's identity and the task in its evidence;
 - teardown leaves no service, emulator or adb server, and nothing listens on
   adb's default port 5037 that did not before.
 """
@@ -40,7 +40,7 @@ from spectragent.core.capabilities.android.oracle.androidworld import (
     AndroidWorldOracle,
 )
 from spectragent.core.data_loader.task import AndroidWorldTaskLoader
-from spectragent.schemas.oracle_score import OracleScore
+from spectragent.schemas.verdict import Verdict
 from tests._helpers.android_runs import (
     FORWARDER,
     androidworld_capability,
@@ -76,7 +76,7 @@ class Prepared:
     service: dict[str, int]
     emulator_group: int
     listening_on_5037: bool
-    scores: list[OracleScore]
+    scores: list[Verdict]
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
@@ -131,15 +131,15 @@ async def test_our_service_is_bound_beside_androidworlds_forwarder(prepared: Pre
 
 
 async def test_the_task_scores_0_unsolved_and_1_once_solved(prepared: Prepared) -> None:
-    (unsolved,) = await prepared.env.read_oracle_scores(timeout_s=60, answer=None)
+    (unsolved,) = await prepared.env.verify_live(timeout_s=60, answer=None)
     await _shell(prepared, "settings put system screen_brightness 255")
-    (solved,) = await prepared.env.read_oracle_scores(timeout_s=60, answer=None)
+    (solved,) = await prepared.env.verify_live(timeout_s=60, answer=None)
     prepared.scores += [unsolved, solved]
 
-    assert (unsolved.status, unsolved.score) == ("scored", 0.0), unsolved.detail
-    assert (solved.status, solved.score) == ("scored", 1.0), solved.detail
-    assert solved.oracle == "androidworld" and solved.oracle_version == PINNED_COMMIT
-    assert {key: solved.provenance[key] for key in ("family", "task", "index")} == {
+    assert (unsolved.status, unsolved.score) == ("judged", 0.0), unsolved.detail
+    assert (solved.status, solved.score) == ("judged", 1.0), solved.detail
+    assert (solved.verifier.verifier_id, solved.verifier.version) == ("androidworld", PINNED_COMMIT)
+    assert {key: solved.evidence[key] for key in ("family", "task", "index")} == {
         "family": "android",
         "task": TASK,
         "index": "0",

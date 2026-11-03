@@ -213,10 +213,9 @@ const STATUS_LABELS = {
   score: "评分",
   noul: "是非概率",
   box: "框选区域",
-  // Evaluation verdict sources
-  graded: "已评分",
-  not_evaluated: "未评测",
-  evaluation_error: "评测出错",
+  // Whether a verifier judged (a not-judged reason is timeout or error)
+  judged: "已判定",
+  not_judged: "未判定",
   // Replay review items
   assessed: "已评估",
   missing_source: "缺少原始记录",

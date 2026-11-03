@@ -87,7 +87,7 @@ class TestRuntimeDataShips:
         """
         for relative in (
             "prompts/agents/browser_use/system_prompt.md",
-            "prompts/evaluators/browsecomp/grader_user.txt",
+            "prompts/verifiers/browsecomp/grader_user.txt",
         ):
             source = PACKAGE_ROOT / relative
             assert source.is_file(), f"{relative} moved; update this gate"

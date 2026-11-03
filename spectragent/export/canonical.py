@@ -88,7 +88,7 @@ def canonicalise(
             none.
         teacher_cls: The teacher agent's class (``AgentRegistrar`` under
             the trace's ``agent_id``); needed for ``thought_source: teacher``.
-        verdicts_from: Whose ``evals/`` label the samples: *trace* itself by
+        verdicts_from: Whose verdicts label the samples: *trace* itself by
             default; a branch run's source run (the caller resolves it —
             branch runs carry no verdicts of their own in v1).
 
@@ -221,11 +221,12 @@ def _verdicts(trace: RunTrace) -> list[VerdictLabel]:
     return [
         VerdictLabel(
             verdict_slug=slug,
-            evaluator_id=verdict.evaluator_id,
-            predicted_label=verdict.predicted_label,
+            verifier_id=verdict.verifier.verifier_id,
+            label=verdict.label,
+            score=verdict.score,
         )
-        for slug, verdict in trace.evals().items()
-        if verdict.verdict_source == "graded"
+        for slug, verdict in trace.verdicts().items()
+        if verdict.status == "judged"
     ]
 
 

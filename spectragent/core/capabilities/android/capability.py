@@ -194,7 +194,7 @@ from spectragent.core.trace.redaction import trace_safe
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.capture_state import SettleState
-from spectragent.schemas.oracle_score import OracleReading
+from spectragent.schemas.verdict import Judgment, VerifierIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -762,8 +762,12 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 if session is not None:
                     await self._backend().close(session)
 
-    async def read_score(self, *, answer: str | None) -> OracleReading | None:
-        """The task oracle's score, given the run's *answer*; ``None`` with ``none`` (``TaskOracle``)."""
+    def oracle_identity(self) -> VerifierIdentity | None:
+        """Who the task oracle judges as; ``None`` with ``none``, which judges nothing (``TaskOracle``)."""
+        return self.task_oracle.identity()
+
+    async def read_score(self, *, answer: str | None) -> Judgment:
+        """The task oracle's judgment, given the run's *answer* (``TaskOracle``)."""
         return await self.task_oracle.read_score(answer=answer)
 
     def sets_task_text(self, context: Mapping[str, Any]) -> bool:

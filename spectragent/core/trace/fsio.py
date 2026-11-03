@@ -1,4 +1,4 @@
-"""Durable file primitives shared by the WAL and the evaluator.
+"""Durable file primitives shared by the WAL and the verdict store.
 
 Three operations, and the split between them is the point:
 
@@ -12,7 +12,7 @@ Three operations, and the split between them is the point:
   can sit in the page cache — so a commit point that skipped this would
   only be crash-consistent, not crash-durable.
 - :func:`atomic_write` is the single-file composition of the two, for files
-  that commit on their own (``manifest.json``, ``result.json``, ``evals/``).
+  that commit on their own (``manifest.json``, ``result.json``, ``verdicts/``).
   It is the one public atomic-write helper. (``config.json`` is not one of
   them: ``WALWriter.init_run`` writes it with :func:`write_durable`, creates
   the run's subdirectories, and ``fsync``-s the run directory and the parent

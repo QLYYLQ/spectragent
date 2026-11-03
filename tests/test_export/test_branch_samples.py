@@ -25,9 +25,9 @@ from tests._helpers.export_traces import (
     ui_tars_step,
     write_ui_tars_run,
 )
-from tests._helpers.trace_builder import eval_result
+from tests._helpers.trace_builder import verdict
 
-PASSED = {"judge": eval_result(evaluator_id="online_mind2web", predicted_label=1)}
+PASSED = [verdict("online_mind2web", label=1)]
 TERMINAL = screenshot(color=99)
 
 
@@ -136,8 +136,10 @@ def test_metadata_and_terminal_ref(composer: ConfigComposer, tmp_path: Path) -> 
     }
     assert samples["src-s1-b2/s1"]["branch"]["terminal_step"] is None
     assert samples["src/s0"]["branch"] is None
-    # Labelled by the source run's verdicts (a branch run has no evals of its own).
-    assert [v["verdict_slug"] for v in samples["src-s1-b1/s2"]["labels"]["verdicts"]] == ["judge"]
+    # Labelled by the source run's verdicts (a branch run has none of its own).
+    assert [v["verdict_slug"] for v in samples["src-s1-b1/s2"]["labels"]["verdicts"]] == [
+        PASSED[0].slug
+    ]
 
 
 def test_duplicates_flagged_not_removed(composer: ConfigComposer, tmp_path: Path) -> None:
@@ -169,7 +171,7 @@ def test_require_eval_reads_source_run(composer: ConfigComposer, tmp_path: Path)
         tmp_path / "src",
         "bad",
         [ui_tars_step(click_at(1, 1)), ui_tars_step(click_at(2, 2))],
-        verdicts={"judge": eval_result(evaluator_id="online_mind2web", predicted_label=0)},
+        verdicts=[verdict("online_mind2web", label=0)],
         task_id="task-002",
     )
     write_ui_tars_run(
@@ -187,7 +189,7 @@ def test_require_eval_reads_source_run(composer: ConfigComposer, tmp_path: Path)
         tmp_path / "src",
         tmp_path / "out",
         filters={
-            "require_eval": {"evaluator_id": "online_mind2web"},
+            "require_eval": {"verifier_id": "online_mind2web"},
             "max_document_misses": "unlimited",
         },
     )
@@ -195,12 +197,10 @@ def test_require_eval_reads_source_run(composer: ConfigComposer, tmp_path: Path)
     exported = [s.path for s in report.manifest.sources.exported]
     assert exported == ["src", "src-s1-b0", "src-s1-b1", "src-s1-b2"]
     assert report.manifest.sources.filtered == {
-        "bad": (
-            "it has no graded verdict from 'online_mind2web' with predicted_label 1 (require_eval)"
-        ),
+        "bad": ("it has no judged verdict from 'online_mind2web' with label 1 (require_eval)"),
         "bad-s1-b0": (
-            "its source run bad has no graded verdict from 'online_mind2web' with "
-            "predicted_label 1 (require_eval)"
+            "its source run bad has no judged verdict from 'online_mind2web' with "
+            "label 1 (require_eval)"
         ),
     }
 

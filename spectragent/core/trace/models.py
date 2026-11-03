@@ -52,10 +52,13 @@ from spectragent.schemas.restoration import BranchProvenance
 #: Format 7 records each step's coordinate frame (``StepRecord.frame``: the grid
 #: the step's reply wrote points on, over the screenshot it showed) and the
 #: run's framed action space (``ActionSpace.coordinate_space``); a format-6
-#: step leaves the grid of its reply unsaid. A format-2
+#: step leaves the grid of its reply unsaid. Format 8 keeps no verdict in the
+#: manifest: the scoring point's verdicts, like every other, are in the run's
+#: verdict store (``verdicts/``, outside the manifest), and a format-7 manifest
+#: may point to an ``oracle_scores.json`` no reader reads. A format-2
 #: ``error`` meant either outcome, and a format-3 call record holds its
 #: images inline: ``RunTrace`` refuses every version but this one.
-TRACE_FORMAT_VERSION = 7
+TRACE_FORMAT_VERSION = 8
 
 
 class TraceStatus(StrEnum):
@@ -190,10 +193,6 @@ class TraceManifest(BaseModel):
     #: :class:`PromptImageRef` names one of these; an image it names that is
     #: not listed here was never committed.
     prompt_images: list[str] = Field(default_factory=list)
-    #: ``oracle_scores.json``, the task oracles' scores, committed before
-    #: ``result.json``; ``None`` when there is no such record (no oracle scored
-    #: the task, or the run never reached the scoring point).
-    oracle_scores: str | None = None
     #: ``task_text.json``, the task text a capability's setup completed
     #: (``SetupTaskText``), committed before step 0; ``None`` when no setup
     #: completed one (``TraceConfig.task_text_setter`` says whether one was to).
@@ -298,7 +297,7 @@ class ArchiveRecord(BaseModel):
 
 
 #: What a committed file is (:class:`CommittedFile`): the run's own files
-#: (``manifest``, ``config``, ``result``, ``oracle_scores``, ``task_text``), what the manifest
+#: (``manifest``, ``config``, ``result``, ``task_text``), what the manifest
 #: lists (``step``, ``fragment`` — an observation's JSON or its recorded
 #: failure —, ``artifact``, ``llm_call``, ``extra_index``, ``output_schema``,
 #: ``prompt_image``), and what an extra index lists (``extra``).
@@ -306,7 +305,6 @@ CommittedKind = Literal[
     "manifest",
     "config",
     "result",
-    "oracle_scores",
     "task_text",
     "step",
     "fragment",
@@ -661,7 +659,7 @@ class TraceConfig(BaseModel):
 
     **Identity** (``agent_id`` … ``task_id``) is what *joins* the trace
     back to the dataset it came from. ``(benchmark, subset, task_id)`` is
-    the key an Evaluator needs to look up ground truth:
+    the key a verifier needs to look up ground truth:
     ``EvalLoaderRegistrar.get(benchmark)(subset=subset)[task_id]``.
     Without all three, a trace directory is an orphan — you cannot even
     say which task it ran.

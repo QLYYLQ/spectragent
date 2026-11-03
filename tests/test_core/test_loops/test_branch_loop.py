@@ -29,9 +29,9 @@ from spectragent.core.loops.validation import (
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.reconstruction import recorded_form
 from spectragent.core.trace.redaction import OMITTED
-from spectragent.evaluator.trace_view import TraceView
 from spectragent.schemas.observation.fragments import StepInfoObs
 from spectragent.schemas.restoration import BranchProvenance
+from spectragent.verifiers.trace_view import TraceView
 from tests._helpers.branch_fakes import (
     CAP_ID,
     CLICK,
@@ -1001,7 +1001,7 @@ async def test_warn_restoration_does_not_pair_a_later_result_with_a_failed_attem
     assert first.executed is not None and first.executed.params["index"] == 100
     assert first.result is None and first.live_error == "RuntimeError: first execution failed"
     assert second.result == record.action_results[0]
-    from spectragent.evaluator.trace_view import TraceView
+    from spectragent.verifiers.trace_view import TraceView
 
     history = TraceView(RunTrace(out.run_dir)).restored_action_history
     assert len(history) == 2

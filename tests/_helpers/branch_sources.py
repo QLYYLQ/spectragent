@@ -12,7 +12,7 @@ trace's ledger (the manifest status and how far it is complete), the agent's
 negotiation with its archive binding, a branch provenance), the step records
 (origin, error phase), a step's recorded ``browser.capture_state`` (how its
 capture's settle wait ended), the environment fingerprint, and verdicts in
-``evals/``.
+its verdict store (``verdicts/``).
 """
 
 from __future__ import annotations
@@ -33,15 +33,16 @@ from spectragent.core.trace.models import (
     TraceNegotiation,
     TraceStatus,
 )
+from spectragent.core.trace.verdicts import write_verdict
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionResult
-from spectragent.schemas.eval_result import EvalResult
 from spectragent.schemas.observation.capture_state import FailedVisibleResources, PointerState
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.restoration import BranchProvenance
 from spectragent.schemas.step_record import StepRecord
-from tests._helpers.trace_builder import agent_result, archive_file, write_verdict
+from spectragent.schemas.verdict import Verdict
+from tests._helpers.trace_builder import agent_result, archive_file
 
 #: The setup context every source records unless told otherwise.
 START_URL = "https://shop.test/"
@@ -130,7 +131,7 @@ def write_source(
     task_id: str = "task-001",
     env_type: str = "browser",
     extra: dict[str, Any] | None = None,
-    verdicts: dict[str, EvalResult] | None = None,
+    verdicts: Sequence[Verdict] = (),
     format_version: int | None = None,
     uncommitted: Sequence[int] = (),
     task_text_setter: str | None = None,
@@ -216,8 +217,8 @@ def write_source(
             status,
             incomplete_reason=incomplete_reason if status is TraceStatus.INCOMPLETE else None,
         )
-    for slug, verdict in (verdicts or {}).items():
-        write_verdict(wal.run_dir, slug, verdict)
+    for verdict in verdicts:
+        write_verdict(wal.run_dir, verdict)
     if format_version is not None:
         manifest = wal.run_dir / "manifest.json"
         document = json.loads(manifest.read_text())

@@ -4,7 +4,7 @@
 > Locate the named symbol with `rg` and read the current implementation before editing.
 
 Two halves that only look separate. Hooks are how anything gets *into* a trace; the
-trace is the only thing an evaluator is allowed to read. §4 is the judgement call —
+trace is the only thing an offline verifier is allowed to read. §4 is the judgement call —
 read it before you add a field.
 
 ## 1. Public AOP boundaries
@@ -113,8 +113,8 @@ Only a worker that overruns its own budget stops further writes and leaves the m
 
 This line was drawn explicitly by the user on 2026-09-16, against a concrete proposal.
 N1 in `HANDOFF_260916_next.md:103-110` asked for an `InputRecorder` hook that would
-intercept input dispatch and write per-tick mouse and key events into the WAL, so a
-behavioural-realism evaluator could read them back. It was rejected, and the reason
+intercept input dispatch and write per-tick mouse and key events into the WAL, so an
+offline judge of behavioural realism could read them back. It was rejected, and the reason
 generalises:
 
 > A mouse trajectory is **how the framework executed the agent's decision**, not the
@@ -247,15 +247,19 @@ N6 at `HANDOFF_260916_next.md`).
 
 Three layers now (`models.py:437-524`):
 
-- **Identity** — `(benchmark, subset, task_id)` is the key an Evaluator joins ground
-  truth by. Resolved from the live objects by `core/runtime.py::_component_id`
-  (`runtime.py:62`), and it is the **authority**: it exists even for a run assembled
-  without the Composer, where `resolved` is `{}`.
-- **Configuration** — `resolved` is `ComposedRun.top_level_cfg`, the composed, validated
-  Pydantic object: every default filled in, every wired receptor inlined inside its owner
-  (`agent[0].llm.provider`). **Not the YAML** — `configs/browser_use_local.yaml` never
-  mentions `coordinate_space` or `provider.name` and both are in the object. It is also
-  not everything a run resolved: a value a component derives at construction
+- **Identity** — `(benchmark, subset, task_id)` is the key a verifier's reference row
+  is looked up by (a branch run's: its source's, from `branch`). Resolved from the live
+  objects by `core/runtime.py::_component_id` (`runtime.py:62`), and it is the
+  **authority**: it exists even for a run assembled without the Composer, where
+  `resolved` is `{}`.
+- **Configuration** — `resolved` is `ComposedRun.run_configuration()`: the composed,
+  validated Pydantic object (`top_level_cfg`) with every benchmark block's `verifiers`
+  recorded as `null` (a verifier judges runs and never changes one, so it is no part of
+  the configuration a run records or of its `config_hash`); every default filled in,
+  every wired receptor inlined inside its owner (`agent[0].llm.provider`). **Not the
+  YAML** — `configs/browser_use_local.yaml` never mentions `coordinate_space` or
+  `provider.name` and both are in the object. It is also not everything a run
+  resolved: a value a component derives at construction
   (`BrowserCapability` turning a profile name into a watchdog set) lives on the instance
   and is not here. `negotiation` is `TraceNegotiation` (`models.py:302`) — active and
   *required* fragments, active actions, and the `fragment_bindings` / `action_bindings`
@@ -503,15 +507,38 @@ trips it; re-pin the current policy's row then, and say so.
   purpose: marking a nested model does not dump its subtree verbatim. If you want a
   subtree recorded, mark its leaves.
 
-## 7. Writing an evaluator
+## 7. Writing a verifier
 
-**Trace in, verdict out.** `BaseEvaluator` (`spectragent/evaluator/base.py`) takes a
-`RunTrace` and an `EvalReference` and returns an `EvalResult`. It never touches a live
-environment, never re-runs the agent, and **never reads in-memory state** — which is
-precisely what makes evaluation re-runnable: the same directory can be scored by a dozen
-evaluators, months apart, on a machine with no browser installed.
+**Trace in, verdict out.** A verifier is a registered kind (`VerifierRegistrar`,
+`verifier_id`, `spectragent/verifiers/_registrar.py`), written only in a benchmark
+block's `verifiers` list; the benchmark's `__wiring__` names the kinds it takes
+(`"verifiers": ("verifier", [...])`), and a top-level `verifier:` or `evaluator:` section
+is refused. Subclass `VerifierBase`, or `LLMJudgeVerifier` when a judge model decides
+(its `llm` receptor, written in the verifier's own block, is required), set
+`__registry_key__`, declare what it needs in `__needs__` (`VerifierNeed`:
+`live_environment`, `trace`, `answer`, `reference`, `model`), and implement
+`verify(trace, reference) -> Judgment`. A benchmark's own verifier lives in its package
+(`spectragent/benchmarks/<benchmark_id>/verifier.py`, registered under the benchmark's
+key), `exact_match` in `spectragent/verifiers/`; prompts are read from
+`spectragent/prompts/verifiers/<verifier_id>/`. Where it is attached is never configured:
+`attachment_of` (`verifiers/base.py`) puts one that needs `live_environment` at the
+scoring point and every other one offline, over the committed trace. An offline verifier
+never touches a live environment, never re-runs the agent, and **never reads in-memory
+state** — which is precisely what makes judging re-runnable: the same directory can be
+judged by a dozen verifiers, months apart, on a machine with no browser installed.
 
-- Prefer `TraceView` (`spectragent/evaluator/trace_view.py`) to raw `RunTrace`. It is the
+- **A verifier hands back only what it found**: a `Judgment` (`schemas/verdict.py`:
+  `score`, `label` 1 or 0, `rationale`, `evidence`, `usage`). The side that attached it
+  adds who judged (`VerifierIdentity`: `verifier_id`, `version`, the judge `model`,
+  `config_signature`), the attachment and the timing it measured, and writes one
+  `Verdict`. `VerifierBase.config_signature()` takes every init field plus the judge's
+  model and route, so two settings of one kind are two judges with two slugs: never keep
+  a setting that can change the verdict out of it.
+- **A verifier never changes the run.** It is no part of `config_hash` or of the
+  recorded `config.json` (`ComposedRun.run_configuration()` records each benchmark
+  block with `verifiers: null`), so judging a trace again never changes its experiment
+  identity, and its failure never changes how the agent ended.
+- Prefer `TraceView` (`spectragent/verifiers/trace_view.py`) to raw `RunTrace`. It is the
   shared read-side vocabulary — what was asked, what the agent answered, what it did,
   what it saw — each spread across two or three files. Every grader ported in
   reimplemented those joins with slightly different fallbacks.
@@ -547,27 +574,46 @@ evaluators, months apart, on a machine with no browser installed.
 - **Read `negotiation` before you read steps.** `required_fragments` is what tells you
   whether a capture failure ended the run or was recorded as a `FragmentFailure`. A trace
   without it cannot explain its own degraded steps.
-- **Scoring that needs a live environment does not go here.** SWE-bench running `pytest
-  FAIL_TO_PASS` in the container, OSWorld evaluating VM predicates — that goes through
-  `RuntimeHook.on_run_end(result, env)`, the one moment the environment is both alive and
-  reachable by a framework-aware component (`core/hooks/base.py:158`). Such a hook writes
-  its findings *into the trace*, and an Evaluator reads them back like any other recorded
-  fact.
-- Verdicts land in each trace's own `evals/` (`evaluator/runner.py:290-313`), named by
-  evaluator slug, so a new judge never requires re-running the agent. They are written
-  with `fsio.atomic_write` like every other trace file, so a re-score that dies half way
-  leaves the previous verdict whole, never a torn one the next pass reads as corrupt.
-  They get a plain write's permissions, so a results directory another user reads stays
-  readable.
-- Fail loudly on an unusable trace. `TraceIncompleteError` with the directory named beats
-  a zero score — see `online_mind2web.py:104-125` for the pattern (no task text, no
-  screenshots for an image judge). The reader already fails loudly on its side: a
-  `TraceSchemaError` is a damaged trace, or a trace of another format, and re-running
-  the evaluation will never change it.
+- **Judging that needs a live environment happens once, at the scoring point**, never in
+  an offline verifier and never mid-run. AndroidWorld reads the device's databases, files
+  and settings: the capability that reaches the device implements the optional
+  `TaskOracle` Protocol (`core/capabilities/base.py`: `oracle_identity()` and
+  `read_score(answer=...) -> Judgment`), and `AgentRuntime` calls the woven
+  environment's `verify_live(timeout_s=verify_timeout, answer=...)` after the Loop
+  returned or raised, before close-out and teardown. The environment asks each oracle
+  concurrently, each within the limit, and turns a judgment into a `judged` live verdict
+  and a timeout or an exception into a `not_judged` one (`reason`: `timeout` | `error`,
+  with `detail`) under the same identity (`core/environments/_registrar.py`). The time
+  limit is `--verify-timeout` on `run` and `bench`.
+- **Every verdict lands in the run's verdict store**, `verdicts/<slug>.json`
+  (`core/trace/verdicts.py::write_verdict`; the slug is
+  `<verifier_id>_<first 8 hex of the settings' sha256>`, `VerifierIdentity.slug`),
+  whichever attachment produced it. The offline runner
+  (`verifiers/runner.py::VerificationRunner`, behind `spectragent eval` and `spectragent
+  bench` after its sweep) writes each one as it judges, so a new judge never requires
+  re-running the agent. `TraceWriter` intercepts `verify_live` (`after`, role `env`) and
+  writes the live ones at close-out, before `result.json`; one that fails to write is a
+  recording problem on the `verdicts` channel (the trace is `incomplete`, the agent's
+  outcome stands). The store is outside the manifest and every write goes through
+  `fsio.atomic_write`, so a re-judge that dies half way leaves the previous verdict
+  whole, never a torn one the next pass reads as corrupt; judging again with the same
+  settings replaces that slug's verdict, other settings land beside it. Verdicts get a
+  plain write's permissions, so a results directory another user reads stays readable.
+  `RunTrace.verdicts()` reads them back (slug → `Verdict`), the one accessor that lists a
+  directory.
+- Fail loudly on an unusable trace. Raise `VerificationError` (`verifiers/errors.py`) or
+  one of its kinds — `TraceIncompleteError` with the directory named beats a zero score
+  (see `OnlineMind2WebVerifier.verify`, `benchmarks/online_mind2web/verifier.py`: no task
+  text, no screenshots for an image judge), `ReferenceMismatchError`, `NoReferenceError`
+  (a task-variant branch has no reference) — carrying what the attempt left (`evidence`,
+  `usage`). Offline, a verifier that cannot judge writes nothing: it is an error in the
+  pass's report, never a failed task, and the trace can be judged again. The reader
+  already fails loudly on its side: a `TraceSchemaError` is a damaged trace, or a trace
+  of another format, and judging again will never change it.
 
 **The training export is the other offline consumer** (M32, `spectragent/export/`,
 arch §4.15): the same rules, a different product. It reads source runs only through
-`RunTrace` (committed steps, `observation_fragment`, `llm_messages`, `evals()`), opens
+`RunTrace` (committed steps, `observation_fragment`, `llm_messages`, `verdicts()`), opens
 `env/` only for occlusion evidence (`browser.dom_raw`) and the replay log's document
 misses, and never copies an `env/` file into a dataset (a test compares content hashes).
 A run recorded with `record_secrets: true` is never a source. It shares the recorded
@@ -599,7 +645,8 @@ are byte-identical.
 | `core/trace/redaction.py` | `trace_safe`, `is_safe_by_type`, `is_closed_set`, `redact_config` |
 | `core/trace/reader.py` | `RunTrace` — typed accessors resolved through the manifest (the archive ones through the extra indexes), `_listed` (containment), `_read_model` (`json.loads`), the format gate |
 | `core/trace/errors.py` | `TraceSchemaError` — every way a committed trace is unreadable |
-| `evaluator/base.py`, `evaluator/trace_view.py` | the read side |
+| `verifiers/base.py`, `verifiers/_registrar.py`, `verifiers/trace_view.py`, `verifiers/runner.py` | the judging side: the `Verifier` / `OfflineVerifier` Protocols and `attachment_of`, `VerifierBase` / `LLMJudgeVerifier`, the read-side vocabulary, the offline runner |
+| `schemas/verdict.py`, `core/trace/verdicts.py` | `Judgment`, `VerifierIdentity`, `Verdict`; the verdict store's `write_verdict` |
 | `tests/_helpers/trace_builder.py` | builds traces through the real encoder and `WALWriter` — use it, do not hand-write sidecars (`archive_file(...)`, `build_archive_trace(base)` for `env/`) |
 | `tests/_helpers/archive_fakes.py` | the fake archiving capability (`contract_archive`), fake archivers, `ArchiveConsumerHook`, `CollectSpy` (the raw env as the trace hook sees it, every batch kept), `make_archive_run(...)` — unique `contract_archive*` keys, because registries are global |
 | `tests/_helpers/archive_contract.py` | the shared archive contract harness: the capability-side clauses (no step, unbound archives nothing, prefix routing and clearing, hand over and forget, bound archivers only, provenance, a broken collection raises) and, through `TraceWriter` driven directly, commit → read back → crash window → tail → fail-closed collection → zero-cost empty archive → run records kept per capability beside a second archiving capability; a capability opts in with a factory in its `HARNESS_FACTORIES` |

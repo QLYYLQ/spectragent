@@ -31,7 +31,10 @@ from spectragent.schemas.observation.geometry import CoordinateSpace
 #: before it runs, so there is nothing undeclared to drop. 4: the steps a filter
 #: left out are listed one by one with their reasons (``steps.filtered``), the
 #: ``wait_actions`` ledger is added, and a sample may carry ``wait_removal``.
-DATASET_FORMAT: Final = "af-sft-4"
+#: 5: a sample's ``labels.verdicts`` are the run's judged verdicts
+#: (``verdict_slug``, ``verifier_id``, ``label``, ``score``), no longer an
+#: evaluator's graded labels (``evaluator_id``, ``predicted_label``).
+DATASET_FORMAT: Final = "af-sft-5"
 
 
 class _Part(BaseModel):

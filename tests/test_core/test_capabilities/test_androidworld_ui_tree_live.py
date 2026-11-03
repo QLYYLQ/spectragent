@@ -104,7 +104,7 @@ async def test_our_service_and_androidworlds_forwarder_are_both_bound(prepared: 
 async def test_the_stopwatch_task_scores_0_unsolved_and_1_once_started_by_index(
     prepared: Prepared,
 ) -> None:
-    (unsolved,) = await prepared.env.read_oracle_scores(timeout_s=90, answer=None)
+    (unsolved,) = await prepared.env.verify_live(timeout_s=90, answer=None)
     opened = await prepared.capability.execute_action(
         Action(name="android.open_app", params={"app_name": "Clock"})
     )
@@ -112,7 +112,7 @@ async def test_the_stopwatch_task_scores_0_unsolved_and_1_once_started_by_index(
     await _click(prepared, "Stopwatch")
     await _click(prepared, "Start")
     running = await _tree(prepared)
-    (solved,) = await prepared.env.read_oracle_scores(timeout_s=90, answer=None)
+    (solved,) = await prepared.env.verify_live(timeout_s=90, answer=None)
 
     labels = {
         label
@@ -120,5 +120,5 @@ async def test_the_stopwatch_task_scores_0_unsolved_and_1_once_started_by_index(
         for label in (node.text, node.content_description)
     }
     assert {"Pause", "Lap"} <= labels, running.serialized
-    assert (unsolved.status, unsolved.score) == ("scored", 0.0), unsolved.detail
-    assert (solved.status, solved.score) == ("scored", 1.0), solved.detail
+    assert (unsolved.status, unsolved.score) == ("judged", 0.0), unsolved.detail
+    assert (solved.status, solved.score) == ("judged", 1.0), solved.detail

@@ -93,7 +93,7 @@ uv run spectragent tui --root traces --run branch/RUN_KEY
 
 恢复步骤的源动作、源结果和源模型回复与本次实际恢复执行分开展示。实时终端把 `max_steps` 标为配置上限，并单列 `continue_steps`，不把配置上限当成分叉的实际步数预算；任务自己的步数预算比上限低时（AndroidWorld 的任务），上限旁另写 `task budget`。回放日志页按原有读取器的折叠权重统计 hit/miss/exhausted/synthetic，包含 trailing 收尾决定；未记录日志、空日志和日志损坏分别显示。
 
-查看器只读本地目录，展示截图、步骤、模型请求/回复、每次失败与重试、观测、评测、配置和分叉来源。运行对比与实验组对比分开：实验组按配置摘要选择，按相同任务配对，必须明确选择 evaluator；重复尝试记为 ambiguous，不自动挑最好的一次。判分配置不同不合并统计。报告页读取同一根目录下的独立评测、飞轮、诊断、数据集和任务清单；可以把 `--root` 指向包含这些产物的共同父目录。
+查看器只读本地目录，展示截图、步骤、模型请求/回复、每次失败与重试、观测、判定、配置和分叉来源。判定来自 run 的判定存放 `verdicts/`：运行列表的判定一列和运行摘要的"判定"一项列出每份判定的 slug、判出了什么、活体还是离线，总览的"已有判定"数的是至少有一份判定的 run；运行页的"判定 (N)"标签页逐份展开判分器、开始时间与用时、判分模型与版本、没判的原因、判定依据、证据和判分器设置。运行对比与实验组对比分开：实验组按配置摘要选择，按相同任务配对，必须明确选择一个判定 slug，即同一个判分器、同一组设置（命令行是 `spectragent runs compare-groups --left <摘要> --right <摘要> --verifier <slug>`）；重复尝试记为 ambiguous，不自动挑最好的一次。同一 slug 的判定版本不同时记为判分器设置不同，不合并统计。报告页读取同一根目录下的独立评测报告、飞轮、诊断、数据集和任务清单；可以把 `--root` 指向包含这些产物的共同父目录。
 
 服务默认只监听 `127.0.0.1`。SSH 使用时在服务器运行 view，在本机建立端口转发后打开 `http://127.0.0.1:8765`：
 
@@ -107,42 +107,56 @@ ssh -L 8765:127.0.0.1:8765 your-server
 
 ## 独立评测已录下的任务
 
-`spectragent eval` 只读已保存的 RunTrace，调用独立 judge 判断任务正确性，不启动浏览器或重跑 agent；它不改变回放保真、恢复校验或分叉放行条件。先完成 judge 路由和图像输入验证，再把验证过的 `llm` 配置放进 YAML。例如保存为本地 `tmp/evaluation.yaml`：
+`spectragent eval` 只读已保存的 RunTrace，用基准的离线判分器判断任务正确性，不启动浏览器或重跑 agent；它不改变回放保真、恢复校验或分叉放行条件。判分器（`VerifierRegistrar`，键 `verifier_id`）只写在基准块的 `verifiers:` 列表里；运行配置里写顶层的 `evaluator:` 或 `verifier:` 段会被拒。各基准收的判分器：`online_mind2web` 收 `online_mind2web`（WebJudge），`browsecomp` 收 `browsecomp` 与 `exact_match`，`lexbench_browser` 收 `lexbench_browser`；`androidworld` 与分叉 sweep 的 `trace_branches` 块不收（AndroidWorld 的判定由设备上的任务裁判在判分时间点给出，见"看结果与定位入口"）。基准自己的判分器在它的包里（`spectragent/benchmarks/<基准>/verifier.py`），通用的 `exact_match` 在 `spectragent/verifiers/`，提示词在 `spectragent/prompts/verifiers/<verifier_id>/`。
+
+发布的基准 YAML 一个判分器也不列：LLM judge 的型号要先自己验证过。先完成 judge 路由和图像输入验证，再复制发布的基准 YAML，在块里加 `verifiers:`，把验证过的 `llm` 写进判分器自己的块（LLM judge 必填）。例如保存为本地 `tmp/lexbench_judged.yaml`：
 
 ```yaml
-evaluator:
-  - evaluator_id: lexbench_browser
-    eval_strategy: stepwise
-    image_scale_factor: 1.0
-    max_screenshots: 30
-    llm:
-      model_type: openai
-      model: 替换为已验证支持图像的型号
-      provider: {name: direct}
-      # base_url: 已验证的兼容接口地址
+benchmark:
+  - benchmark_id: lexbench_browser
+    task_loader:
+      benchmark_name: lexbench_browser
+      subset: All                # 与要判的 trace 录制时的 subset 相同
+      data_dir: null
+    verifiers:
+      - verifier_id: lexbench_browser
+        eval_strategy: stepwise
+        image_scale_factor: 1.0
+        max_screenshots: 30
+        llm:
+          model_type: openai
+          model: 替换为已验证支持图像的型号
+          provider: {name: direct}
+          # base_url: 已验证的兼容接口地址
 ```
 
-这里的 `openai/direct` 是配置形状示例，型号或网关采用别的协议时，整体替换为验证过的 `llm` 块。密钥从相应环境变量读取；入口也加载 `.env`。参考答案来自 `--benchmark` 选的基准：发布的别名（`configs/benchmarks/<别名>.yaml`）或自己写的基准 YAML 的路径；基准 YAML 没写 `eval_loader` 时，用它的任务加载器的键下注册的评测加载器、按任务加载器的 subset 读参考数据，数据默认由 `SPECTRAGENT_BENCHMARK_DATA` 指定的根目录定位，要读别处的数据就在自己的基准 YAML 里给 `eval_loader` 写 `data_dir`。每次只组合一个 evaluator 和一个基准；YAML 只接受 `evaluator` 与 `llm`，不接受 agent、environment、hook 或加载器块。
+这里的 `openai/direct` 是配置形状示例，型号或网关采用别的协议时，整体替换为验证过的 `llm` 块。密钥从相应环境变量读取；入口也加载 `.env`。参考答案来自同一个基准：块里没写 `eval_loader` 时，用它的任务加载器的键下注册的评测加载器、按任务加载器的 subset 读参考数据，数据默认由 `SPECTRAGENT_BENCHMARK_DATA` 指定的根目录定位，要读别处的数据就给 `eval_loader` 写 `data_dir`。要参考答案的判分器（`exact_match`、`browsecomp`、`lexbench_browser`）配在没有参考数据的基准上时，开判之前就拒绝；WebJudge 不读参考。`spectragent eval` 没有 `--subset`：trace 记下的 benchmark 与 subset 要与基准块的相同，不同的那一份由要参考的判分器记为无法判定。
+
+判分器挂在哪，由它声明的需要（`__needs__`）决定：要活体环境的挂在判分时间点（run 结束之后、环境拆掉之前），其余的离线读已提交的 trace；上面这些都是离线判分器。判分器从不改变 run。它和它的设置不进 `config_hash`，也不进 run 记下的 `config.json`（基准块记成 `verifiers: null`），所以换一个判分器重判同一批 trace，实验身份不变。
 
 ```bash
-uv run spectragent eval --config tmp/evaluation.yaml --benchmark lexbench_browser \
+uv run spectragent eval --benchmark tmp/lexbench_judged.yaml \
   --traces traces/chains/example/traces/record \
-  --out evals/example-first --dry-run
+  --out tmp/eval-reports/example-first --dry-run
 
-uv run spectragent eval --config tmp/evaluation.yaml \
+uv run spectragent eval --benchmark tmp/lexbench_judged.yaml \
   --traces traces/chains/example/traces/record traces/chains/example/traces/branch \
-  --out evals/example-first
+  --out tmp/eval-reports/example-first
 ```
 
-`--dry-run` 验证配置与输入选择，不调用模型、不写文件。`--traces` 可接单个 run 或直接包含多个 run 的目录；不递归搜索，重复路径只算一次。分叉通过自身 provenance 查找源 benchmark/subset/task 的参考，结果仍保留分叉 task/run 身份。`--out` 必须是新目录，防止新批次盖掉之前的证据。默认还在每份 trace 的 `evals/` 写当前配置的最新判定；加 `--read-only-traces` 只写独立批次，不修改源 trace。
+`--dry-run` 验证基准、它的判分器与输入选择，不调用模型、不写文件。`--traces` 可接单个 run 或直接包含多个 run 的目录；不递归搜索，重复路径只算一次。基准的每个离线判分器判每一份给出的 trace。分叉通过自身 provenance 用源 benchmark/subset/task 的参考，判定仍写在分叉 run 自己那里，证据的 `source_reference` 记着用的是哪个源任务；任务变体分叉怎么判见 [数据飞轮运行手册](data_flywheel_runbook.md) 的"任务变体"。
 
-主要结果是 `report.json` 与中文 `report.md`：输入轨迹数、有效判定数、判对、判错、无法判定分别列出，正确率是“判对 / 有效判定”，覆盖率是“有效判定 / 提供的轨迹”。没有有效判定时正确率为 `null`。没有提供的其他 benchmark 任务不进入分母；同一任务的不同轨迹分别计数，所以这是本批轨迹的任务正确性，不应称为整个 benchmark 的任务成功率。旧 runner 同时产生的 `*_summary.json` 保留覆盖策略下的旧统计口径；本阶段使用新的 `report.*` 作为主要报告，不混用两种分母。
+每份判定写进它那个 run 的判定存放 `verdicts/<slug>.json`，所以这个命令会写进 run 目录。slug 是 `<verifier_id>_<设置的 sha256 前 8 位>`：用同一组设置重判，替换那一份；换了设置（另一个模型、判分模型的另一组采样设置、另一档 `eval_strategy`），新判定落在旁边。写入是原子的，不在 manifest 里，`RunTrace.verdicts()` 读它们。`--out` 必须是新目录，只放这一批的报告，从不存判定的副本。
 
-缺少参考、任务文字、可用截图、损坏的 trace、judge 调用失败或无有效总分，都记无法判定，不算任务判错。已知的提示快照、录制时间、模型与路由身份、响应及 `eval_usage` 随判定或错误保存；endpoint 只保留摘要，脱敏配置不存密钥。没有报告用量的请求单列，不能当成免费。输出目录保存本批副本；同配置重复评测时，源 trace 的同 slug 文件仍采用既有的最新判定语义。
+主要结果是 `report.json`（格式 `af-independent-evaluation-2`）与中文 `report.md`，每个判分器一节：输入轨迹数、有效判定数、判对、判错、无法判定分别列出（`counts` 的 `provided`、`judged`、`passed`、`failed`、`errors`），正确率是“判对 / 带标签的有效判定”（`success_rate`），覆盖率是“有效判定 / 提供的轨迹”（`coverage`）。没有有效判定时正确率为 `null`。`outcomes` 每行是一份 trace 上的一个判分器：`trace`、`task_id`、`run_id`、录制时间与 trace 状态、`slug`，`verdict` 是判定在 run 里的路径（`verdicts/<slug>.json`，没判成时为 `null`），以及 `error`、`error_evidence`、`error_usage`。没有提供的其他 benchmark 任务不进入分母；同一任务的不同轨迹分别计数，所以这是本批轨迹的任务正确性，不应称为整个 benchmark 的任务成功率。
 
-“今日”“明天”和时效数值按录制时点、录下的任务日期及页面证据解释。评测器不访问当前网站，不以模型的当前知识替代历史事实。参考资料自身过时或轨迹无法支持事实时，应无法判定。`stepwise` 会按配置筛选与缩放截图；`final` 只看最后一帧。需要判断最后动作后的结果时，新录制应开启 `terminal_observation: true`；旧 trace 没有该帧不能补造。
+缺少参考、任务文字、可用截图、损坏的 trace、judge 调用失败或无有效总分，都记无法判定，不算任务判错，这份 trace 里什么也不写，可以再判。每份判定带着判分器的身份（`verifier`：`verifier_id`、`version`、判分模型 `model`、设置 `config_signature`）、实际提示快照与回复（`evidence`）、judge 的已报告用量（`usage`）、开始时间与耗时；无法判定的那次留下的证据与用量在报告的 `error_evidence`、`error_usage` 里。endpoint 只保留摘要，判定不存密钥。没有报告用量的请求单列（`calls_without_usage`），不能当成免费。
 
-退出码：0 表示每份输入都有有效判定（任务判错也返回 0）；1 表示至少一份无法判定或本次评测运行失败；2 表示配置、输入路径或输出目录被拒绝。本入口没有额外 token 上限；正式运行前先用明确的小批次核算 judge 用量，再决定扩展规模。
+“今日”“明天”和时效数值按录制时点、录下的任务日期及页面证据解释。判分器不访问当前网站，不以模型的当前知识替代历史事实。参考资料自身过时或轨迹无法支持事实时，应无法判定。`stepwise` 会按配置筛选与缩放截图；`final` 只看最后一帧。需要判断最后动作后的结果时，新录制应开启 `terminal_observation: true`；旧 trace 没有该帧不能补造。
+
+退出码：0 表示每个判分器都判了每一份输入（任务判错也返回 0）；1 表示至少有一个判分器没能判某一份，或本次判分运行失败；2 表示基准（例如它一个离线判分器也不列）、输入路径或输出目录被拒绝。本入口没有额外 token 上限；正式运行前先用明确的小批次核算 judge 用量，再决定扩展规模。
+
+`spectragent bench` 在 sweep 跑完之后也跑同一遍离线判分（见"跑数据集"），判定同样写进各个 run 的 `verdicts/`。
 
 ## 第一次运行
 
@@ -318,9 +332,9 @@ uv run spectragent run --config configs/browser_use_local.yaml \
   --benchmark online_mind2web --task-id <ID>
 ```
 
-把 `--config` 换成上面的其他 agent YAML，就使用同一个数据集入口。也可以用 `--task-id <ID>` 指定任务，或用 `--limit N` 控制数量。`--list` 会先加载数据并只打印选中的任务 ID，不启动浏览器。`--subset`（例如 `online_mind2web` 的 `Hard`）在组装之前写进所选基准块的任务加载器，所以解析后的配置、`config_hash` 与每个 run 的身份都记着它，与基准 YAML 自己写的一样；`run` 只在带 `--task-id` 时收它。要换数据目录，复制 `configs/benchmarks/online_mind2web.yaml`、改它的 `task_loader`，再用 `--benchmark ./我的基准.yaml` 选它。数据集 loader 把每个任务的 `start_url` 传给 browser capability，trace 记下的也是这一个。
+把 `--config` 换成上面的其他 agent YAML，就使用同一个数据集入口。也可以用 `--task-id <ID>` 指定任务，或用 `--limit N` 控制数量。`--list` 会先加载数据并只打印选中的任务 ID，不启动浏览器。`--subset`（例如 `online_mind2web` 的 `Hard`）在组装之前写进所选基准块的任务加载器，所以解析后的配置、`config_hash` 与每个 run 的身份都记着它，与基准 YAML 自己写的一样；`run` 只在带 `--task-id` 时收它，`config check` 与 `config explain` 只在带 `--benchmark` 时收它（例如 `config check <配置> --benchmark online_mind2web --subset Hard --task-id <ID>`，检查与 run 看到同一份任务；所选 subset 里没有这个任务 id 时被拒）。要换数据目录，复制 `configs/benchmarks/online_mind2web.yaml`、改它的 `task_loader`，再用 `--benchmark ./我的基准.yaml` 选它。数据集 loader 把每个任务的 `start_url` 传给 browser capability，trace 记下的也是这一个。
 
-起始页必须是完整的 http(s) URL。`lexbench_browser` 的数据（每个 split）把起始页写成不带协议头的主机名，例如 `www.bilibili.com`、`s.weibo.com/top/summary`，加载器把它补成 `https://www.bilibili.com` 再交出去，飞轮报告和导出按这个 URL 的主机认站点。写成文字或几个站点的起始页（L1 有 7 个、L2 有 3 个，例如 `www.xiachufang.com或其他美食网站`、`jd.com + tmall.com + suning.com`）原样留下，在 `prepare()` 被拒，不打开 trace，消息点名这个起始页：这样的任务若是 sweep 的第一个任务，开跑前的预检查停下，退出码 2；否则只记在那个任务上，汇总表里那一行写着原因（算作 infrastructure failure，退出码 1）。其他数据集的起始页本来就是完整的 URL，加载器不改。`spectragent bench` 不调用 `load_dotenv()`，所以运行前要在 shell 导出模型及云后端需要的密钥。需要自动评分时，在 YAML 中配置 `evaluator:`，然后去掉 `--no-eval`；只有任务数据与 trace 不会自动产生评分。
+起始页必须是完整的 http(s) URL。`lexbench_browser` 的数据（每个 split）把起始页写成不带协议头的主机名，例如 `www.bilibili.com`、`s.weibo.com/top/summary`，加载器把它补成 `https://www.bilibili.com` 再交出去，飞轮报告和导出按这个 URL 的主机认站点。写成文字或几个站点的起始页（L1 有 7 个、L2 有 3 个，例如 `www.xiachufang.com或其他美食网站`、`jd.com + tmall.com + suning.com`）原样留下，在 `prepare()` 被拒，不打开 trace，消息点名这个起始页：这样的任务若是 sweep 的第一个任务，开跑前的预检查停下，退出码 2；否则只记在那个任务上，汇总表里那一行写着原因（算作 infrastructure failure，退出码 1）。其他数据集的起始页本来就是完整的 URL，加载器不改。`spectragent bench` 不调用 `load_dotenv()`，所以运行前要在 shell 导出模型及云后端需要的密钥。需要 sweep 之后自动判分时，用一份在基准块里列了 `verifiers:` 的基准 YAML（写法见上面"独立评测已录下的任务"），并去掉 `--no-eval`：最后一个任务跑完之后，基准的离线判分器判这次 sweep 产生的每份 trace，判定写进各个 run 的 `verdicts/`，汇总表之后多一节 `verifiers:`，列出每个判分器判了几份、判对判错、无法判定的数目和正确率。发布的基准 YAML 不列判分器，用它们跑只得到任务数据与 trace，没有离线判定。要参考答案的判分器配在没有参考数据的基准上时，sweep 开跑之前就停下。
 
 按 Ctrl-C 中断时，正在跑的任务照常收尾：trace 写出 `result.json`（`agent_done: error`，`error: "Execution cancelled"`），进行中的那次 LLM 调用以 `cancelled` 状态连同 prompt 落盘，浏览器也会关掉。随后中断继续往外传，sweep 结束，不打印汇总表，也不评分。
 
@@ -328,9 +342,9 @@ uv run spectragent run --config configs/browser_use_local.yaml \
 
 ## 看结果与定位入口
 
-每次运行的 trace 写在 `traces/<run_id>/`，配置里的 `hook: [{hook_id: trace_writer}]` 决定是否落盘。`manifest.json` 是已提交内容的唯一索引（`format_version: 7`），`config.json` 是配置快照，`steps/NNN.json` 是每步的记录。以下目录取决于 `trace_writer.recording` 的选择；只选 metrics/errors 时不采集完整模型内容或观测。`observations/` 存观测和截图，文件名带全限定的 fragment key，如 `000_browser.dom.json`、`000_browser.screenshot.png`。`messages/` 每次 LLM 调用一个 `NNN_call_KK.json`（parse 重试、校验失败、截断、被取消的调用各占一个）；请求了结构化输出时，schema 每个 run 只在 `messages/output_formats/` 存一份。prompt 里内联的图片（vision agent 发给模型的截图）每张每个 run 只在 `messages/images/` 存一份（`<sha256>.png` 之类，就是那张图片本身），调用记录里在图片的位置写一个引用；所以带着全部历史截图的 agent，`messages/` 也只随不同截图的张数增长。直接打开 `NNN_call_KK.json` 看到的是引用，经 `RunTrace` 读回的是完整的 prompt。绑定了归档器的录制 run 还有 `env/`；现成的评测 YAML 不录环境证据，没有这个目录。
+每次运行的 trace 写在 `traces/<run_id>/`，配置里的 `hook: [{hook_id: trace_writer}]` 决定是否落盘。`manifest.json` 是已提交内容的唯一索引（`format_version: 8`），`config.json` 是配置快照，`steps/NNN.json` 是每步的记录。以下目录取决于 `trace_writer.recording` 的选择；只选 metrics/errors 时不采集完整模型内容或观测。`observations/` 存观测和截图，文件名带全限定的 fragment key，如 `000_browser.dom.json`、`000_browser.screenshot.png`。`messages/` 每次 LLM 调用一个 `NNN_call_KK.json`（parse 重试、校验失败、截断、被取消的调用各占一个）；请求了结构化输出时，schema 每个 run 只在 `messages/output_formats/` 存一份。prompt 里内联的图片（vision agent 发给模型的截图）每张每个 run 只在 `messages/images/` 存一份（`<sha256>.png` 之类，就是那张图片本身），调用记录里在图片的位置写一个引用；所以带着全部历史截图的 agent，`messages/` 也只随不同截图的张数增长。直接打开 `NNN_call_KK.json` 看到的是引用，经 `RunTrace` 读回的是完整的 prompt。绑定了归档器的录制 run 还有 `env/`；现成的评测 YAML 不录环境证据，没有这个目录。`verdicts/` 是 run 的判定存放，每份判定一个 `<slug>.json`：判分时间点的活体判定（今天是 AndroidWorld 的任务裁判，判分器 `androidworld`）在收尾时、写 `result.json` 之前写进来，离线判分器的判定在 run 之后随时写进来。它在 manifest 之外，每次写入是原子的，`RunTrace.verdicts()` 读它。一份活体判定写不进去，是 `verdicts` 通道上的记录问题，trace 因此是 `incomplete`，run 的结局不变。
 
-run 开始之后，不论完成、超时、出错、被否决还是被外部中断，记录器都会尝试保存 `result.json`，它的 `agent_done` 说 agent 怎么结束（`done`、`max_steps`、`episode_over`（环境结束了 episode）、`error`、`timeout`、`vetoed`）。manifest 的 `status` 只说 trace 记全没有：写着时是 `writing`，收尾之后是 `complete`，或 `incomplete` 加上 `incomplete_reason`（某一步或收尾时有东西没记下来）和 `complete_through`（完整到第几步）。超时的 run 照样可以是 `complete`。`result.json` 的 `metrics.steps` 只数策略步，即 `steps/` 里 `origin` 为 `policy` 的步。`agent_loop.terminal_observation: true` 在 run 结束后多记的一次观测（`origin: terminal`），以及分叉 run 恢复出的前缀步（`origin: restored`），都在 `steps/` 里，但不计数。模型调用次数另记在 `metrics.llm_calls`；未启用统计时调用数与用量为 `None`，provider 未报告用量时展示已知小计与缺失覆盖。记录失败不停止 Agent，后续提交可越过缺口；`missing_steps` 与 `complete_through` 说明实际缺失和连续完整范围。`spectragent bench` 会在终端先列出三本账的计数（agent 怎么结束、环境、trace 完整与否），再列每个任务的终止状态与 trace 目录名；环境坏了、模型在重试之后仍不可用、trace 不完整都标成 infrastructure failure，退出码 1；guard 否决了某个任务时 sweep 停在那里，退出码 3。
+run 开始之后，不论完成、超时、出错、被否决还是被外部中断，记录器都会尝试保存 `result.json`，它的 `agent_done` 说 agent 怎么结束（`done`、`max_steps`、`episode_over`（环境结束了 episode）、`error`、`timeout`、`vetoed`）。manifest 的 `status` 只说 trace 记全没有：写着时是 `writing`，收尾之后是 `complete`，或 `incomplete` 加上 `incomplete_reason`（某一步或收尾时有东西没记下来）和 `complete_through`（完整到第几步）。超时的 run 照样可以是 `complete`。`result.json` 的 `metrics.steps` 只数策略步，即 `steps/` 里 `origin` 为 `policy` 的步。`agent_loop.terminal_observation: true` 在 run 结束后多记的一次观测（`origin: terminal`），以及分叉 run 恢复出的前缀步（`origin: restored`），都在 `steps/` 里，但不计数。模型调用次数另记在 `metrics.llm_calls`；未启用统计时调用数与用量为 `None`，provider 未报告用量时展示已知小计与缺失覆盖。记录失败不停止 Agent，后续提交可越过缺口；`missing_steps` 与 `complete_through` 说明实际缺失和连续完整范围。`spectragent bench` 会在终端先列出三本账的计数（agent 怎么结束、环境、trace 完整与否），再列每个任务的终止状态与 trace 目录名；环境坏了、模型在重试之后仍不可用、trace 不完整都标成 infrastructure failure，退出码 1；guard 否决了某个任务时 sweep 停在那里，退出码 3。基准声明了主判定时，三本账之后还有一行 `primary verdict (<种类>): success rate X% over the J of N task(s) it judged`，每个任务那一行也写着它的主判定判出了什么（如 `primary label 1, success 1`；没有时写 `no primary verdict`）。`online_mind2web`、`browsecomp`、`lexbench_browser` 的主判定是基准块里列的第一个同种判分器的判定，按标签算；`androidworld` 的是 run 的活体判定，agent 以 `done` 结束时才算它的分数（含部分分），否则算 0，MiniWoB++ 的任务只看分数，因为它的页面自己结束 episode。主判定没判的任务（没有判定、判分器判不了、活体判定超时）不进成功率，也不算失败，`J of N` 说成功率覆盖了几个任务；各判分器自己的计数在表后的 `verifiers:` 一节。`spectragent run` 输出的最后一行是 `verdicts:`，列出 run 的判定存放里已有的每一份（`<slug>: passed`、`failed`、`score X` 或 `not judged (<原因>: <诊断>)`），没有时是 `none`；单个任务跑完时，那里只有判分时间点的活体判定。判分时间点每个活体判分器的时限是 `run` 与 `bench` 的 `--verify-timeout`（秒，默认 60），超时的记为没判（`reason: timeout`）。
 
 用 `RunTrace` 读 trace，参数是 `Path`：
 
@@ -344,9 +358,9 @@ trace.llm_messages(0)        # 第 0 步的每一次 LLM 调用
 trace.screenshot(0)          # 第 0 步截图的字节
 ```
 
-它只按 manifest 找文件，manifest 没列出的文件不算数；列出了却读不回来的文件（缺失、为空、损坏、类型不符）抛 `TraceSchemaError`，点名那个文件。`format_version` 不是 7 的旧 trace 整个读不出来（构造 `RunTrace` 时就抛 `TraceSchemaError`，点名版本）：不做兼容。保留旧轨迹原件，历史复核使用冻结的已准备证据或原版本工具；要获得当前格式轨迹则重跑任务。当前格式明确记录范围、稀疏提交和轻量调用事实，并要求模型调用带 `kind: chat | decision`；旧版本测试数据需要重建。调用记录引用的图片缺失或与它的摘要不符，读那一步的调用时同样抛 `TraceSchemaError`，点名那张图片。
+它只按 manifest 找文件，manifest 没列出的文件不算数；列出了却读不回来的文件（缺失、为空、损坏、类型不符）抛 `TraceSchemaError`，点名那个文件。`format_version` 不是 8 的旧 trace 整个读不出来（构造 `RunTrace` 时就抛 `TraceSchemaError`，点名版本和这一版改了什么，例如格式 7 把判分时间点的分数记在 manifest 里，当前格式把每份判定放进 run 的判定存放）：不做兼容。保留旧轨迹原件，历史复核使用冻结的已准备证据或原版本工具；要获得当前格式轨迹则重跑任务。当前格式明确记录范围、稀疏提交和轻量调用事实，并要求模型调用带 `kind: chat | decision`；旧版本测试数据需要重建。调用记录引用的图片缺失或与它的摘要不符，读那一步的调用时同样抛 `TraceSchemaError`，点名那张图片。
 
-格式升级不意味着所有现存轨迹都要重采。2026 年 10 月 25 日十站轮次的 22 条源 run 已经是 v7，当前读者能打开；历史 observation、动作与回复可直接审阅。`browser.frames` 的动作前截图和调用中的独立 thinking 只有实际录到或服务商返回时才有，缺失时保留缺失；不能用之后更新的配置补造。
+格式从 7 升到 8 之后，v7 轨迹当前读者不再打开。2026 年 10 月 25 日十站轮次的 22 条源 run 是 v7：原件保留，用写下它们的那一版工具审阅历史 observation、动作与回复；要在当前版本上查看、分叉、导出或判分，就重录。`browser.frames` 的动作前截图和调用中的独立 thinking 只有实际录到或服务商返回时才有，缺失时保留缺失；不能用之后更新的配置补造。
 
 需要继续改入口时，按执行顺序看 [单任务入口](../spectragent/core/run_cli.py)、[基准入口](../spectragent/core/benchmark_runner.py)、[装配器](../spectragent/core/composer.py)、[运行时](../spectragent/core/runtime.py)。agent 的配置与输出协议分别在 `spectragent/agents/browser_use/`（家族根 `family.py`，成员 `dom.py`、`dom_vision.py`）、`skyvern/`（家族根 `family.py`，成员 `dom.py`、`dom_vision.py`，闭合回复 `reply.py`）、`ui_tars/agent.py`（UI-TARS 的回复读写在无状态编解码 `ui_tars/codec.py`）；browser capability 与 backend 在 `spectragent/core/capabilities/browser/`。配置字段细节见 [configs/README.md](../configs/README.md)。
 
@@ -366,7 +380,7 @@ trace.screenshot(0)          # 第 0 步截图的字节
 |---|---|
 | 本轮录制（四个归档器） | 先准备轮次副本，再 `uv run spectragent bench --config <轮次>/configs/record_ui_tars_deepseek.yaml --no-eval --timeout 1800`，任务及种子按轮次清单选择 |
 | 通用离线重跑示例（只配套同组 `configs/flywheel/` 录制） | `uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml --start-url URL --task "录制时的任务" --replay-archive traces/<录制的 run_id>` |
-| 本轮检查点分叉 | 先复核排除文件并生成变体，再按轮次 `branch_same_task.yaml`、`branch_task_variants.yaml`、`branch_task_variants_without_source_thoughts.yaml` 执行 `spectragent bench --no-eval --timeout 1500` |
+| 本轮检查点分叉 | 先复核排除文件并生成变体，再按轮次 `branch_same_task.yaml`、`branch_task_variants.yaml`、`branch_task_variants_without_source_thoughts.yaml` 执行 `spectragent bench --timeout 1500`（分叉 sweep 不列判分器，不判分） |
 | 导出训练数据 | `uv run spectragent export --config configs/flywheel/export_sft.yaml` |
 | 跑整条链并出度量报告 | `uv run spectragent flywheel run --spec chain.yaml`；只重算报告用 `uv run spectragent flywheel report --spec chain.yaml` |
 

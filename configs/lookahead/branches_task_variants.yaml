@@ -4,7 +4,7 @@
 # with --benchmark (lookahead/README.md, A collection round):
 #
 #   spectragent bench --config "$ROUND_DIR/configs/branch_task_variants.yaml" \
-#     --benchmark "$ROUND_DIR/configs/branches_task_variants.yaml" --no-eval
+#     --benchmark "$ROUND_DIR/configs/branches_task_variants.yaml"
 #
 # Each fork belongs to its source run's benchmark (docs/architecture_design.md
 # §4.10.1 "分叉 sweep 是一种任务来源"). Copy this file to a round directory and

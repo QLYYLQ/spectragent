@@ -52,7 +52,7 @@
 | 每任务超时 | 录制 `1800 s`；分叉 `1500 s`；模型请求 `300 s` 单独限制 | 沿用已用过的 runbook 预算；恢复后段检查点曾超出 `900 s`，不能把模型请求上限当整个 task 上限 |
 | 健康排除 | 机器报告原样保存，所有下游统一 `out/health/reviewed-exclusions.json` | 采用这次证据复核：10/25 腾讯 3 条只有遥测请求失败、首末画面已渲染，应撤销其 recording-health 整 run 排除；爱奇艺任务 18 有连续 5 个空白策略步，保留。原报告的 4 条排除和原 932 分叉结果继续作为历史事实 |
 | 复核不是成功判分 | 验证主文档/内容和截图；验证码、站外跳转和账号状态人工检查 | 当前 health 把 Document/Fetch/XHR 一并统计，会误伤遥测，也识别不了所有风控页。恢复通过、health 保留、Agent done 均不能替代任务正确性 |
-| 旧 trace 的复用 | 审阅 v7 不重采；继续分叉时从该源的实际配置建立匹配副本，保留 cursor、时区、窗口、memory、提示等身份 | 新模板用于下一轮。仅换配置不能补出旧帧/thinking；改提示、memory 或浏览器指纹后，不能把新模板直接套到旧录制上要求 source 精确历史 |
+| 旧 trace 的复用 | v7 原件保留，用写下它的那一版工具审阅；当前读者只读格式 8，要在当前版本上查看或分叉 v7 的源就重录。分叉旧源时从该源的实际配置建立匹配副本，保留 cursor、时区、窗口、memory、提示等身份 | 新模板用于下一轮。仅换配置不能补出旧帧/thinking；改提示、memory 或浏览器指纹后，不能把新模板直接套到旧录制上要求 source 精确历史 |
 
 ### Teacher、judge 与决策预算：逐项采用结论
 
@@ -272,7 +272,7 @@ Agent、loop 与 memory 的共有预算见上面的 Teacher 表。分叉 `max_st
 
 | 项目 | 候选差异 | 最终采用 | 采用谁、为什么 | 证据范围与限制 |
 |---|---|---|---|---|
-| recording | 当前显式四通道；历史 YAML 多依赖默认 | **metrics / errors / trajectory / observations 全 true** | 取两者实际行为并显式化。timeline 依赖 action timing；review 历史与 thinking 依赖正文通道。 | 22 源都是 v7、complete，567 policy +22 terminal，共 589 观察。已有 v7 无需为新界面重录；提示身份变化须重录是另一件事。 |
+| recording | 当前显式四通道；历史 YAML 多依赖默认 | **metrics / errors / trajectory / observations 全 true** | 取两者实际行为并显式化。timeline 依赖 action timing；review 历史与 thinking 依赖正文通道。 | 22 源都是 v7、complete，567 policy +22 terminal，共 589 观察。当前读者只读格式 8，v7 要在当前版本上用（新界面、分叉、导出）就得重录；提示身份变化须重录是另一件事。 |
 | live archivers | generic 三类；collection 加 frames | **network + storage + dom_raw + frames** | 取 collection 实跑；纯视觉 agent 仍需 rawDOM 支撑重定位、诊断与后续坐标处理。 | 归档不是 agent 额外观察，不能把辅助帧当下一次 observation。 |
 | offline archivers | 网络录制不能用在 archive source | **replay_log + storage + dom_raw + frames** | replay log 替换 network，其他同录制。 | 来源严格离线，miss 不临时上线补。 |
 | replay log / matcher | 部分历史靠默认，当前 full / exact+normalized | **log_mode full；exact+normalized；site_rules；strict miss；isolation required；shift_dates none** | 保留可追溯的逐请求诊断；不为压缩日志使用 summary 丢掉近邻 miss 细节。 | fuzzy 没有采集证据；站点规则必须冻结到 run，仅忽略不选内容的字段。 |
@@ -385,7 +385,7 @@ uv run spectragent bench --config my/record.yaml \
   --benchmark online_mind2web --subset All --task-id <ID> --no-eval
 ```
 
-基准数据不随仓库发布，数据目录怎么设见 [Browser agent 运行手册](browser_agent_runbook.md) 的"跑数据集"；`--benchmark` 收发布的别名（`configs/benchmarks/<别名>.yaml`）或自己写的基准 YAML 的路径，数据目录写在基准 YAML 的 `task_loader` 里，`--subset` 在组装之前写进它（解析后的配置与 run 的身份都记着）。单个自由文本任务用 `spectragent run --config my/record.yaml --start-url URL --task "..."`，基准里的一个任务用 `spectragent run --config my/record.yaml --benchmark online_mind2web --task-id <ID>`。数据集任务的 trace 目录是 `<trace_dir>/<task_id>_<8 位随机串>`，`spectragent run` 的是 `<trace_dir>/<run_id>`。飞轮的每一段都不需要评测结果；只有想按评测结果筛选源 run（分叉和导出的可选过滤 `require_eval`，默认 `null`）时，才在录制配置里加 `evaluator:` 块、去掉 `--no-eval`，判定会写进每个 trace 的 `evals/`。
+基准数据不随仓库发布，数据目录怎么设见 [Browser agent 运行手册](browser_agent_runbook.md) 的"跑数据集"；`--benchmark` 收发布的别名（`configs/benchmarks/<别名>.yaml`）或自己写的基准 YAML 的路径，数据目录写在基准 YAML 的 `task_loader` 里，`--subset` 在组装之前写进它（解析后的配置与 run 的身份都记着）。单个自由文本任务用 `spectragent run --config my/record.yaml --start-url URL --task "..."`，基准里的一个任务用 `spectragent run --config my/record.yaml --benchmark online_mind2web --task-id <ID>`。数据集任务的 trace 目录是 `<trace_dir>/<task_id>_<8 位随机串>`，`spectragent run` 的是 `<trace_dir>/<run_id>`。飞轮的每一段都不需要判定；只有想按判定筛选源 run（分叉和导出的可选过滤 `require_eval`，默认 `null`）时，才用一份在基准块里列了 `verifiers:` 的基准 YAML 录制并去掉 `--no-eval`（sweep 跑完之后判），或者录完之后用 `spectragent eval --benchmark <那份基准 YAML>` 判；每份判定写进那个 run 的 `verdicts/`。判分器只写在基准块里，运行配置里写 `evaluator:` 会被拒；发布的基准 YAML 不列判分器（LLM judge 的型号要先自己验证），写法见 [Browser agent 运行手册](browser_agent_runbook.md) 的"独立评测已录下的任务"。
 
 ```yaml
 hook:
@@ -520,7 +520,7 @@ for step, entry in iter_replay_log(reader):     # 含收尾批次（step 为 Non
 
 ## 分叉
 
-`configs/flywheel/branch_ui_tars_archive.yaml` 把录下的 run 放回第 t 步之前的状态，让 teacher（这份配置的 `llm`）重新决定第 t 步。任务来自一份分叉 YAML（发布的是 `configs/flywheel/branches_all_steps.yaml`），它只有一个 `trace_branches` 块，经 `--benchmark` 选，与选别的基准一样；分叉 Loop、恢复器与 hook 写在运行配置里。分叉 YAML 的 `data_dir` 下每个通过筛选的源 run、每个选中的步展开 `branches_per_step` 个任务，任务 id 是 `<source_run_id>/s<t>/b<i>`；每个分叉任务属于它源 run 的基准（源任务的 benchmark、subset 与 task id 记在 trace 的 `branch` 里），分叉 sweep 自己不是一个基准。设计见 [architecture_design.md](architecture_design.md) §4.1 `BranchLoop`、§4.10 `trace_branches` 和 §4.14 "恢复：重定位与校验"。`trace_branches` 没有评测加载器，所以传 `--no-eval`；不传而配了 `evaluator:` 时，开跑前就会被拒。
+`configs/flywheel/branch_ui_tars_archive.yaml` 把录下的 run 放回第 t 步之前的状态，让 teacher（这份配置的 `llm`）重新决定第 t 步。任务来自一份分叉 YAML（发布的是 `configs/flywheel/branches_all_steps.yaml`），它只有一个 `trace_branches` 块，经 `--benchmark` 选，与选别的基准一样；分叉 Loop、恢复器与 hook 写在运行配置里。分叉 YAML 的 `data_dir` 下每个通过筛选的源 run、每个选中的步展开 `branches_per_step` 个任务，任务 id 是 `<source_run_id>/s<t>/b<i>`；每个分叉任务属于它源 run 的基准（源任务的 benchmark、subset 与 task id 记在 trace 的 `branch` 里），分叉 sweep 自己不是一个基准。设计见 [architecture_design.md](architecture_design.md) §4.1 `BranchLoop`、§4.10 `trace_branches` 和 §4.14 "恢复：重定位与校验"。`trace_branches` 块不收 `verifiers:`，分叉 sweep 不列判分器，所以跑完不判分，不用传 `--no-eval`。分叉 run 之后可以像别的 run 一样用 `spectragent eval` 判，按它源任务的参考判（见"任务变体"）。
 
 `branch` loop 需要 loop 输入 `checkpoint`，即源 run 目录和要分叉的步。只有 `trace_branches` 会把它放进每个任务的上下文，同时放进去的还有源 run 的 `start_url` 和 `replay_archive`（源 run 目录）。`spectragent run` 自己写的任务（`--task`）没有 `checkpoint`，用它跑分叉配置（包括原路径回放配置）时，`prepare()` 做完槽位校验就报 `IncompatibleLoopInputError`，加 `--dry-run` 也一样；要单独跑或检查一个分叉任务，给 `--benchmark <分叉 YAML> --task-id <source_run_id>/s<t>/b<i>`，任务与它的三部分上下文都来自分叉 YAML，与 bench 跑它时一样。
 
@@ -528,7 +528,7 @@ for step, entry in iter_replay_log(reader):     # 含收尾批次（step 为 Non
 uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
   --benchmark configs/flywheel/branches_all_steps.yaml --list     # 只列任务 id
 uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
-  --benchmark configs/flywheel/branches_all_steps.yaml --no-eval
+  --benchmark configs/flywheel/branches_all_steps.yaml
 ```
 
 ```yaml
@@ -556,7 +556,7 @@ benchmark:
 | `explicit`（`steps: [2, 5]`） | 写了的步；某个源里不是候选的步跳过并记原因 |
 | `last` | 每个源最后一个候选步 |
 
-`agent_outcome`（读源 run 的 `result.json`，默认 `any`）和 `require_eval`（`{evaluator_id, label: 1, slug: null}`）筛选源。`exclude_runs` 也是筛选：它指向一个 `run-exclusions-1` 文件（`{"format": "run-exclusions-1", "runs": [{"run_id", "reason", "note"?}]}`，`~` 展开、相对启动目录），它列出的 run id 不当源，加载器的跳过记录里写着文件给的原因（以 `filtered:` 开头）。这份文件通常由 `python -m lookahead health` 写出（页面一直没渲染、录制时内容请求就失败了、最终回答说任务失败的录制），见 `lookahead/README.md`。有些源不能分叉：读不回来的（比当前 trace 格式旧的也读不回来，只能重录）、本身是分叉或回放 run 的、没有 `browser.network` 归档或环境指纹的、拿不到 setup context 的、与别的源共用 `run_id` 的。`on_unbranchable: raise` 时在开跑前一次列出全部，`skip` 时跳过并记原因。`on_unbranchable` 只管整个源：一个步不是候选，不算不可分叉；一个候选步都没有的源也只是跳过并记原因。
+`agent_outcome`（读源 run 的 `result.json`，默认 `any`）和 `require_eval`（`{verifier_id, label: 1, slug: null}`：源 run 的判定存放 `verdicts/` 里至少有一份这种判分器判了的、标签是 `label` 的判定；写了 `slug` 时只看那一份）筛选源。`exclude_runs` 也是筛选：它指向一个 `run-exclusions-1` 文件（`{"format": "run-exclusions-1", "runs": [{"run_id", "reason", "note"?}]}`，`~` 展开、相对启动目录），它列出的 run id 不当源，加载器的跳过记录里写着文件给的原因（以 `filtered:` 开头）。这份文件通常由 `python -m lookahead health` 写出（页面一直没渲染、录制时内容请求就失败了、最终回答说任务失败的录制），见 `lookahead/README.md`。有些源不能分叉：读不回来的（比当前 trace 格式旧的也读不回来，只能重录；写了 `require_eval` 时还包括 `verdicts/` 读不回来的）、本身是分叉或回放 run 的、没有 `browser.network` 归档或环境指纹的、拿不到 setup context 的、与别的源共用 `run_id` 的。`on_unbranchable: raise` 时在开跑前一次列出全部，`skip` 时跳过并记原因。`on_unbranchable` 只管整个源：一个步不是候选，不算不可分叉；一个候选步都没有的源也只是跳过并记原因。
 
 `exclude_unloaded_checkpoints`（默认 `true`，发布的两份分叉配置都写出来）在选步之后再排一遍：录制网络慢时，teacher 有时在主文档还没加载完的页面上做决定，而离线回放里同一步早已加载完，这样的步不当检查点。判断只读录下的 `capture_state`：每次采集都记下那一刻主文档是否已经到了它的 `load` 事件，还没到就算没加载完（reader 的 `capture_state.settle_state.loaded` 为 `false`），不论落定等待是在上限（`settle_max_wait_s`，5 秒）处结束还是早就停了；只是 DOM 一直在变（播放器、轮播、行情）不算。被排除的步记在加载器的跳过记录里，键 `<源路径>#s<t>`，原因写着 `captured before its initial load finished` 和等了多久；`--list` 列出的任务里没有它们。它在选步之后起作用：`last` 选中的最后一步没加载完，这个源就不分叉，不会往前补一步；任务变体落在这样的步上也跳过并记原因。没录 `capture_state` 的源（没协商它，或 agent 写了 `show_capture_state: false`）没有证据，检查点照常保留。写 `false` 不查。一个从没加载完的文档只在第一步花掉 5 秒上限，之后同一文档的步不再等它的加载，但每一步都照实记作没加载完；两步之间加载完了，下一步就记作已加载（[architecture_design.md](architecture_design.md) §4.4 “初次加载是否完成”）。
 
@@ -688,9 +688,9 @@ uv run spectragent bench --config my_variant_branch.yaml --benchmark my_variant_
 
 分叉 run 的 `config.json` 里，`task` 是变体文本，`branch.task_variant` 记着 `variant_id`、`task_text`、`source_task_text`（源任务）和 `note`。
 
-评测与导出怎么对待变体：
+判分与导出怎么对待变体：
 
-- 变体没有 benchmark 参考答案，源任务的参考描述的是另一份任务。`spectragent eval` 用 `exact_match`、`browsecomp`、`lexbench_browser` 这类按参考评分的 evaluator 评它时，它记为"无法判定"（`task variant '<id>': no reference for this task`），不算判错，不进任务正确率的分母，trace 里不写判定；退出码因此是 1。`online_mind2web`（WebJudge）不读参考，照样评，评的是变体文本，判定的 `benchmark_details.task_variant` 记着变体与源任务。
+- 变体没有 benchmark 参考答案，源任务的参考描述的是另一份任务。要参考的判分器（`exact_match`、`browsecomp`、`lexbench_browser`）判不了它：`spectragent eval` 把它记为"无法判定"（`NoReferenceError: task variant '<id>': no reference for this task`），不算判错，不进任务正确率的分母，它的 `verdicts/` 里什么也不写；退出码因此是 1。`online_mind2web`（WebJudge）不要参考，照样判，判的是变体文本，判定的证据 `task_variant` 记着变体、源任务和 `reference: null`。不是变体的分叉 run，要参考的判分器按源任务的参考判，判定的证据 `source_reference` 记着源任务的 benchmark、subset 与 task id。
 - 导出切分仍按源任务（同一个源的变体与原分叉落在同一份切分里）。`decontamination` 的 `site_instruction` 同时比对变体文本和源任务文本：源任务是将来的评测任务时，从它的录制切出来的变体也被排除，原因写 `its source task's instruction (the run is a task variant)`。
 
 要注意的：restored 历史里每个恢复步都带着源 run 当时的回复（含 thought），写成 `source_material.recorded_reply`。那些 thought 是为源任务想的，源任务的文字只会经它们引用而出现在 teacher 的提示里；提示也不说明这些源材料服务的是另一份任务。第 t 步本身的源回复不进提示。抽几个变体分叉看第一次策略调用的 prompt（`RunTrace.llm_messages(t)`），再决定要不要放量。
@@ -701,7 +701,7 @@ uv run spectragent bench --config my_variant_branch.yaml --benchmark my_variant_
 
 ```bash
 uv run spectragent bench --config configs/flywheel/same_path_ui_tars_archive.yaml \
-  --benchmark configs/flywheel/branches_last_step.yaml --no-eval
+  --benchmark configs/flywheel/branches_last_step.yaml
 ```
 
 ## 导出 SFT 数据
@@ -714,11 +714,11 @@ uv run spectragent bench --config configs/flywheel/same_path_ui_tars_archive.yam
 uv run spectragent export --config configs/flywheel/export_sft.yaml
 ```
 
-导出 YAML 有一个 `exporter:` 块，没有 agent 和 environment；去污染与泄漏扫描要读的基准用 `spectragent export --benchmark <别名|基准 YAML>` 点名（可重复，见下面的去污染）。v1 唯一的导出器是 `exporter_id: openai_messages`，`sample: per_step` 与 `image_store: files` 也只有这一个取值。发布的 `export_sft.yaml` 不按评测结果筛（`filters.require_eval: null`），也不去污染（`decontamination.against: []`），所以直接用在 online_mind2web 的录制上就能导出；teacher 失败的轨迹也会进数据集，每个样本带着 `labels.step_status` 和判定标签，训练时可以再筛。开跑前按自己的数据改这几处：
+导出 YAML 有一个 `exporter:` 块，没有 agent 和 environment；去污染与泄漏扫描要读的基准用 `spectragent export --benchmark <别名|基准 YAML>` 点名（可重复，见下面的去污染）。v1 唯一的导出器是 `exporter_id: openai_messages`，`sample: per_step` 与 `image_store: files` 也只有这一个取值。发布的 `export_sft.yaml` 不按判定筛（`filters.require_eval: null`），也不去污染（`decontamination.against: []`），所以直接用在 online_mind2web 的录制上就能导出；teacher 失败的轨迹也会进数据集，每个样本带着 `labels.step_status` 和判定标签 `labels.verdicts`（源 run 每份判了的判定一项，`{verdict_slug, verifier_id, label, score}`；分叉 run 用它源 run 的），训练时可以再筛。开跑前按自己的数据改这几处：
 
 - `sources_root` 和 `sources`：发布值是 `sources_root: traces`、`sources: ["recorded/*"]`。`sources` 是相对 `sources_root` 的 glob，按路径排序；`sources_root` 写相对路径时按工作目录解析。要导出分叉 run 就加上它们的目录，例如 `["recorded/*", "branches/*"]`，原路径回放的 run 在 `same_path/*`。分叉 run（含原路径回放的 run）的源 run 也必须在本次读到的源里，否则被筛掉，原因记为 `branch source '<id>' not among the sources`。列进来的录制 run 自己也会产出样本，没有只导出分叉的开关。
-- `filters`：`agent_outcome`（默认 `any`；读源 run 自己的 `result.json`）；`require_eval`（默认和发布值都是 `null`，不读判定；要只留判分通过的 run 才写 `{evaluator_id, label: 1, slug: null}`，这要求录制时评测过）；`exclude_restoration_diverged: true`，有一步的恢复检查判为 `warn` 或 `diverged` 的 run 整个排除；`max_document_misses: 0`，回放日志里主 frame 文档 miss 超过这个数的 run 排除（`unlimited` 不限，没有回放日志的 run 算 0）；`exclude_sites`，主机名后缀匹配，度量报告会给出这份名单。对分叉 run，`agent_outcome` 看它自己的结局，`require_eval` 看它的源 run 的判定。不管筛选怎么写，trace 从没关闭的源都跳过，一个源只导出它的 trace 完整到的那些步。用 `verify: warn` 跑的原路径回放 run 只要有一步的检查没通过，就整个被 `exclude_restoration_diverged` 排除。`exclude_unloaded_steps: true`（默认，发布值也写出来）按步筛：录下的 `capture_state` 说这一步采集时主文档还没加载完（reader 的 `capture_state.settle_state.loaded` 为 `false`，与分叉的 `exclude_unloaded_checkpoints` 同一条规则），这一步不产生样本，但照样留在之后样本的上下文里，段不断；每个被筛掉的步记在 manifest 的 `steps.filtered`（`<源路径>#s<t>` → 原因）。没录 `capture_state` 的步照常导出。
-- `decontamination`：`against` 列出学生将来评测用的 benchmark（`[{benchmark: <名字>, subset: <子集>}]`），只查列出来的这些，从不从评测器或判定推断。默认 `[]`：不去污染，manifest 记 `decontaminated: false`；`null` 不是列表，组装时报错。把录制所用的 benchmark 自己列进去会把这些录制全部排除（`ExportEmptyError`）。`match` 取 `task_id`、`site_instruction` 或 `either`。去污染和参考答案泄漏扫描经 `--benchmark` 点名的基准的加载器读基准数据（它们的 `task_loader`，与写了的 `eval_loader`），没点名的 benchmark 用注册加载器的默认值。
+- `filters`：`agent_outcome`（默认 `any`；读源 run 自己的 `result.json`）；`require_eval`（默认和发布值都是 `null`，不读判定；要只留判分通过的 run 才写 `{verifier_id: <判分器种类>, label: 1, slug: null}`，这要求源 run 判过：录制的 sweep 跑完之后判，或之后用 `spectragent eval` 判）；`exclude_restoration_diverged: true`，有一步的恢复检查判为 `warn` 或 `diverged` 的 run 整个排除；`max_document_misses: 0`，回放日志里主 frame 文档 miss 超过这个数的 run 排除（`unlimited` 不限，没有回放日志的 run 算 0）；`exclude_sites`，主机名后缀匹配，度量报告会给出这份名单。对分叉 run，`agent_outcome` 看它自己的结局，`require_eval` 看它的源 run 的判定。不管筛选怎么写，trace 从没关闭的源都跳过，一个源只导出它的 trace 完整到的那些步。用 `verify: warn` 跑的原路径回放 run 只要有一步的检查没通过，就整个被 `exclude_restoration_diverged` 排除。`exclude_unloaded_steps: true`（默认，发布值也写出来）按步筛：录下的 `capture_state` 说这一步采集时主文档还没加载完（reader 的 `capture_state.settle_state.loaded` 为 `false`，与分叉的 `exclude_unloaded_checkpoints` 同一条规则），这一步不产生样本，但照样留在之后样本的上下文里，段不断；每个被筛掉的步记在 manifest 的 `steps.filtered`（`<源路径>#s<t>` → 原因）。没录 `capture_state` 的步照常导出。
+- `decontamination`：`against` 列出学生将来评测用的 benchmark（`[{benchmark: <名字>, subset: <子集>}]`），只查列出来的这些，从不从判分器或判定推断。默认 `[]`：不去污染，manifest 记 `decontaminated: false`；`null` 不是列表，组装时报错。把录制所用的 benchmark 自己列进去会把这些录制全部排除（`ExportEmptyError`）。`match` 取 `task_id`、`site_instruction` 或 `either`。去污染和参考答案泄漏扫描经 `--benchmark` 点名的基准的加载器读基准数据（它们的 `task_loader`，与写了的 `eval_loader`），没点名的 benchmark 用注册加载器的默认值。
 - `split`：`by: site`（源任务 `start_url` 的主机）或 `by: task`，从不按步切，同一组分叉总在同一个切分里。
 - `translator`：`identity` 原样使用 teacher 执行过的动作，UI-TARS 录下的本来就是坐标动作。`index_to_coordinate` 把带元素 index 的 `browser.click`、`browser.type` 换成元素可见部分上的坐标动作，带 index 的 `browser.scroll` 换成从那一点开始的 `browser.scroll`（起点 `start`），其余带 index 的动作不可译（`no_counterpart`），不带 index 的原样保留。它的 `occlusion: check` 要确认换算出的点没有被别的元素盖住，证据按优先级是 cleaner `skyvern_hit_test` 录下的命中测试、`browser.dom_raw` 的原始 DOM、BrowserUse cleaner 录下的 paint order（只认得出部分遮挡）。三样都没有时抛 `OcclusionEvidenceMissingError`；写 `occlusion_unknown: untranslatable` 则把这一步当作不可译。`occlusion: none` 不查遮挡（原来写作 `"off"`）。`untranslatable` 决定不可译的步怎么处理：`drop_step`（结束当前段）、`truncate`（结束这条轨迹）、`keep_as_text`、`fail`。
 - `thought_source: teacher | none` 与 `thought_index_refs: drop | keep` 决定 thought 从哪来、提到元素 index 的 thought 是否丢掉。
@@ -735,7 +735,7 @@ uv run spectragent export --config configs/flywheel/export_sft.yaml
 | `train.jsonl`、`validation.jsonl` | 每行 `{"id", "messages"}`，assistant 轮带 `weight`（目标轮 1，较早的轮 0）；只写有样本的切分 |
 | `train.samples.jsonl` 等 | 同序的 canonical 样本和渲染元数据（来源、翻译记录、量化误差） |
 | `images/<sha256><后缀>` | 截图，每张只存一份 |
-| `manifest.json` | 格式 `af-sft-4`，学生配置摘要，每个源与被跳过、被筛掉的原因，按原因的丢弃数，被筛掉的每一步与原因（`steps.filtered`），切分、去污染（`decontaminated`、`against`）与泄漏扫描的结果（`compared` 只数真的比过的样本；没比的按原因记在 `no_eval_loader` 和 `no_reference_answer`，online_mind2web 没有参考答案，它的样本都在后者）、等待动作的台账（`wait_actions`）；没有墙钟字段和绝对路径。度量报告经同一个模型（`schemas/dataset.py::DatasetManifest`）读它，键对不上时点名文件报错 |
+| `manifest.json` | 格式 `af-sft-5`，学生配置摘要，每个源与被跳过、被筛掉的原因，按原因的丢弃数，被筛掉的每一步与原因（`steps.filtered`），切分、去污染（`decontaminated`、`against`）与泄漏扫描的结果（`compared` 只数真的比过的样本；没比的按原因记在 `no_eval_loader` 和 `no_reference_answer`，online_mind2web 没有参考答案，它的样本都在后者）、等待动作的台账（`wait_actions`）；没有墙钟字段和绝对路径。度量报告经同一个模型（`schemas/dataset.py::DatasetManifest`）读它，键对不上时点名文件报错 |
 
 同样的输入导出两次，输出逐字节相同。CLI 打印每个切分的样本数和按原因丢弃的步数；失败时退出码非 0，什么也不写。要评测训练出来的学生，复制一份学生配置，把 `llm` 指向训练好的模型，再加上 `trace_writer` hook；导出拒绝带 hook 的学生配置，所以评测用的那份单独放。
 
@@ -795,7 +795,7 @@ uv run spectragent flywheel report --root traces/chains/first-live --evidence li
 `--stages` 可写的段名是 `record`、`control`、`same_path`、`branch`、`export`、`report`，用逗号分隔。
 
 - `root` 放在 git 忽略的目录下，例如 `traces/` 或 `tmp/`；`runs/` 不在 `.gitignore` 里。
-- 布局：`<root>/traces/{record,control,same_path,branch}/`，`<root>/datasets/{first,second}/`，`<root>/report/{report.json,report.md}`，`<root>/configs/`（分叉段的分叉 YAML 写成 `<段>_branches.yaml`），`<root>/evals/<段>/`（写了 `evaluate: true` 的段），`<root>/chain.json`（每段的 argv、退出码、产生的 run 和起止时刻；`token_limit` 写了数字时，还有每段的 token 用量和停止记录，见下）。
+- 布局：`<root>/traces/{record,control,same_path,branch}/`，`<root>/datasets/{first,second}/`，`<root>/report/{report.json,report.md}`，`<root>/configs/`（分叉段的分叉 YAML 写成 `<段>_branches.yaml`），`<root>/chain.json`（每段的 argv、退出码、产生的 run 和起止时刻；`token_limit` 写了数字时，还有每段的 token 用量和停止记录，见下）。
 - `same_path` 和 `branch` 的源是 `<root>/traces/record`，所以 `record` 先跑。重跑一个运行段会在已有的 run 旁边再加 run，并记一条 warning（`already holds runs; this stage adds to them`）。重跑 `record` 之后，`same_path`、`branch`、导出和报告都会把新旧录制一起读进来；想干净地重做，换一个 `root`。
 - 导出从不覆盖：选了 `export` 时，只要 `repeat` 要写的 `datasets/first`（`repeat: 2` 时还有 `datasets/second`）有一个已经存在，链就在任何一段开跑之前报 `ChainConfigError`。要在链里重导，先删掉这些目录，再跑 `--stages export,report`。也可以复制 `<root>/configs/export_first.yaml`（链实际用的导出配置，路径都已写好），改掉 `output_dir` 和要改的筛选，用 `spectragent export` 导到别处。只想重算报告就用 `spectragent flywheel report`。
 - 链用的导出 YAML 用 `filters.require_eval: null`（链默认不评测）和 `decontamination: {against: []}`（源本来就是被测 benchmark 的任务）；这两个就是默认值，发布的 `export_sft.yaml` 也这么写。
@@ -911,7 +911,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 
    以模型调用失败结束的 run（429、超时、被拒的 schema，`error_phase: llm`）列在 `model_failures` 里。它们不会让站点进剔除名单。teacher 调用失败的分叉是空分叉，不计入 `miss_policy` 依据的占比，按原因记在 `metrics.branch_coverage.empty`；原路径回放在最后一步失败的 run 没有终止截图。预算里给重跑这些任务留出余量。
 5. 磁盘。UI-TARS 在 memory 容量范围内携带此前截图；trace 里每张截图只存一份（`messages/images/`，报告存储一节的 `messages:images` 类别），调用记录里只写引用，所以 `messages/` 随不同截图的张数线性增长；此外还有 WARC 里的 body 和原始 DOM。截图只存一份之前，一个 12 步的 UI-TARS 录制在 `messages/` 里存了 78 份截图（32.9 MB），不同的只有 10 张（3.9 MB）；现在同一个录制的 `messages/` 约 3 MB。三个站点的冒烟链按每个任务各段合计约 74 MB（之前约 102 MB），300 个任务约 22 GB；真实页面上的字节以报告的存储和保留期两节的实测为准。
-6. 评测默认关闭（`evaluate: false`，即 `--no-eval`）。给 `record` 段写 `evaluate: true` 并在录制 YAML 里加 `evaluator:` 块，每个录制的任务会多一次评测器调用，判定写到 `<root>/evals/record/` 和每个 trace 的 `evals/`。
+6. 判分默认关闭（`evaluate: false`，即 `--no-eval`）。给 `record` 段写 `evaluate: true`，并让 `tasks.benchmark` 指向一份在基准块里列了 `verifiers:` 的基准 YAML（发布的别名一个判分器也不列，这时什么也不判）：这一段的 sweep 跑完之后，基准的离线判分器判它的每个 run，每个 LLM 判分器每个任务多一轮 judge 调用，判定写进每个 run 的 `verdicts/`，链根下没有单独的判定目录。分叉段（`same_path`、`branch`）写 `evaluate: true` 会被拒。段的 `verify_timeout` 交给 bench 的 `--verify-timeout`（判分时间点活体判分器的时限）。
 7. 报告之后，把 `sections.sites.yaml` 放进导出配置的 `filters`，手动再导一次。
 
 ## 排错
@@ -941,8 +941,8 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 - `IncompatibleLoopInputError: Loop 'branch' loop inputs: requires checkpoint`：用 `spectragent run --task` 跑了分叉或原路径回放的配置。它们的任务来自分叉 YAML：`spectragent bench --benchmark <分叉 YAML>`，或单个任务 `spectragent run --benchmark <分叉 YAML> --task-id <id>`；检查配置用 `bench ... --list`。
 - 录制中途失败：录制按 fail closed 处理，两本账分开记。recorder 连接意外断开时，capability 立刻标记自己不存活，观测、动作和收集都抛 `RecorderLostError`；一次收集失败（例如 archive scope 丢过事件）同样让 run 在这一步停下。录制从不在缺少记录的情况下继续：这一步不提交，它的模型调用作为收尾调用落盘，manifest 记 `"status": "incomplete"`，`incomplete_reason` 以 `recording failed at step t:` 开头，`complete_through` 是 t-1；`result.json` 是 `agent_done: error`、`error: "recording failed at step t: ..."`。agent 恰好在那一步说了 done 时，`result.json` 保留 done 和答案，trace 照样是 `incomplete`。之前提交的步完好，可以拿来分叉、导出；要补全就重跑这个任务。
 - run 成功、trace 却是 `incomplete`：尾部没记下来（收尾那次收集、收尾补写的欠账、终止观测那一步，或 `result.json` 写不进去），原因在 manifest 的 `incomplete_reason`。不抛错，run 的结局不变；收尾写不进去的东西丢掉，不重试。磁盘一直满着时连终态都写不进去，manifest 停在 `writing`（日志里有一条 ERROR）。
-- sweep 的汇总：表头下面三行是三本账的计数（`agent outcome`、`environment`、`trace`），之后每个任务一行；`infrastructure failure: ...` 是环境坏了、模型在 provider 重试之后仍不可用（`the model call failed after the provider's retries`）或 trace 不完整，计入 `infrastructure_failures`，退出码 1。被否决的任务那一行写 `vetoed: ...`，最后一行 `vetoed: a guard stopped the sweep at ...`，退出码 3。
-- 导出失败时什么都不写。`ExportEmptyError` 列出每个筛选和丢弃原因的计数，最常见的是写了 `require_eval` 却没评测过、`against` 列了录制所用的 benchmark，或者 `sources` 只列了分叉 run 而没列它们的源 run。`OcclusionEvidenceMissingError` 见"导出 SFT 数据"。`StudentCaptureMismatchError`：学生的截图管线与录制不同。`SampleTooLongError` 点名超长的样本。`CredentialLeakError`、`ReferenceLeakError`：凭证形状或参考答案进了输出。`output_dir ... exists`：换一个目录，或者删掉旧的。
+- sweep 的汇总：表头下面三行是三本账的计数（`agent outcome`、`environment`、`trace`），基准声明了主判定时还有一行 `primary verdict (<种类>): success rate ...`（主判定没判的任务不进这个成功率，也不算失败；分叉 sweep 没有这一行），之后每个任务一行，判分器的计数在最后的 `verifiers:` 一节；`infrastructure failure: ...` 是环境坏了、模型在 provider 重试之后仍不可用（`the model call failed after the provider's retries`）或 trace 不完整，计入 `infrastructure_failures`，退出码 1。被否决的任务那一行写 `vetoed: ...`，最后一行 `vetoed: a guard stopped the sweep at ...`，退出码 3。
+- 导出失败时什么都不写。`ExportEmptyError` 列出每个筛选和丢弃原因的计数，最常见的是写了 `require_eval` 却没判过（源 run 的 `verdicts/` 里没有那种判分器判了的判定）、`against` 列了录制所用的 benchmark，或者 `sources` 只列了分叉 run 而没列它们的源 run。`OcclusionEvidenceMissingError` 见"导出 SFT 数据"。`StudentCaptureMismatchError`：学生的截图管线与录制不同。`SampleTooLongError` 点名超长的样本。`CredentialLeakError`、`ReferenceLeakError`：凭证形状或参考答案进了输出。`output_dir ... exists`：换一个目录，或者删掉旧的。
 - `spectragent bench: the pre-flight check refused the configuration for task ...`（退出码 2）：开跑之前，第一个任务的 `prepare()` 拒绝了配置，一个任务也没跑、没建 trace。冒号后面是原来的错误，点名两边：组合问题（`BrowserCooperationError`）、协商（`IncompatibleFragmentError`、`IncompatibleActionError`、`IncompatibleArchiveError`）、loop 输入、任务上下文里没有谁接受的 setup 键。改配置后重跑；只想看哪里不对可以先 `--dry-run`（`spectragent run`）。
 - `spectragent bench: the sweep reached its token limit after task ...`（退出码 4）：sweep 的 runs 记下的用量达到了 `--token-limit`。那个任务跑完了，之后的任务没开始；汇总表的表头带 `token_limit_reached=1`，`tokens:` 一行是合计，每个任务那一行带它的 token 数，最后一行写着累计、上限和没开始的任务数。`no usage reported (not counted): ...` 是 provider 没报用量的调用，`tokens not counted: ...` 是 trace 读不回来的任务。
 - `spectragent bench: the pre-flight check refused ... a token limit counts the tokens each task's trace records, and this configuration writes no trace`（退出码 2）：给了 `--token-limit`，配置里却没有 `trace_writer` hook，用量无从数起。加上 `trace_writer`，或者去掉上限。
@@ -969,7 +969,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 - 页面落定的等待看不到窗口里只在途、还没完成的请求：点击之后一次慢的接口调用，页面又没有加载提示，视口里也已经有内容时，不等它，下一步才看到结果（视口空着时会等）。内容只认文字与图形元素：只由 CSS 背景图、伪元素文字或闭合 shadow root 组成的页面每一步等满上限；盖住内容的遮罩、还没画东西的 iframe 与 canvas 都算有内容。CSS 过渡与动画、canvas、进程外 iframe 里的变化不经过主文档的 DOM，不算变化。
 - 进程外 iframe 的 storage 不读，记在 `storage.json` 的 `unread_frames` 里。
 - anti-bot 只按应答头识别，不带这些头的拦截页面认不出来。度量只认 browser 的证据格式。
-- token 上限只数 trace 里记下的用量：provider 没报用量的调用只计数、点名，不加 token；评测器的 judge 调用不在 trace 里，不计入（链默认不评测）。
+- token 上限只数 trace 里记下的用量：provider 没报用量的调用只计数、点名，不加 token；离线判分器的 judge 调用不在 trace 里（用量记在各份判定的 `usage` 里），不计入（链默认不判分）。
 
 ## 定位入口
 
@@ -979,7 +979,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 ## 独立 Jev replay 审查
 
 运行示例统一使用 `max_actions_per_step: 4`；record、same-path replay、branch 和学生配置保持相同预算。
-当前 trace 为 v7，调用强制区分 `chat` 与 `decision`。旧轨迹保留原件，使用其写入版本的工具审阅；
+当前 trace 为 v8，调用强制区分 `chat` 与 `decision`。旧轨迹保留原件，使用其写入版本的工具审阅；
 新 reader 不自动补 `kind` 或转换旧格式。独立审查只读 source/replay，不改变恢复校验、源 token 计数或任务正确性评分。
 设计见 [architecture_design.md](architecture_design.md) §4.18。
 

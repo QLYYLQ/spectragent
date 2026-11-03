@@ -2,12 +2,13 @@
 # flywheel): every recorded run restored to its LAST branchable step, twice.
 #
 #   spectragent bench --config configs/flywheel/same_path_ui_tars_archive.yaml \
-#     --benchmark configs/flywheel/branches_last_step.yaml --no-eval
+#     --benchmark configs/flywheel/branches_last_step.yaml
 #
 # The metrics chain (spectragent flywheel run) writes data_dir itself (its
 # traces/record); run it by hand by pointing data_dir at your recordings. Each
 # task belongs to its source run's benchmark (docs/architecture_design.md §4.10.1
-# "分叉 sweep 是一种任务来源"); there is no eval loader for branch tasks: pass --no-eval.
+# "分叉 sweep 是一种任务来源"); a trace_branches block takes no verifiers, so the
+# sweep judges nothing and needs no --no-eval.
 benchmark:
   - benchmark_id: trace_branches
     task_loader:

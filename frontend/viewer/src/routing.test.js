@@ -14,7 +14,7 @@ test("the explicit run URL retains its step and section", () => {
     view: "run",
     key: "source/run-two",
     step: "3",
-    tab: "evaluations",
+    tab: "verdicts",
   };
   assert.deepEqual(startupRoute(route, "record/run-one"), route);
 });

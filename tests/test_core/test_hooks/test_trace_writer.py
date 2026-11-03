@@ -143,7 +143,7 @@ class TestTraceWriterRegistration:
         assert handlers == {
             ("llm", "around_ainvoke"),
             ("env", "around_act"),
-            ("env", "after_read_oracle_scores"),
+            ("env", "after_verify_live"),
             ("env", "after_task_text_from_setup"),
             ("loop", "around_record_step"),
             ("loop", "around_execute_step"),
@@ -253,7 +253,7 @@ class TestTraceWriterLifecycle:
         run_dir = await _start(writer)
         assert (run_dir / "manifest.json").exists()
         assert (run_dir / "config.json").exists()
-        assert RunTrace(run_dir).manifest.format_version == 7
+        assert RunTrace(run_dir).manifest.format_version == 8
 
     async def test_config_records_full_identity(self, writer):
         """A trace nothing can join back to its dataset is an orphan.

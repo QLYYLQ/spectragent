@@ -27,12 +27,12 @@ Spectragent's own bridge. One task is one run:
    launcher adds, whether the page ended its episode; every other task answers
    ``False`` without a wait or a call.
 3. **read_score**, at the Runtime's scoring point, within the run's
-   ``oracle_timeout``: for an information-retrieval task, scored on the agent's
+   ``verify_timeout``: for an information-retrieval task, scored on the agent's
    answer, the run's answer goes to the service first as an ``answer`` action
    (``/execute_action``), as AndroidWorld's own runner hands it over, unless the
    run ended without one; then ``/task/score``. HTTP 500, a broken reply or a
-   dead service raise :class:`AndroidWorldError`, so the environment records
-   "not scored".
+   dead service raise :class:`AndroidWorldError`, so the environment records a
+   verdict that judged nothing.
 4. **stop**, at teardown: ``/task/tear_down`` (best effort, since the device's
    changes are thrown away with the run; a failure is logged), then the
    service's process group: SIGTERM, then SIGKILL for the whole group, its
@@ -92,7 +92,7 @@ from spectragent.core.capabilities.android.oracle.androidworld_tasks import (
     AndroidWorldTask,
 )
 from spectragent.core.capabilities.android.processes import ProcessGroup, finish, log_tail
-from spectragent.schemas.oracle_score import OracleReading
+from spectragent.schemas.verdict import Judgment, VerifierIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -556,7 +556,7 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
                 "46 s on a fresh boot, where the launcher twice waits up to 30 s for OsmAnd "
                 "to make the table AndroidWorld clears. Reset took up to 27 s when "
                 "AndroidWorld reinstalled its accessibility forwarder. The score is limited "
-                "by the run's oracle_timeout instead."
+                "by the run's verify_timeout instead."
             ),
         ),
     ] = 120.0
@@ -682,7 +682,11 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
             raise AndroidWorldError(f"GET /task/episode_over answered no over: {reply!r}")
         return over
 
-    async def read_score(self, *, answer: str | None) -> OracleReading | None:
+    def identity(self) -> VerifierIdentity | None:
+        """AndroidWorld at the pinned commit its service runs."""
+        return VerifierIdentity(verifier_id=self.oracle_id, version=PINNED_COMMIT)
+
+    async def read_score(self, *, answer: str | None) -> Judgment:
         service, task = self._service, self._task
         if service is None or task is None or not self._initialized:
             raise AndroidWorldError("no AndroidWorld task was initialized on this device")
@@ -720,12 +724,7 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
         if on_the_answer:
             # Whether there was an answer to score; its text is in result.json.
             provenance["answer"] = "sent" if answer is not None else "none"
-        return OracleReading(
-            score=float(score),
-            oracle=self.oracle_id,
-            oracle_version=PINNED_COMMIT,
-            provenance=provenance,
-        )
+        return Judgment(score=float(score), evidence=dict(provenance))
 
     async def stop(self) -> None:
         service = self._service

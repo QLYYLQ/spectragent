@@ -18,20 +18,6 @@ from spectragent.schemas.agent_result import (
 )
 from spectragent.schemas.browser_storage import BrowserStorageState
 from spectragent.schemas.eval_reference import EvalReference
-from spectragent.schemas.eval_result import (
-    AgentResultRef,
-    EvalDetails,
-    EvalResult,
-    EvalUsage,
-    FailureClassification,
-)
-from spectragent.schemas.eval_summary import (
-    EvalSummary,
-    FailureCategoryStats,
-    JudgeTokenUsage,
-    MetricStats,
-    OverallStatistics,
-)
 from spectragent.schemas.prompt import PromptRef, PromptSnapshot, TemplatePrompt, TextPrompt
 from spectragent.schemas.restoration import (
     ACTION_REASONS,
@@ -55,6 +41,7 @@ from spectragent.schemas.task import (
     TaskSetup,
     TaskSetupRegistrar,
 )
+from spectragent.schemas.verdict import JudgeUsage, Judgment, Verdict, VerifierIdentity
 
 __all__ = [
     # Types
@@ -102,16 +89,9 @@ __all__ = [
     "AgentResult",
     # Eval reference
     "EvalReference",
-    # Eval result
-    "EvalUsage",
-    "EvalDetails",
-    "FailureClassification",
-    "AgentResultRef",
-    "EvalResult",
-    # Eval summary
-    "MetricStats",
-    "OverallStatistics",
-    "FailureCategoryStats",
-    "JudgeTokenUsage",
-    "EvalSummary",
+    # Verdicts
+    "JudgeUsage",
+    "Judgment",
+    "Verdict",
+    "VerifierIdentity",
 ]

@@ -35,10 +35,10 @@ from spectragent.core.trace.models import (
     TraceNegotiation,
     TraceStatus,
 )
+from spectragent.core.trace.verdicts import write_verdict
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionResult
-from spectragent.schemas.eval_result import EvalResult
 from spectragent.schemas.observation.capture_state import (
     FailedVisibleResources,
     PointerState,
@@ -49,7 +49,8 @@ from spectragent.schemas.observation.geometry import PointFrame
 from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
 from spectragent.schemas.step_record import StepRecord
 from spectragent.schemas.task import SetupTaskText
-from tests._helpers.trace_builder import agent_result, write_verdict
+from spectragent.schemas.verdict import Verdict
+from tests._helpers.trace_builder import agent_result
 
 TASK_TEXT = "Put the blue kettle in the cart"
 START_URL = "https://shop.example.test/"
@@ -158,7 +159,7 @@ def write_run(
     status: TraceStatus = TraceStatus.COMPLETE,
     incomplete_reason: str = "recording failed at step 1: ArchiveCollectionError: boom",
     agent_done: AgentDoneStatus | None = AgentDoneStatus.DONE,
-    verdicts: dict[str, EvalResult] | None = None,
+    verdicts: Sequence[Verdict] = (),
     secrets_recorded: bool = False,
     input_platform: BrowserPlatform = "macos",
     task_text: SetupTaskText | None = None,
@@ -281,8 +282,8 @@ def write_run(
             status,
             incomplete_reason=incomplete_reason if status is TraceStatus.INCOMPLETE else None,
         )
-    for slug, verdict in (verdicts or {}).items():
-        write_verdict(wal.run_dir, slug, verdict)
+    for verdict in verdicts:
+        write_verdict(wal.run_dir, verdict)
     return wal.run_dir
 
 

@@ -63,7 +63,8 @@ def _registry_keys() -> dict[str, str]:
         "spectragent.agents",
         "spectragent.core",
         "spectragent.schemas",
-        "spectragent.evaluator",
+        "spectragent.verifiers",
+        "spectragent.benchmarks",
         "spectragent.export",
     ):
         discover(root)

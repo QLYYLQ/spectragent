@@ -69,7 +69,7 @@ class TestRunTrace:
         # The agent timed out (result.json); the trace recorded all of it.
         assert trace.manifest.status == TraceStatus.COMPLETE
         assert trace.manifest.complete_through == 1
-        assert trace.manifest.format_version == TRACE_FORMAT_VERSION == 7
+        assert trace.manifest.format_version == TRACE_FORMAT_VERSION == 8
 
     def test_run_id(self, trace):
         assert trace.run_id == "run-test"
@@ -994,135 +994,145 @@ class TestAnOfflineReaderFindsFragmentClasses:
         assert len(discovered) == 1
 
 
-class TestEvals:
-    """``evals()`` — the post-run verdicts, the one accessor that lists a directory (§5.5)."""
+class TestVerdicts:
+    """``verdicts()`` — the verdict store, the one accessor that lists a directory (§5.5)."""
 
-    def test_no_evals_directory_is_empty(self, trace, reference):
-        (reference.run_dir / "evals").rmdir()
-        assert trace.evals() == {}
+    def test_no_verdicts_directory_is_empty(self, trace, reference):
+        assert not (reference.run_dir / "verdicts").exists(), "the WAL makes no store at init"
+        assert trace.verdicts() == {}
 
-    def test_an_empty_evals_directory_is_empty(self, trace, reference):
-        assert (reference.run_dir / "evals").is_dir(), "the WAL creates it at init"
-        assert trace.evals() == {}
+    def test_an_empty_verdicts_directory_is_empty(self, trace, reference):
+        (reference.run_dir / "verdicts").mkdir()
+        assert trace.verdicts() == {}
 
     def test_verdicts_come_back_typed_and_sorted_by_slug(self, trace, reference):
-        from spectragent.schemas.eval_result import EvalResult
-        from tests._helpers.trace_builder import eval_result, write_verdict
+        from spectragent.core.trace.verdicts import write_verdict
+        from spectragent.schemas.verdict import Verdict
+        from tests._helpers.trace_builder import verdict
 
-        write_verdict(reference.run_dir, "online_mind2web-ab12", eval_result(predicted_label=0))
-        write_verdict(reference.run_dir, "exact_match", eval_result(evaluator_id="exact_match"))
-        write_verdict(reference.run_dir, "a-b", eval_result())
-        write_verdict(reference.run_dir, "a", eval_result())
-        verdicts = trace.evals()
-        assert list(verdicts) == ["a", "a-b", "exact_match", "online_mind2web-ab12"]
-        assert all(isinstance(v, EvalResult) for v in verdicts.values())
-        assert verdicts["online_mind2web-ab12"].predicted_label == 0
+        written = [
+            verdict("online_mind2web", label=0),
+            verdict("exact_match"),
+            verdict("exact_match", config_signature={"allow_substring": True}),
+            verdict("androidworld", attachment="live", label=None, score=0.5),
+        ]
+        for item in written:
+            write_verdict(reference.run_dir, item)
+        verdicts = trace.verdicts()
+        assert list(verdicts) == sorted(item.slug for item in written)
+        assert all(isinstance(v, Verdict) for v in verdicts.values())
+        assert verdicts[written[0].slug].label == 0
+        assert verdicts[written[3].slug].score == 0.5
 
     def test_not_cached(self, trace, reference):
-        from tests._helpers.trace_builder import eval_result, write_verdict
+        from spectragent.core.trace.verdicts import write_verdict
+        from tests._helpers.trace_builder import verdict
 
-        assert trace.evals() == {}
-        write_verdict(reference.run_dir, "exact_match", eval_result())
-        assert list(trace.evals()) == ["exact_match"], "a verdict written later is seen"
+        assert trace.verdicts() == {}
+        written = verdict()
+        write_verdict(reference.run_dir, written)
+        assert list(trace.verdicts()) == [written.slug], "a verdict written later is seen"
 
     def test_only_json_files_count(self, trace, reference):
-        from tests._helpers.trace_builder import eval_result, write_verdict
+        from spectragent.core.trace.verdicts import write_verdict
+        from tests._helpers.trace_builder import verdict
 
-        write_verdict(reference.run_dir, "exact_match", eval_result())
-        evals_dir = reference.run_dir / "evals"
-        (evals_dir / "tmp0123456789abcdef.tmp").write_bytes(b"{torn")  # an interrupted write
-        (evals_dir / "notes.txt").write_text("hand-written")
-        (evals_dir / "nested.json").mkdir()
-        assert list(trace.evals()) == ["exact_match"]
+        written = verdict()
+        write_verdict(reference.run_dir, written)
+        store = reference.run_dir / "verdicts"
+        (store / "tmp0123456789abcdef.tmp").write_bytes(b"{torn")  # an interrupted write
+        (store / "notes.txt").write_text("hand-written")
+        (store / "nested.json").mkdir()
+        assert list(trace.verdicts()) == [written.slug]
 
     @pytest.mark.parametrize(
         "content",
         [b"{not json", b'{"task_id": "t"}', "\udc80".encode("utf-8", "surrogatepass")],
-        ids=["not_json", "not_an_eval_result", "not_utf8"],
+        ids=["not_json", "not_a_verdict", "not_utf8"],
     )
     def test_a_corrupt_verdict_names_its_file(self, trace, reference, content):
-        evals_dir = reference.run_dir / "evals"
-        evals_dir.mkdir(exist_ok=True)  # the WAL creates it at init
-        (evals_dir / "exact_match.json").write_bytes(content)
-        with pytest.raises(TraceSchemaError, match="exact_match.json") as info:
-            trace.evals()
-        assert info.value.path == evals_dir / "exact_match.json"
+        store = reference.run_dir / "verdicts"
+        store.mkdir()
+        (store / "exact_match_12345678.json").write_bytes(content)
+        with pytest.raises(TraceSchemaError, match="exact_match_12345678.json") as info:
+            trace.verdicts()
+        assert info.value.path == store / "exact_match_12345678.json"
 
-    @pytest.mark.parametrize("version", ["1.0", "1.1", "2.0"])
-    def test_old_verdict_versions_are_refused(self, trace, reference, version):
-        from tests._helpers.trace_builder import eval_result
+    def test_an_old_evaluation_record_is_refused(self, trace, reference):
+        """A record of the evaluation layer this store replaced is not a verdict."""
+        store = reference.run_dir / "verdicts"
+        store.mkdir()
+        old = {
+            "schema_version": "2.1",
+            "task_id": "t",
+            "evaluator_id": "exact_match",
+            "verdict_source": "graded",
+            "predicted_label": 1,
+        }
+        (store / "exact_match_12345678.json").write_text(json.dumps(old), "utf-8")
+        with pytest.raises(TraceSchemaError, match="exact_match_12345678.json"):
+            trace.verdicts()
 
-        payload = eval_result().model_dump(mode="json")
-        payload["schema_version"] = version
-        path = reference.run_dir / "evals" / "old.json"
-        path.write_text(json.dumps(payload), "utf-8")
+    def test_a_verdict_under_another_slug_is_refused(self, trace, reference):
+        """The store names each verdict by its verifier's slug; a renamed file is not what was written."""
+        from tests._helpers.trace_builder import verdict
 
-        with pytest.raises(TraceSchemaError, match="old.json"):
-            trace.evals()
-
-    @pytest.mark.parametrize("missing", ["schema_version", "evaluator_config", "verdict_source"])
-    def test_persisted_verdict_requires_identity_and_source(self, trace, reference, missing):
-        from tests._helpers.trace_builder import eval_result
-
-        # Fresh construction may default to graded; persisted evidence must
-        # prove that the writer actually recorded the source and identity.
-        verdict = eval_result()
-        assert verdict.verdict_source == "graded"
-        payload = verdict.model_dump(mode="json")
-        del payload[missing]
-        path = reference.run_dir / "evals" / "missing.json"
-        path.write_text(json.dumps(payload), "utf-8")
-
-        with pytest.raises(TraceSchemaError, match=missing):
-            trace.evals()
+        store = reference.run_dir / "verdicts"
+        store.mkdir()
+        (store / "exact_match_00000000.json").write_text(verdict().model_dump_json(), "utf-8")
+        with pytest.raises(TraceSchemaError, match="not of 'exact_match_00000000'"):
+            trace.verdicts()
 
     def test_the_first_bad_verdict_named_does_not_depend_on_listing_order(
         self, trace, reference, monkeypatch
     ):
         """The directory is walked sorted, whatever order the file system lists it in."""
-        evals_dir = reference.run_dir / "evals"
+        store = reference.run_dir / "verdicts"
+        store.mkdir()
         for name in ("b_judge.json", "a_judge.json"):
-            (evals_dir / name).write_bytes(b"{not json")
+            (store / name).write_bytes(b"{not json")
         listed = Path.iterdir
 
         def backwards(self: Path):
             entries = list(listed(self))
-            return iter(sorted(entries, reverse=True)) if self == evals_dir else iter(entries)
+            return iter(sorted(entries, reverse=True)) if self == store else iter(entries)
 
         monkeypatch.setattr(Path, "iterdir", backwards)
         with pytest.raises(TraceSchemaError) as info:
-            trace.evals()
-        assert info.value.path == evals_dir / "a_judge.json"
+            trace.verdicts()
+        assert info.value.path == store / "a_judge.json"
 
     def test_a_verdict_symlinked_out_of_the_run_is_refused(self, trace, reference, tmp_path):
-        from tests._helpers.trace_builder import eval_result, write_verdict
+        from spectragent.core.trace.verdicts import write_verdict
+        from tests._helpers.trace_builder import verdict
 
-        outside = write_verdict(tmp_path / "elsewhere", "exact_match", eval_result())
-        evals_dir = reference.run_dir / "evals"
-        evals_dir.mkdir(exist_ok=True)  # the WAL creates it at init
-        (evals_dir / "exact_match.json").symlink_to(outside)
+        written = verdict()
+        outside = write_verdict(tmp_path / "elsewhere", written)
+        store = reference.run_dir / "verdicts"
+        store.mkdir()
+        (store / f"{written.slug}.json").symlink_to(outside)
         with pytest.raises(TraceSchemaError, match="outside the run directory"):
-            trace.evals()
+            trace.verdicts()
 
-    def test_an_evals_directory_symlinked_out_of_the_run_is_refused(
-        self, trace, reference, tmp_path
-    ):
-        from tests._helpers.trace_builder import eval_result, write_verdict
+    def test_a_store_symlinked_out_of_the_run_is_refused(self, trace, reference, tmp_path):
+        from spectragent.core.trace.verdicts import write_verdict
+        from tests._helpers.trace_builder import verdict
 
-        write_verdict(tmp_path / "elsewhere", "exact_match", eval_result())
-        (reference.run_dir / "evals").rmdir()  # the WAL's own, still empty
-        (reference.run_dir / "evals").symlink_to(tmp_path / "elsewhere" / "evals")
+        write_verdict(tmp_path / "elsewhere", verdict())
+        (reference.run_dir / "verdicts").symlink_to(tmp_path / "elsewhere" / "verdicts")
         with pytest.raises(TraceSchemaError, match="outside the run directory"):
-            trace.evals()
+            trace.verdicts()
 
     def test_the_manifest_does_not_list_them(self, trace, reference):
-        """Written after the run, verdicts are not in the manifest — and need not be."""
-        from tests._helpers.trace_builder import eval_result, write_verdict
+        """Verdicts are kept beside the run's records, never in its manifest."""
+        from spectragent.core.trace.verdicts import write_verdict
+        from tests._helpers.trace_builder import verdict
 
-        write_verdict(reference.run_dir, "exact_match", eval_result())
+        written = verdict()
+        write_verdict(reference.run_dir, written)
         manifest = (reference.run_dir / "manifest.json").read_text()
-        assert "evals" not in manifest
-        assert list(trace.evals()) == ["exact_match"]
+        assert "verdicts" not in manifest
+        assert list(trace.verdicts()) == [written.slug]
 
 
 def test_recording_timing_reads_only_later_committed_extra_evidence(tmp_path: Path) -> None:

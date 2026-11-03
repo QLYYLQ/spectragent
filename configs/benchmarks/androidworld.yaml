@@ -6,6 +6,9 @@
 # oracle's launcher (docs/architecture_design.md §11.2). Its task oracle, the
 # device image and the open_app name table are still written in the run
 # configuration's Android capability block until they move here (§4.10.1).
+# The oracle judges each task on the device at the scoring point, within
+# --verify-timeout; its verdict (verifier androidworld) goes into the run's
+# verdicts/ and is this benchmark's primary verdict. This block takes no verifiers.
 benchmark:
   - benchmark_id: androidworld
     task_loader:

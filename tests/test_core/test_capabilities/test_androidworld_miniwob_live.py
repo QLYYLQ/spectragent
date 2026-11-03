@@ -126,8 +126,8 @@ async def test_a_miniwob_task_initializes_on_a_fresh_boot_and_its_episode_runs(
         over = await capability.episode_over()
         asked_s = time.monotonic() - asked
         assert over is False
-        (unsolved,) = await env.read_oracle_scores(timeout_s=60, answer=None)
-        assert (unsolved.status, unsolved.score) == ("scored", 0.0), unsolved.detail
+        (unsolved,) = await env.verify_live(timeout_s=60, answer=None)
+        assert (unsolved.status, unsolved.score) == ("judged", 0.0), unsolved.detail
     finally:
         await env.teardown()
 

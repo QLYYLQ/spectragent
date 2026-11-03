@@ -104,8 +104,8 @@ class ExportFilters:
     require_eval: RequireEval | None = Field(
         default=None,
         description=(
-            "Keep sources an evaluator graded 'label' (evaluator_id, label: 1, slug: null — "
-            "a branch run is judged by its source run's verdicts). None: no evaluation needed."
+            "Keep sources a verifier judged 'label' (verifier_id, label: 1, slug: null — "
+            "a branch run is judged by its source run's verdicts). None: no verdict needed."
         ),
     )
     exclude_restoration_diverged: bool = Field(

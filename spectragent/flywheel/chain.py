@@ -30,8 +30,9 @@ loader's ``data_dir`` (``<root>/traces/record``), written to
 (``spectragent export --benchmark``). A block missing, or there twice, is a
 :class:`ChainConfigError` naming the stage and the block — before any stage
 runs. Everything else (agent, tier, archivers, selector, branches,
-``verify``, evaluator) is the stage YAML's; a control group's YAML says
-``archive: []`` itself.
+``verify``) is the stage YAML's, and the verifiers are the benchmark
+YAML's (``tasks.benchmark``); a control group's YAML says ``archive: []``
+itself.
 
 **A stage's outcome.** A run stage that exits 0 or 1 (a task with an
 infrastructure failure is data to measure) and wrote at least one run
@@ -141,15 +142,17 @@ class TasksSpec(_Spec):
 
 
 class StageSpec(_Spec):
-    """A ``spectragent bench`` stage: its YAML, the per-task timeouts, whether it evaluates."""
+    """A ``spectragent bench`` stage: its YAML, the per-task timeouts, whether its verifiers judge it."""
 
     config: Path
     #: ``same_path`` / ``branch`` only, and required there: the branches YAML whose
     #: ``trace_branches`` task source the stage runs (the recording stages run ``tasks``).
     benchmark: Path | None = None
     timeout: float = Field(default=300.0, gt=0)
-    #: Seconds each task oracle may take to score a task; ``None``: the bench's default.
-    oracle_timeout: float | None = Field(default=None, gt=0)
+    #: Seconds each live verifier may take to judge a task; ``None``: the bench's default.
+    verify_timeout: float | None = Field(default=None, gt=0)
+    #: Whether the benchmark's offline verifiers judge the stage's runs after
+    #: it (``False``: ``--no-eval``); each verdict goes into its run's store.
     evaluate: bool = False
 
 
@@ -210,8 +213,8 @@ class ChainSpec(_Spec):
             spec = getattr(self, stage)
             if spec is not None and spec.evaluate:
                 raise ValueError(
-                    f"{stage}.evaluate: a trace_branches sweep has no eval loader (arch §4.10); "
-                    f"it always runs with --no-eval"
+                    f"{stage}.evaluate: a trace_branches sweep configures no verifier of its own "
+                    f"(arch §4.10.1); it always runs with --no-eval"
                 )
         return self
 
@@ -751,8 +754,8 @@ def _run_stage(
         "--log-level",
         log_level,
     ]
-    if stage_spec.oracle_timeout is not None:
-        argv += ["--oracle-timeout", f"{stage_spec.oracle_timeout:g}"]
+    if stage_spec.verify_timeout is not None:
+        argv += ["--verify-timeout", f"{stage_spec.verify_timeout:g}"]
     if branches is not None:
         branches_path, branches_raw = branches
         _write_yaml(branches_path, branches_raw)
@@ -766,9 +769,7 @@ def _run_stage(
             argv += ["--task-id", task_id]
         if tasks.limit is not None:
             argv += ["--limit", str(tasks.limit)]
-    if stage_spec.evaluate and stage not in BRANCH_STAGES:
-        argv += ["--evals-dir", str(layout.evals(stage))]
-    else:
+    if not stage_spec.evaluate or stage in BRANCH_STAGES:
         argv.append("--no-eval")
     if remaining is not None:
         argv += ["--token-limit", str(remaining)]

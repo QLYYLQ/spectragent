@@ -22,13 +22,13 @@ from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.loops import ReactLoop
 from spectragent.core.loops.errors import RunAbort, carry_outcome
 from spectragent.core.loops.limits import ExecutionLimits
-from spectragent.core.runtime import ORACLE_TIMEOUT_S, AgentRuntime
+from spectragent.core.runtime import VERIFY_TIMEOUT_S, AgentRuntime
 from spectragent.core.trace import RunTrace
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
-from spectragent.schemas.oracle_score import OracleReading, OracleScore
 from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.step_record import StepRecord
+from spectragent.schemas.verdict import Judgment, Verdict, VerifierIdentity
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
 from tests._helpers.trace_builder import agent_result
 
@@ -1475,7 +1475,8 @@ async def test_task_elapsed_time_includes_loading_cleanup_and_result_readback(mo
 class _OracleCap(_DoneCap):
     """``_DoneCap`` with a task oracle that writes ``score`` into the shared log when asked.
 
-    It keeps each run answer it is handed in *given* and replies with a score;
+    It judges as ``lifecycle_oracle``; it keeps each run answer it is handed in
+    *given* and replies with a score;
     with *fails* it raises, and with *hangs* it waits until it is cancelled,
     writes ``score cancelled``, and lets the cancellation through.
     """
@@ -1490,7 +1491,10 @@ class _OracleCap(_DoneCap):
         self.asked = asyncio.Event()
         self.given: list[str | None] = []
 
-    async def read_score(self, *, answer: str | None) -> OracleReading | None:
+    def oracle_identity(self) -> VerifierIdentity | None:
+        return VerifierIdentity(verifier_id="lifecycle_oracle")
+
+    async def read_score(self, *, answer: str | None) -> Judgment:
         self.log.append("score")
         self.given.append(answer)
         self.asked.set()
@@ -1502,7 +1506,7 @@ class _OracleCap(_DoneCap):
                 raise
         if self.fails:
             raise RuntimeError("device unreachable")
-        return OracleReading(score=1.0, oracle="lifecycle_oracle")
+        return Judgment(score=1.0)
 
 
 class _ScoringEnv(_Env):
@@ -1515,11 +1519,9 @@ class _ScoringEnv(_Env):
         self.log: list[str] = []
         self.timeouts: list[float] = []
 
-    async def read_oracle_scores(
-        self, *, timeout_s: float, answer: str | None
-    ) -> list[OracleScore]:
+    async def verify_live(self, *, timeout_s: float, answer: str | None) -> list[Verdict]:
         self.timeouts.append(timeout_s)
-        return await super().read_oracle_scores(timeout_s=timeout_s, answer=answer)
+        return await super().verify_live(timeout_s=timeout_s, answer=answer)
 
     async def teardown(self):
         self.log.append("teardown")
@@ -1615,7 +1617,7 @@ class TestTheScoringPoint:
             *error,
             "teardown",
         ]
-        assert env.timeouts == [ORACLE_TIMEOUT_S]
+        assert env.timeouts == [VERIFY_TIMEOUT_S]
         assert hook.end_kwargs["result"].agent_done == agent_done
         assert oracle.given == [answer]
 
@@ -1643,13 +1645,13 @@ class TestTheScoringPoint:
         assert (result.agent_done, result.answer) == (AgentDoneStatus.DONE, "Mall")
         assert oracle.given == ["Mall"]
 
-    async def test_its_time_limit_is_the_oracle_timeout_not_the_runs(self):
+    async def test_its_time_limit_is_the_verify_timeout_not_the_runs(self):
         env, _oracle, _log = _scoring()
         runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env), AGENT_ID)
-        await runtime.execute("t", task_id="t-1", timeout=30, oracle_timeout=7.5)
+        await runtime.execute("t", task_id="t-1", timeout=30, verify_timeout=7.5)
         assert env.timeouts == [7.5]
 
-    async def test_the_score_lands_in_the_trace(self, tmp_path):
+    async def test_the_verdict_lands_in_the_runs_verdict_store(self, tmp_path):
         env, _oracle, _log = _scoring()
         writer = TraceWriter(trace_dir=str(tmp_path))
         runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env, hooks=[writer]), AGENT_ID)
@@ -1658,15 +1660,16 @@ class TestTheScoringPoint:
 
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
-        (entry,) = trace.oracle_scores()
-        assert (entry.capability_id, entry.status, entry.score) == (
-            "lifecycle_done_cap",
-            "scored",
-            1.0,
+        (verdict,) = trace.verdicts().values()
+        assert (verdict.verifier.verifier_id, verdict.attachment, verdict.status) == (
+            "lifecycle_oracle",
+            "live",
+            "judged",
         )
-        assert trace.manifest.oracle_scores == "oracle_scores.json"
+        assert verdict.score == 1.0
+        assert trace.manifest.status.value == "complete"
 
-    async def test_a_failing_oracle_is_not_scored_and_the_outcome_stands(self, tmp_path):
+    async def test_a_failing_oracle_judges_nothing_and_the_outcome_stands(self, tmp_path):
         env, _oracle, _log = _scoring(fails=True)
         writer = TraceWriter(trace_dir=str(tmp_path))
         runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env, hooks=[writer]), AGENT_ID)
@@ -1675,9 +1678,9 @@ class TestTheScoringPoint:
 
         assert (result.agent_done, result.error) == (AgentDoneStatus.DONE, None)
         assert writer.run_dir is not None
-        (entry,) = RunTrace(writer.run_dir).oracle_scores()
-        assert (entry.status, entry.reason, entry.detail) == (
-            "not_scored",
+        (verdict,) = RunTrace(writer.run_dir).verdicts().values()
+        assert (verdict.status, verdict.reason, verdict.detail) == (
+            "not_judged",
             "error",
             "RuntimeError: device unreachable",
         )
@@ -1688,10 +1691,8 @@ class TestTheScoringPoint:
         class _BrokenScoring(_ScoringEnv):
             __abstract__ = True  # Directly assembled fake; never a YAML implementation.
 
-            async def read_oracle_scores(
-                self, *, timeout_s: float, answer: str | None
-            ) -> list[OracleScore]:
-                raise RuntimeError("scoring broke its contract")
+            async def verify_live(self, *, timeout_s: float, answer: str | None) -> list[Verdict]:
+                raise RuntimeError("judging broke its contract")
 
         env, _oracle, log = _scoring(_BrokenScoring)
         hook = _RecordingHook(log)
@@ -1701,7 +1702,7 @@ class TestTheScoringPoint:
 
         assert result.agent_done == AgentDoneStatus.DONE
         assert hook.end_kwargs["result"] is result
-        assert "reading the task oracles' scores failed" in caplog.text
+        assert "judging the task at the scoring point failed" in caplog.text
         assert log[-1] == "teardown"
 
     async def test_a_broken_environment_is_still_scored(self):
@@ -1758,7 +1759,7 @@ class TestTheScoringPoint:
         )
 
         task = asyncio.create_task(
-            runtime.execute("t", task_id="t-1", timeout=30, oracle_timeout=30)
+            runtime.execute("t", task_id="t-1", timeout=30, verify_timeout=30)
         )
         await asyncio.wait_for(oracle.asked.wait(), timeout=10)
         task.cancel()
@@ -1776,7 +1777,7 @@ class TestTheScoringPoint:
         assert hook.end_kwargs["result"].error == "Execution cancelled"
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
-        assert (trace.oracle_scores(), trace.manifest.oracle_scores) == ([], None)
+        assert trace.verdicts() == {}
 
     async def test_scoring_time_stays_out_of_execution_ms(self, monkeypatch):
         from types import SimpleNamespace
@@ -1789,7 +1790,7 @@ class TestTheScoringPoint:
         class _SlowOracle(_OracleCap):
             __abstract__ = True  # Directly assembled fake; never a YAML implementation.
 
-            async def read_score(self, *, answer: str | None) -> OracleReading | None:
+            async def read_score(self, *, answer: str | None) -> Judgment:
                 clock.now += 13.0
                 return await super().read_score(answer=answer)
 

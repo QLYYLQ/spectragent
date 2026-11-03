@@ -47,7 +47,7 @@ from spectragent.core.capabilities.android.oracle.androidworld_tasks import (
     instance_seed,
 )
 from spectragent.core.capabilities.android.oracle.none import NoTaskOracle
-from spectragent.schemas.oracle_score import OracleReading, OracleScore
+from spectragent.schemas.verdict import Judgment, Verdict, VerifierIdentity
 from tests._helpers.android_device import unset_capability
 from tests._helpers.assembly import make_env
 from tests._helpers.fake_androidworld import fake_installation, requests, service, write_behaviour
@@ -163,11 +163,10 @@ async def test_a_task_is_prepared_scored_and_ended_and_the_service_is_gone_after
 
     assert made is None, "the task's goal is the listed one"
     task = AndroidWorldTask.model_validate(_task())
-    assert reading == OracleReading(
+    assert oracle.identity() == VerifierIdentity(verifier_id="androidworld", version=PINNED_COMMIT)
+    assert reading == Judgment(
         score=1.0,
-        oracle="androidworld",
-        oracle_version=PINNED_COMMIT,
-        provenance={
+        evidence={
             "family": "android",
             "task": "SystemBrightnessMax",
             "index": "0",
@@ -268,7 +267,7 @@ async def test_a_miniwob_task_reads_its_goal_after_initializing_and_that_goal_is
     assert paths[:4] == ["/suite/reinitialize", "/task/initialize", "/reset", "/task/goal"]
     assert ("POST", "/reset", {"go_home": "false"}) in _calls(root)
     assert made == _MINIWOB_GOAL, "as AndroidWorld hands it to an agent, unchanged"
-    assert reading is not None and reading.provenance["goal"] == _MINIWOB_GOAL
+    assert reading.evidence["goal"] == _MINIWOB_GOAL
 
 
 #: An information-retrieval goal naming a date, before and after AndroidWorld's initialize
@@ -884,7 +883,7 @@ async def test_a_service_that_builds_another_task_is_refused_and_stopped(
 
 async def _scored(
     root: Path, tmp_path: Path, task: dict[str, JsonValue], answer: str | None
-) -> OracleReading | None:
+) -> Judgment:
     """Prepare *task*, score it handed *answer*, end it."""
     write_behaviour(root, {"/task/goal": {"json": {"goal": task["goal"]}}})
     oracle = _oracle(root)
@@ -908,7 +907,7 @@ async def test_an_information_retrieval_task_hands_the_answer_over_before_the_sc
         ("POST", "/task/tear_down", None),
     ]
     assert [query for _, path, query in _calls(root) if path == "/task/score"] == [address]
-    assert reading is not None and reading.provenance["answer"] == "sent"
+    assert reading.evidence["answer"] == "sent"
 
 
 async def test_an_information_retrieval_task_without_an_answer_is_scored_on_none(
@@ -918,7 +917,7 @@ async def test_an_information_retrieval_task_without_an_answer_is_scored_on_none
     reading = await _scored(root, tmp_path, _asking_task(), None)
 
     assert [path for _, path, _ in _after_the_reset(root)] == ["/task/score", "/task/tear_down"]
-    assert reading is not None and reading.provenance["answer"] == "none"
+    assert reading.evidence["answer"] == "none"
 
 
 async def test_a_task_scored_on_the_device_never_sends_the_answer(
@@ -927,7 +926,7 @@ async def test_a_task_scored_on_the_device_never_sends_the_answer(
     reading = await _scored(root, tmp_path, _task(), "Mall")
 
     assert [path for _, path, _ in _after_the_reset(root)] == ["/task/score", "/task/tear_down"]
-    assert reading is not None and "answer" not in reading.provenance
+    assert "answer" not in reading.evidence
 
 
 async def test_an_answer_the_service_refuses_is_an_ordinary_error_and_nothing_is_scored(
@@ -1020,7 +1019,7 @@ async def test_a_bool_score_is_0_or_1_as_androidworlds_runner_counts_it(
     finally:
         await oracle.stop()
 
-    assert reading is not None and reading.score == score
+    assert reading.score == score
 
 
 async def test_a_dead_service_is_an_ordinary_error_that_says_so(root: Path, tmp_path: Path) -> None:
@@ -1207,37 +1206,43 @@ async def test_a_cancelled_score_stays_a_cancellation(root: Path, tmp_path: Path
 # ── at the scoring point, through the environment ────────────────────
 
 
-async def _environment_scores(oracle: AndroidWorldOracle, timeout_s: float) -> list[OracleScore]:
+async def _environment_verdicts(oracle: AndroidWorldOracle, timeout_s: float) -> list[Verdict]:
     capability = unset_capability()
     capability.task_oracle = oracle
     env = make_env(AndroidEnvironment, {"android": capability})
-    return await env.read_oracle_scores(timeout_s=timeout_s, answer=None)
+    return await env.verify_live(timeout_s=timeout_s, answer=None)
 
 
-async def test_the_environment_records_the_score_and_each_way_of_not_scoring(
+async def test_the_environment_records_the_verdict_and_each_way_of_judging_nothing(
     root: Path, tmp_path: Path
 ) -> None:
     oracle = _oracle(root)
     await oracle.start(_device(tmp_path), _task())
     try:
-        (scored,) = await _environment_scores(oracle, timeout_s=5.0)
+        (judged,) = await _environment_verdicts(oracle, timeout_s=5.0)
         write_behaviour(root, {"/task/score": {"status": 500}})
-        (failed,) = await _environment_scores(oracle, timeout_s=5.0)
+        (failed,) = await _environment_verdicts(oracle, timeout_s=5.0)
         write_behaviour(root, {"/task/score": {"hang": True}})
-        (late,) = await _environment_scores(oracle, timeout_s=0.5)
+        (late,) = await _environment_verdicts(oracle, timeout_s=0.5)
     finally:
         await oracle.stop()
 
-    assert (scored.status, scored.score, scored.oracle) == ("scored", 1.0, "androidworld")
-    assert (failed.status, failed.reason) == ("not_scored", "error")
+    who = VerifierIdentity(verifier_id="androidworld", version=PINNED_COMMIT)
+    assert (judged.verifier, judged.attachment, judged.status, judged.score) == (
+        who,
+        "live",
+        "judged",
+        1.0,
+    )
+    assert (failed.verifier, failed.status, failed.reason) == (who, "not_judged", "error")
     assert failed.detail is not None and failed.detail.startswith("AndroidWorldError: GET /task")
-    assert (late.status, late.reason) == ("not_scored", "timeout")
+    assert (late.verifier, late.status, late.reason) == (who, "not_judged", "timeout")
     assert await _service_is_gone(root)
 
 
 async def test_with_no_oracle_the_environment_records_nothing() -> None:
     env = make_env(AndroidEnvironment, {"android": unset_capability()})
-    assert await env.read_oracle_scores(timeout_s=1.0, answer=None) == []
+    assert await env.verify_live(timeout_s=1.0, answer=None) == []
 
 
 # ── before anything starts: check_setup ──────────────────────────────
@@ -1365,7 +1370,7 @@ def test_a_checkout_without_git_has_no_commit(tmp_path: Path) -> None:
 # ── none ─────────────────────────────────────────────────────────────
 
 
-async def test_none_needs_nothing_scores_nothing_and_refuses_a_benchmark_task(
+async def test_none_needs_nothing_judges_nothing_and_refuses_a_benchmark_task(
     tmp_path: Path,
 ) -> None:
     oracle = NoTaskOracle()
@@ -1376,7 +1381,7 @@ async def test_none_needs_nothing_scores_nothing_and_refuses_a_benchmark_task(
     assert oracle.made_goal() is None
     assert not oracle.answers_episode_over()
     assert await oracle.episode_over() is False
-    assert await oracle.read_score(answer=None) is None
+    assert oracle.identity() is None, "the environment never asks it to judge"
     await oracle.stop()
 
     with pytest.raises(ValueError, match="task_oracle is 'none': the task would run unprepared"):

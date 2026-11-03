@@ -150,9 +150,8 @@ class AgentResult(BaseModel):
     #   verbatim from the done result's ``reported_success`` (its
     #   ``done(success=...)``), never from the done result's ``success``,
     #   which only says the done action executed. It is NOT a verdict, and no
-    #   scorer should treat it as one. The verdict belongs to
-    #   ``EvalResult.predicted_label``, produced by an Evaluator from the
-    #   recorded trace.
+    #   verifier should treat it as one. Verdicts belong to the run's verdict
+    #   store (``Verdict``, ``schemas/verdict.py``), given by verifiers.
     #   True  = agent called done(success=true)
     #   False = agent called done(success=false)
     #   None  = agent made no claim: it called done without saying (UI-TARS's
@@ -175,8 +174,8 @@ class AgentResult(BaseModel):
     # Performance
     metrics: AgentMetrics
 
-    # Agent-specific opaque data. Not part of the scoring contract: an
-    # Evaluator reads the trace, not this dict.
+    # Agent-specific opaque data. Not part of the scoring contract: a
+    # verifier reads the trace, not this dict.
     agent_metadata: dict[str, Any] = Field(default_factory=dict)
 
     # Prompt snapshot
@@ -197,7 +196,7 @@ class AgentResult(BaseModel):
             )
         # A self-report can only exist if the agent actually called done().
         # This constrains the *self-report*, never the ``answer`` — which is
-        # exactly why the verdict lives in EvalResult and not here.
+        # exactly why the verdict lives in the verdict store and not here.
         if self.agent_reported_success is not None and self.agent_done != AgentDoneStatus.DONE:
             raise ValueError(
                 f"agent_reported_success must be None when agent_done is "

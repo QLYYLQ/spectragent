@@ -43,6 +43,7 @@ from spectragent.inspection.restoration import (
     unmeasured_everywhere,
 )
 from spectragent.schemas.observation.image import image_media_type, read_model_image
+from spectragent.schemas.verdict import Verdict
 
 _IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 
@@ -79,7 +80,7 @@ class RunRepository(Protocol):
         marks_from: list[tuple[str, int, str]] | None = None,
     ) -> dict[str, Any]: ...
     def compare(self, keys: list[str]) -> dict[str, Any]: ...
-    def compare_groups(self, left: str, right: str, evaluator: str) -> dict[str, Any]: ...
+    def compare_groups(self, left: str, right: str, verifier: str) -> dict[str, Any]: ...
     def reports(self) -> list[dict[str, Any]]: ...
     def report(self, key: str) -> dict[str, Any]: ...
 
@@ -139,23 +140,29 @@ def _action_frames(trace: RunTrace, index: int) -> list[tuple[int | None, FrameR
     )
 
 
-def _evaluations(trace: RunTrace) -> tuple[dict[str, Any], str | None]:
+def _verdicts_of(trace: RunTrace) -> tuple[dict[str, Verdict], str | None]:
+    """The run's verdicts by slug, and why they do not read back when they do not."""
     try:
-        return trace.evals(), None
+        return trace.verdicts(), None
     except TraceSchemaError as exc:
-        # Evaluations are a separate post-run ledger. A broken verdict must
-        # not hide intact observations and model calls, or relabel the WAL.
+        # Verdicts are kept beside the run's records, outside its manifest. A
+        # broken verdict must not hide intact observations and model calls, or
+        # relabel the WAL.
         return {}, str(exc)
 
 
-def _verdicts(evaluations: dict[str, Any]) -> list[dict[str, Any]]:
+def _verdict_brief(verdicts: dict[str, Verdict]) -> list[dict[str, Any]]:
+    """One line per verdict, by slug: who judged, where, whether, and what it found."""
     return [
         {
-            "evaluator": slug,
-            "predicted_label": item.predicted_label,
-            "verdict_source": item.verdict_source,
+            "slug": slug,
+            "verifier_id": verdict.verifier.verifier_id,
+            "attachment": verdict.attachment,
+            "status": verdict.status,
+            "label": verdict.label,
+            "score": verdict.score,
         }
-        for slug, item in sorted(evaluations.items())
+        for slug, verdict in sorted(verdicts.items())
     ]
 
 
@@ -249,7 +256,7 @@ def _summary(trace: RunTrace, key: str, usage: Any = None) -> dict[str, Any]:
     records = trace.step_records
     metrics = result.metrics if result else None
     usage = recorded_usage(trace) if usage is None else usage
-    evaluations, evaluation_error = _evaluations(trace)
+    verdicts, verdict_error = _verdicts_of(trace)
     calls = usage.calls
     return {
         "key": key,
@@ -287,8 +294,8 @@ def _summary(trace: RunTrace, key: str, usage: Any = None) -> dict[str, Any]:
         "answer": result.answer if result else "",
         "error": result.error if result else None,
         "branch": _json(config.branch),
-        "verdicts": _verdicts(evaluations),
-        "evaluation_error": evaluation_error,
+        "verdicts": _verdict_brief(verdicts),
+        "verdict_error": verdict_error,
         "read_error": None,
     }
 
@@ -466,8 +473,8 @@ class _FileRepository:
                 # How the page names each action its steps executed: the
                 # wording's one source is ``inspection/marks.py``.
                 "action_verbs": action_verbs(sorted(names)),
-                "evaluations": _json(_evaluations(trace)[0]),
-                "evaluation_error": summary["evaluation_error"],
+                "verdicts": _json(_verdicts_of(trace)[0]),
+                "verdict_error": summary["verdict_error"],
                 "trailing_calls": _json(trailing),
                 "trailing_call_metrics": _json(trace.trailing_call_metrics),
                 "trailing_output_schemas": {
@@ -836,14 +843,14 @@ class _FileRepository:
             values = [c.get(field, {"missing": True}) for c in configs]
             if any(value != values[0] for value in values[1:]):
                 differences.append({"path": field, "values": values})
-        evaluators = sorted(set().union(*(r["evaluations"].keys() for r in runs)))
+        slugs = sorted(set().union(*(r["verdicts"].keys() for r in runs)))
         return {
             "runs": [r["summary"] for r in runs],
             "config_differences": differences,
             "same_task": len(identities) == 1,
-            "evaluator_comparisons": [
-                {"evaluator": name, "verdicts": [r["evaluations"].get(name) for r in runs]}
-                for name in evaluators
+            "verifier_comparisons": [
+                {"slug": slug, "verdicts": [r["verdicts"].get(slug) for r in runs]}
+                for slug in slugs
             ],
         }
 
@@ -885,12 +892,18 @@ class _FileRepository:
                     )
         return reports
 
-    def compare_groups(self, left: str, right: str, evaluator: str) -> dict[str, Any]:
-        """Match two configuration cohorts without inventing verdicts or picking attempts."""
-        if not left or not right or left == right or not evaluator:
-            raise RepositoryError("Choose two different configuration hashes and one evaluator")
+    def compare_groups(self, left: str, right: str, verifier: str) -> dict[str, Any]:
+        """Match two configuration cohorts on one verifier's verdicts, without inventing any.
+
+        *verifier* is a verdict slug: the same verifier, with the same
+        settings, on both sides.
+        """
+        if not left or not right or left == right or not verifier:
+            raise RepositoryError("Choose two different configuration hashes and one verifier slug")
         grouped: dict[tuple[str, str, str, str | None], dict[str, Any]] = {}
-        signatures = set()
+        # One slug is one verifier with one set of settings; its version is
+        # the one part of who judged that the slug does not name.
+        versions = set()
         found = set()
         for row in self.list_runs():
             group = row.get("config_hash")
@@ -915,9 +928,9 @@ class _FileRepository:
                     "right": [],
                 },
             )
-            verdict = _evaluations(trace)[0].get(evaluator)
-            if verdict is not None and verdict.verdict_source == "graded":
-                signatures.add(json.dumps(verdict.evaluator_config, sort_keys=True))
+            verdict = _verdicts_of(trace)[0].get(verifier)
+            if verdict is not None and verdict.status == "judged":
+                versions.add(verdict.verifier.version)
             record["left" if group == left else "right"].append(row)
         if found != {left, right}:
             raise RepositoryError(
@@ -930,9 +943,9 @@ class _FileRepository:
                 "right_only_passed",
                 "both_failed",
                 "unpaired",
-                "ungraded",
+                "unjudged",
                 "ambiguous",
-                "incompatible_evaluator",
+                "incompatible_verifier",
             ),
             0,
         )
@@ -949,22 +962,20 @@ class _FileRepository:
                         (
                             v
                             for v in side[0]["verdicts"]
-                            if v["evaluator"] == evaluator and v["verdict_source"] == "graded"
+                            if v["slug"] == verifier
+                            and v["status"] == "judged"
+                            and v["label"] is not None
                         ),
                         None,
                     )
                     for side in (lhs, rhs)
                 ]
                 if any(verdict is None for verdict in verdicts):
-                    outcome = "ungraded"
-                elif len(signatures) > 1:
-                    outcome = "incompatible_evaluator"
+                    outcome = "unjudged"
+                elif len(versions) > 1:
+                    outcome = "incompatible_verifier"
                 else:
-                    a, b = [
-                        verdict["predicted_label"] == 1
-                        for verdict in verdicts
-                        if verdict is not None
-                    ]
+                    a, b = [verdict["label"] == 1 for verdict in verdicts if verdict is not None]
                     outcome = (
                         "both_passed"
                         if a and b
@@ -980,7 +991,7 @@ class _FileRepository:
         return {
             "left": left,
             "right": right,
-            "evaluator": evaluator,
+            "verifier": verifier,
             "counts": counts,
             "rows": rows,
         }

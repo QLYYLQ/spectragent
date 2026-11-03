@@ -25,7 +25,7 @@ from spectragent.core.loops import ReactLoop
 from spectragent.core.loops._registrar import AgentLoopRegistrar, LoopInput
 from spectragent.core.loops.errors import RunAbort
 from spectragent.core.negotiation import IncompatibleActionError
-from spectragent.core.runtime import ORACLE_TIMEOUT_S
+from spectragent.core.runtime import VERIFY_TIMEOUT_S
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
@@ -251,18 +251,18 @@ class TestBenchmarkRunner:
         assert summary.count_by_done() == {"done": 2}
         assert [o.task_id for o in summary.outcomes] == ["t-1", "t-2"]
 
-    async def test_every_run_scores_within_the_oracle_timeout(self, tmp_path, monkeypatch):
+    async def test_every_run_is_judged_live_within_the_verify_timeout(self, tmp_path, monkeypatch):
         seen: list[float] = []
-        read = EnvironmentBase.read_oracle_scores
+        judge = EnvironmentBase.verify_live
 
         async def spy(self, *, timeout_s, answer):
             seen.append(timeout_s)
-            return await read(self, timeout_s=timeout_s, answer=answer)
+            return await judge(self, timeout_s=timeout_s, answer=answer)
 
-        monkeypatch.setattr(_Env, "read_oracle_scores", spy)
+        monkeypatch.setattr(_Env, "verify_live", spy)
         compose = _make_factory(tmp_path, [], [])
         await BenchmarkRunner(
-            loader=_Loader(), compose=compose, timeout=10, oracle_timeout=4.5
+            loader=_Loader(), compose=compose, timeout=10, verify_timeout=4.5
         ).run()
         assert seen == [4.5, 4.5]
 
@@ -969,66 +969,58 @@ def _branch_sweep(tmp_path, *, loader: Any = None, **sections: Any) -> list[str]
 
 
 class TestTraceBranchesSweep:
-    """No eval loader exists for branch tasks in v1; the CLI says so before running anything."""
+    """A branch sweep's task source lists no verifier of its own (§4.10.1)."""
 
-    def test_an_evaluator_with_no_eval_loader_is_refused_by_name(self, tmp_path, monkeypatch):
+    def test_a_branches_yaml_cannot_list_verifiers(self, tmp_path):
+        import yaml
+        from pydantic import ValidationError
+
         from spectragent.core.benchmark_runner import main
         from tests._helpers.branch_sources import write_source
 
         write_source(tmp_path / "recorded", "run-a", steps=2)
-        sweep = _branch_sweep(tmp_path, evaluator=[{"evaluator_id": "exact_match"}])
-        executed: list[str] = []
-        monkeypatch.setattr(
-            BenchmarkRunner, "run_task", lambda self, task_id: executed.append(task_id)
-        )
-        try:
-            main(["--session-dir", str(tmp_path / ".sessions"), *sweep])
-        except SystemExit as exc:
-            message = str(exc.code)
-        else:  # pragma: no cover — the assertion below explains
-            message = ""
-        assert f"benchmark {sweep[-1]!r} has no reference data to score against" in message
-        assert "--no-eval" in message and executed == []
+        sweep = _branch_sweep(tmp_path)
+        from pathlib import Path
 
-    def test_a_sweep_without_an_evaluator_never_asks_for_one(self, tmp_path, monkeypatch, capsys):
-        from spectragent.core import benchmark_runner
+        branches = Path(sweep[-1])
+        document = yaml.safe_load(branches.read_text())
+        document["benchmark"][0]["verifiers"] = [{"verifier_id": "exact_match"}]
+        branches.write_text(yaml.safe_dump(document))
+        with pytest.raises(ValidationError, match="verifiers"):
+            main(["--session-dir", str(tmp_path / ".sessions"), *sweep, "--list"])
+
+    def test_a_sweep_that_judges_nothing_never_asks_for_reference_data(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from spectragent.benchmarks import BenchmarkBase
         from spectragent.core.benchmark_runner import main
         from tests._helpers.branch_sources import write_source
 
         def no_lookup(*args: Any, **kwargs: Any) -> Any:
-            raise AssertionError("a sweep that scores nothing resolved an eval loader")
+            raise AssertionError("a sweep that judges nothing resolved reference data")
 
-        # The configuration catalog may read eval-loader classes as schema
-        # metadata; scoring nothing must skip actual reference resolution.
-        monkeypatch.setattr(benchmark_runner, "_reference_loader", no_lookup)
+        monkeypatch.setattr(BenchmarkBase, "reference_loader", no_lookup)
         write_source(tmp_path / "recorded", "run-a", steps=2)
 
         assert (
-            main(
-                [
-                    "--session-dir",
-                    str(tmp_path / ".sessions"),
-                    *_branch_sweep(tmp_path),
-                    "--list",
-                ]
-            )
+            main(["--session-dir", str(tmp_path / ".sessions"), *_branch_sweep(tmp_path), "--list"])
             == 0
         )
         assert capsys.readouterr().out.split() == ["run-a/s1/b0"]
-        # --no-eval keeps a configured evaluator from asking, too.
-        with_judge = _branch_sweep(tmp_path, evaluator=[{"evaluator_id": "exact_match"}])
-        assert (
-            main(
-                [
-                    "--session-dir",
-                    str(tmp_path / ".sessions"),
-                    *with_judge,
-                    "--list",
-                    "--no-eval",
-                ]
-            )
-            == 0
-        )
+
+    def test_a_verifier_needing_reference_rows_the_benchmark_lacks_stops_it_by_name(self):
+        from spectragent.core.benchmark_runner import _reference_loader
+        from spectragent.verifiers.exact_match import ExactMatchVerifier
+
+        class _NoReferenceData:
+            def reference_loader(self) -> None:
+                return None
+
+        with pytest.raises(SystemExit) as stopped:
+            _reference_loader(_NoReferenceData(), [ExactMatchVerifier()], "mine.yaml")  # type: ignore[arg-type]
+        message = str(stopped.value.code)
+        assert "exact_match" in message and "'mine.yaml'" in message
+        assert "no reference data" in message and "--no-eval" in message
 
     @pytest.mark.usefixtures("branch_fake_registered")
     async def test_each_branch_task_runs_from_its_context(self, tmp_path):
@@ -1551,7 +1543,7 @@ class TestTheTokenLimit:
         assert limits == [None, None, 7]
 
 
-def test_the_oracle_timeout_flag_reaches_the_runner(tmp_path, monkeypatch):
+def test_the_verify_timeout_flag_reaches_the_runner(tmp_path, monkeypatch):
     from spectragent.core.benchmark_runner import main
     from tests._helpers.branch_sources import write_source
 
@@ -1559,7 +1551,7 @@ def test_the_oracle_timeout_flag_reaches_the_runner(tmp_path, monkeypatch):
     construct = BenchmarkRunner.__init__
 
     def spy(self, **kwargs):
-        given.append(kwargs["oracle_timeout"])
+        given.append(kwargs["verify_timeout"])
         construct(self, **kwargs)
 
     async def no_sweep(self, *, task_ids=None, limit=None):
@@ -1575,8 +1567,8 @@ def test_the_oracle_timeout_flag_reaches_the_runner(tmp_path, monkeypatch):
         "--no-eval",
     ]
     assert main(argv) == 0
-    assert main([*argv, "--oracle-timeout", "12.5"]) == 0
-    assert given == [ORACLE_TIMEOUT_S, 12.5]
+    assert main([*argv, "--verify-timeout", "12.5"]) == 0
+    assert given == [VERIFY_TIMEOUT_S, 12.5]
 
 
 def test_the_subset_flag_selects_the_tasks_and_is_recorded(tmp_path, monkeypatch, capsys):
@@ -1611,10 +1603,10 @@ def test_the_subset_flag_selects_the_tasks_and_is_recorded(tmp_path, monkeypatch
     assert seen == [("All", "All"), ("Hard", "Hard")]
 
 
-@pytest.mark.parametrize("flag", ["--timeout", "--oracle-timeout"])
+@pytest.mark.parametrize("flag", ["--timeout", "--verify-timeout"])
 @pytest.mark.parametrize("value", ["0", "-5", "nan", "soon"])
 def test_a_time_limit_is_seconds_above_zero_on_both_clis(flag, value, capsys):
-    """0, a negative number or NaN would expire at once: every live score would be lost."""
+    """0, a negative number or NaN would expire at once: every live verdict would be lost."""
     from spectragent.core import run_cli
     from spectragent.core.benchmark_runner import main
 

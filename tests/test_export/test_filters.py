@@ -2,7 +2,7 @@
 
 ``skipped``: what cannot be a source at all (unreadable, format 1,
 ``secrets_recorded``, no negotiation, a shared run id). ``filtered``: what the
-``filters`` leave out (status, evaluation — a branch by its source run's —,
+``filters`` leave out (status, verdicts — a branch by its source run's —,
 diverged restoration, replay document misses, sites). Every source here is
 committed by the real ``WALWriter``.
 """
@@ -34,9 +34,9 @@ from tests._helpers.export_traces import (
     ui_tars_step,
     write_ui_tars_run,
 )
-from tests._helpers.trace_builder import eval_result
+from tests._helpers.trace_builder import verdict
 
-GRADED = RequireEval(evaluator_id="online_mind2web", label=1)
+JUDGED = RequireEval(verifier_id="online_mind2web", label=1)
 
 
 def _sources(root: Path) -> dict[str, Source]:
@@ -142,41 +142,38 @@ class TestFiltered:
         assert [sample.step for sample in samples] == [0, 1]
 
     def test_require_eval(self, tmp_path: Path) -> None:
-        _one(tmp_path, "passed", verdicts={"j": eval_result(evaluator_id="online_mind2web")})
+        _one(tmp_path, "passed", verdicts=[verdict("online_mind2web")])
+        _one(tmp_path, "failed", verdicts=[verdict("online_mind2web", label=0)])
         _one(
             tmp_path,
-            "failed",
-            verdicts={"j": eval_result(evaluator_id="online_mind2web", predicted_label=0)},
-        )
-        _one(
-            tmp_path,
-            "ungraded",
-            verdicts={
-                "j": eval_result(evaluator_id="online_mind2web", verdict_source="evaluation_error")
-            },
+            "unjudged",
+            verdicts=[
+                verdict(
+                    "online_mind2web",
+                    attachment="live",
+                    status="not_judged",
+                    label=None,
+                    reason="error",
+                )
+            ],
         )
         sources = _sources(tmp_path)
-        need = ExportFilters(require_eval=GRADED)
+        need = ExportFilters(require_eval=JUDGED)
         assert filtered_out(sources["passed"], need, sources) is None
-        for rel in ("failed", "ungraded"):
+        for rel in ("failed", "unjudged"):
             assert filtered_out(sources[rel], need, sources) == (
-                "it has no graded verdict from 'online_mind2web' with predicted_label 1 "
-                "(require_eval)"
+                "it has no judged verdict from 'online_mind2web' with label 1 (require_eval)"
             )
 
     def test_require_eval_reads_the_branch_source_run(self, tmp_path: Path) -> None:
-        _one(tmp_path, "src", verdicts={"j": eval_result(evaluator_id="online_mind2web")})
+        _one(tmp_path, "src", verdicts=[verdict("online_mind2web")])
         _one(tmp_path, "src-s1-b0", branch=_branch("src"))
         _one(tmp_path, "orphan-s1-b0", branch=_branch("gone"))
-        _one(
-            tmp_path,
-            "bad",
-            verdicts={"j": eval_result(evaluator_id="online_mind2web", predicted_label=0)},
-        )
+        _one(tmp_path, "bad", verdicts=[verdict("online_mind2web", label=0)])
         _one(tmp_path, "bad-s1-b0", branch=_branch("bad"))
         sources = _sources(tmp_path)
-        need = ExportFilters(require_eval=GRADED)
-        assert filtered_out(sources["src-s1-b0"], need, sources) is None  # its own evals/: none
+        need = ExportFilters(require_eval=JUDGED)
+        assert filtered_out(sources["src-s1-b0"], need, sources) is None  # its own verdicts: none
         assert filtered_out(sources["orphan-s1-b0"], need, sources) == (
             "branch source 'gone' not among the sources"
         )
@@ -184,8 +181,8 @@ class TestFiltered:
             "branch source 'gone' not among the sources"
         ), "a branch's context is its source run's prefix: no source, no sample"
         assert filtered_out(sources["bad-s1-b0"], need, sources) == (
-            "its source run bad has no graded verdict from 'online_mind2web' with "
-            "predicted_label 1 (require_eval)"
+            "its source run bad has no judged verdict from 'online_mind2web' with "
+            "label 1 (require_eval)"
         )
 
     def test_restoration_diverged(self, tmp_path: Path) -> None:

@@ -148,6 +148,34 @@ class ComposedRun:
     def hooks(self) -> list[Any]:
         return self.instances("hook")
 
+    def run_configuration(self) -> BaseModel | None:
+        """The validated configuration a run records as its own: the root without verifiers.
+
+        A benchmark's verifiers judge runs and never change one, so they are
+        no part of the configuration a run's trace records, nor of its
+        ``config_hash`` (``docs/architecture_design.md`` §5.3 "实验身份"):
+        the same sweep judged by another judge is the same experiment, and
+        each verdict records its verifier itself. Every benchmark block that
+        takes verifiers is recorded with none listed, whatever it lists.
+        """
+        cfg = self.top_level_cfg
+        blocks = getattr(cfg, _BENCHMARK_SECTION, None) if cfg is not None else None
+        if cfg is None or not blocks:
+            return cfg
+        unjudged = [
+            block.model_copy(update={_VERIFIERS: None})
+            if _VERIFIERS in type(block).model_fields
+            else block
+            for block in blocks
+        ]
+        return cfg.model_copy(update={_BENCHMARK_SECTION: unjudged})
+
+
+#: The benchmark section of a run root, and its blocks' verifier receptor
+#: (``spectragent/benchmarks/_registrar.py``).
+_BENCHMARK_SECTION = "benchmark"
+_VERIFIERS = "verifiers"
+
 
 # -- Compose-time bookkeeping ----------------------------------------
 

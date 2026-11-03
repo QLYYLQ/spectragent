@@ -18,3 +18,11 @@ benchmark:
     # it is the registered online_mind2web eval loader for the task loader's
     # subset; write it to point at other data:
     #   eval_loader: { benchmark_name: online_mind2web, subset: All, data_dir: ~/data/online_mind2web }
+    # verifiers: who judges the runs. None is listed: an LLM judge's model must be
+    # one you verified first (docs/browser_agent_runbook.md, "独立评测已录下的任务").
+    # In a copy of this file, list WebJudge with that model, then judge with
+    # spectragent eval --benchmark <the copy>, or spectragent bench without --no-eval:
+    #   verifiers:
+    #     - verifier_id: online_mind2web     # WebJudge; reads no reference row
+    #       require_screenshots: true        # a trace with no screenshot is an error, not a text-only verdict
+    #       llm: { model_type: openai, model: <a verified vision model>, provider: { name: direct } }

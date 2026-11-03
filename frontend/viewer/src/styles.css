@@ -1106,11 +1106,11 @@ pre {
   max-height: 500px;
   margin-top: 12px;
 }
-.evaluation-list {
+.verdict-list {
   display: grid;
   gap: 16px;
 }
-.evaluation-list .panel {
+.verdict-list .panel {
   margin-bottom: 0;
 }
 .properties {

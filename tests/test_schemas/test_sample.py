@@ -72,11 +72,7 @@ def _sample(*, params: dict[str, object] | None = None) -> CanonicalStepSample:
         ],
         labels=SampleLabels(
             step_status="ok",
-            verdicts=[
-                VerdictLabel(
-                    verdict_slug="judge", evaluator_id="online_mind2web", predicted_label=1
-                )
-            ],
+            verdicts=[VerdictLabel(verdict_slug="judge", verifier_id="online_mind2web", label=1)],
         ),
         redactions=[
             SampleRedaction(

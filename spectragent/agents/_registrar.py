@@ -157,7 +157,7 @@ class AgentBase(AgentReceptors, metaclass=AgentRegistrar.Meta):
         return extract_wiring(type(self), registry)
 
     # ── Prompt access ───────────────────────────────────────────────
-    # Keyed off ``__registry_key__``, exactly as ``EvaluatorBase`` does,
+    # Keyed off ``__registry_key__``, exactly as ``VerifierBase`` does,
     # through its family root (``agent_prompt_dir``): the members of one
     # family share a directory. No agent holds a path constant, so no agent
     # can name a directory the registry does not know about.

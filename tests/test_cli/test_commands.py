@@ -27,12 +27,12 @@ def test_terminal_captured_run_prints_still_leave_a_final_summary(capsys):
             "output": [],
             "result": {"agent_done": "done", "env_status": "success", "answer": "answer"},
             "recording": {"status": "incomplete", "complete_through": 2, "reason": "close failed"},
-            "evaluation": "not_evaluated",
+            "verdicts": ["androidworld_0a1b2c3d: score 1.0"],
             "trace_dir": "traces/one",
         }
     )
     text = capsys.readouterr().out
-    assert "done" in text and "incomplete" in text and "not_evaluated" in text
+    assert "done" in text and "incomplete" in text and "androidworld_0a1b2c3d: score 1.0" in text
     assert "traces/one" in text and "close failed" in text
 
 
@@ -154,7 +154,7 @@ def test_explain_lists_the_interceptions_the_run_would_weave(
     points = {(item["role"], item["method"]) for item in writer["intercepts"]}
     assert ("loop", "record_step") in points
     assert (("env", "act") in points) is env_intercepted
-    assert (("env", "read_oracle_scores") in points) is env_intercepted
+    assert (("env", "verify_live") in points) is env_intercepted
     assert not (tmp_path / "never-written").exists()
 
 
@@ -300,6 +300,75 @@ def test_config_commands_compose_a_benchmark_with_or_without_one_of_its_tasks(tm
         assert refusal in json.loads(capsys.readouterr().out)["error"]["message"]
 
 
+def test_config_explain_hashes_what_a_run_records_with_the_verifiers_left_out(tmp_path, capsys):
+    """Verifiers are no part of a run's recorded configuration, so neither of what explain hashes."""
+    import yaml
+
+    from tests._helpers.benchmark_data import online_mind2web_benchmark
+
+    task = {"task_id": "t1", "task_text": "find the kettle", "start_url": "https://shop.example"}
+    path = online_mind2web_benchmark(tmp_path, {"All": [task]})
+    unjudged = path.read_text()
+    raw = yaml.safe_load(unjudged)
+    raw["benchmark"][0]["verifiers"] = [
+        {
+            "verifier_id": "online_mind2web",
+            "llm": {
+                "model_type": "openai",
+                "provider": {"name": "direct"},
+                "model": "judge-model",
+                "api_key": "test",
+            },
+        }
+    ]
+    judged = tmp_path / "judged.yaml"
+    judged.write_text(yaml.safe_dump(raw))
+    argv = ["--json", "config", "explain", "configs/browser_use_local.yaml", "--benchmark"]
+
+    assert main([*argv, str(judged)]) == 0
+    with_verifier = json.loads(capsys.readouterr().out)
+    assert main([*argv, str(path)]) == 0
+    without = json.loads(capsys.readouterr().out)
+
+    assert with_verifier["resolved_config_sha256"] == without["resolved_config_sha256"]
+    (block,) = with_verifier["resolved"]["benchmark"]
+    assert block["verifiers"] is None
+    assert with_verifier["components"]["verifier"][0]["implementation"] == "online_mind2web"
+
+
+@pytest.mark.parametrize("command", ["check", "explain"])
+def test_config_commands_take_the_subset_of_the_benchmark(tmp_path, capsys, command):
+    """``--subset`` is written into the benchmark's task loader before composing, as bench does."""
+    from tests._helpers.benchmark_data import online_mind2web_benchmark
+
+    task = {"task_text": "find the kettle", "start_url": "https://shop.example/kettles"}
+    benchmark = str(
+        online_mind2web_benchmark(
+            tmp_path, {"All": [{**task, "task_id": "easy"}], "Hard": [{**task, "task_id": "hard"}]}
+        )
+    )
+    argv = ["--json", "config", command, "configs/browser_use_local.yaml", "--benchmark", benchmark]
+
+    assert main([*argv, "--subset", "Hard", "--task-id", "hard"]) == 0
+    hard = json.loads(capsys.readouterr().out)
+    assert hard["checked"] == "configuration_and_prepare"
+    assert main([*argv, "--task-id", "hard"]) == 2, "the task is in Hard, not the YAML's All"
+    assert (
+        "(subset 'All') has no such task" in json.loads(capsys.readouterr().out)["error"]["message"]
+    )
+    assert main(argv) == 0
+    all_tasks = json.loads(capsys.readouterr().out)
+    # Recorded in the resolved configuration, so its hash, as if the YAML said it.
+    assert hard["resolved_config_sha256"] != all_tasks["resolved_config_sha256"]
+    if command == "explain":
+        (block,) = hard["resolved"]["benchmark"]
+        assert block["task_loader"]["subset"] == "Hard"
+
+    without = ["--json", "config", command, "configs/browser_use_local.yaml", "--subset", "Hard"]
+    assert main(without) == 2
+    assert "give --benchmark with it" in json.loads(capsys.readouterr().out)["error"]["message"]
+
+
 def test_human_explain_shows_negotiation_without_dumping_resolved_config(capsys):
     assert main(["config", "explain", "configs/browser_use_local.yaml"]) == 0
     text = capsys.readouterr().out
@@ -409,4 +478,4 @@ async def test_agent_done_and_incomplete_recording_remain_separate(tmp_path, mon
     assert report["result"]["agent_done"] == "done"
     assert report["recording"]["status"] == "incomplete"
     assert report["recording"]["complete_through"] == -1
-    assert report["evaluation"] == "not_evaluated"
+    assert report["verdicts"] == []

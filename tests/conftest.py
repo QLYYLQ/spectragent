@@ -4,7 +4,7 @@
 codegen artifact — is absent after ``git clone`` and is only written by
 an explicit ``spectragent config generate`` run. Nine tests import it (the codegen
 tripwires in ``tests/test_generated/``, plus
-``tests/test_evaluator/test_registrar.py`` and
+``tests/test_verifiers/test_registrar.py`` and
 ``TestMouseTrajectoryIsConstrained``), and there is no CI step, build
 hook or Makefile that generates it first — so the suite simply could not
 pass on a fresh clone.

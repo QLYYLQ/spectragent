@@ -56,6 +56,7 @@ FRAMEWORK_PACKAGES = (
     BENCHMARKS_PACKAGE,
     "spectragent.core",
     "spectragent.schemas",
+    "spectragent.verifiers",
 )
 #: The module each capability package declares itself in.
 DECLARATIONS_MODULE = "declarations"
@@ -284,10 +285,10 @@ def _framework_axes() -> dict[str, type]:
     from spectragent.core.llm.decision_registrar import DecisionModelRegistrar
     from spectragent.core.loops._registrar import AgentLoopRegistrar
     from spectragent.core.loops.restore import RestorerRegistrar
-    from spectragent.evaluator._registrar import EvaluatorRegistrar
     from spectragent.export._registrar import ExporterRegistrar
     from spectragent.export.translate._registrar import ActionTranslatorRegistrar
     from spectragent.replay_review._registrar import ReplayReviewerRegistrar
+    from spectragent.verifiers._registrar import VerifierRegistrar
 
     return {
         "archiver": ArchiverRegistrar,
@@ -305,7 +306,7 @@ def _framework_axes() -> dict[str, type]:
         "task_loader": TaskLoaderRegistrar,
         "eval_loader": EvalLoaderRegistrar,
         "benchmark": BenchmarkRegistrar,
-        "evaluator": EvaluatorRegistrar,
+        "verifier": VerifierRegistrar,
         "action_translator": ActionTranslatorRegistrar,
         "exporter": ExporterRegistrar,
         "agent": AgentRegistrar,
