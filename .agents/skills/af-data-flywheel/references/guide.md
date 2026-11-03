@@ -18,8 +18,9 @@ replay   spectragent run --replay-archive DIR    configs/flywheel/replay_ui_tars
            network_source: archive (isolated, strict misses), base_time: from_archive,
            trace_writer.archive: browser.replay_log in browser.network's place
            -> env/steps/NNN/browser.replay_log/replay.jsonl.gz
-branch   spectragent bench --no-eval             configs/flywheel/branch_ui_tars_archive.yaml
-           agent_loop: branch (restorer: prefix_replay), task_loader: trace_branches
+branch   spectragent bench --benchmark <branches YAML> --no-eval    configs/flywheel/branch_ui_tars_archive.yaml
+           agent_loop: branch (restorer: prefix_replay); tasks from configs/flywheel/branches_all_steps.yaml
+           (benchmark: [{benchmark_id: trace_branches, task_loader: {benchmark_name: trace_branches, ...}}])
            -> branch runs: restored steps, the policy step(s), a terminal observation
 export   spectragent export                      configs/flywheel/export_sft.yaml
            exporter: openai_messages, its translator, student_run_config
@@ -156,10 +157,16 @@ Run it like any benchmark config, or record one task:
 
 ```bash
 uv run spectragent bench --config configs/flywheel/record_ui_tars_pinned.yaml \
-    --benchmark online_mind2web --no-eval        # plus --subset, --task-id, --limit
+    --benchmark online_mind2web --no-eval        # plus --task-id, --limit
 uv run spectragent run --config configs/flywheel/record_ui_tars_pinned.yaml \
     --start-url URL --task "..."
 ```
+
+`--benchmark` takes a shipped alias (`configs/benchmarks/<alias>.yaml`) or the path of a
+benchmark YAML of your own; the subset and the data directory are its task loader's knobs
+(there is no `--subset`), and a run configuration never holds a benchmark
+(`docs/architecture_design.md` §4.10.1). `--start-url` is a start flag the browser declares
+(`START_FLAGS` in its `declarations.py`, §4.9 "起始参数").
 
 A custom Python benchmark harness must pass `task_id`, `benchmark` and `subset` to
 `AgentRuntime.execute`; the loader's environment setup does not carry the subset.
@@ -418,24 +425,39 @@ agent:
 #   media_seek_timeout_s: 2.0        # each alignment seek, and the play after it
 #   media_end_lead_s: 0.5            # an ended source is played into its end from here; < seek timeout
 # and trace_writer.archive is the replay's: browser.replay_log, browser.storage, browser.dom_raw
-task_loader:
-  - benchmark_name: trace_branches
-    data_dir: traces/recorded          # the sources root (null: traces)
-    sources: null                      # globs under data_dir (null: ["*"])
-    step_selector: { selector_id: all }   # every_k {k, offset} | explicit {steps} | last
-    branches_per_step: 3               # the shipped value; the branches differ only by sampling
-    agent_outcome: any                 # done | max_steps | error | timeout | vetoed (result.json)
-    require_eval: null                 # {evaluator_id, label: 1, slug: null}
-    require_archive: null              # null: [browser.network]; []: none
-    on_unbranchable: raise             # skip
-    task_variants: null                # a task-variants-1 file: another task per checkpoint
-    exclude_runs: null                 # a run-exclusions-1 file: recorded run ids not to branch
-    exclude_unloaded_checkpoints: true # leave out checkpoints captured before the page loaded
+```
+
+The tasks are the branches YAML's, selected with `--benchmark` like any benchmark
+(`docs/architecture_design.md` §4.10.1 "分叉 sweep 是一种任务来源"): the branch sweep is a
+task source, not a benchmark of its own; each branch task belongs to its source run's
+benchmark. The branch Loop, the restorer and the prompt hooks stay in the run YAML.
+
+```yaml
+# configs/flywheel/branches_all_steps.yaml: the branches YAML holds this block only
+benchmark:
+  - benchmark_id: trace_branches
+    task_loader:
+      benchmark_name: trace_branches
+      data_dir: traces/recorded          # the sources root (null: traces)
+      # sources: ["*"]                   # globs under data_dir (the default)
+      step_selector: { selector_id: all }   # every_k {k, offset} | explicit {steps} | last
+      branches_per_step: 3               # the shipped value; the branches differ only by sampling
+      agent_outcome: any                 # done | max_steps | error | timeout | vetoed (result.json)
+      require_eval: null                 # {evaluator_id, label: 1, slug: null}
+      # require_archive: [browser.network]   # the default; []: none
+      on_unbranchable: raise             # skip
+      task_variants: null                # a task-variants-1 file: another task per checkpoint
+      exclude_runs: null                 # a run-exclusions-1 file: recorded run ids not to branch
+      exclude_unloaded_checkpoints: true # leave out checkpoints captured before the page loaded
 ```
 
 ```bash
-uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --list    # task ids only
-uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval
+uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
+    --benchmark configs/flywheel/branches_all_steps.yaml --list    # task ids only
+uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
+    --benchmark configs/flywheel/branches_all_steps.yaml --no-eval
+uv run spectragent run --config configs/flywheel/branch_ui_tars_archive.yaml \
+    --benchmark configs/flywheel/branches_all_steps.yaml --task-id <source_run_id>/s<t>/b0
 ```
 
 - A task id is `<source_run_id>/s<t>/b<i>` (`<source_run_id>/s<t>/v<variant_id>/b<i>` under
@@ -600,13 +622,12 @@ exporter:
     wait_actions: keep                 # drop_when_capped (+ thought_rewrite_llms, thought_rewrite_cache)
     length: { max_tokens: 65536 }      # image_tokens: qwen_vl (default) | fixed + fixed_image_tokens
     output_dir: datasets/sft_v1
-# optional, read by decontamination and the reference-leak scan:
-# eval_loader: [{ benchmark_name: ..., subset: ..., data_dir: ... }]
-# task_loader: [{ benchmark_name: ..., subset: ..., data_dir: ... }]
 ```
 
 `uv run spectragent export --config configs/flywheel/export_sft.yaml` prints the samples per
-split and the drops by reason, and exits non-zero on any failure.
+split and the drops by reason, and exits non-zero on any failure. Decontamination and the
+reference-leak scan read the benchmarks `--benchmark` names (repeatable, an alias or a path):
+each one's task loader and its `eval_loader` block, knobs and all.
 
 - One `exporter` block per document. The student YAML holds one agent on a ReAct-family loop
   and no hooks; it is assembled with `prepare()` and never run. Its agent must define
@@ -630,12 +651,11 @@ split and the drops by reason, and exits non-zero on any failure.
   inferred from verdicts. The default `[]` decontaminates nothing (the manifest says
   `decontaminated: false`); `null` is refused at composition. Listing the benchmark the
   sources were recorded on excludes them all (`ExportEmptyError`). Each ref is read
-  through this document's `eval_loader:` / `task_loader:` blocks with that
-  `benchmark_name`, else through that benchmark's registered loader with its defaults;
-  `subset: null` takes every loader the document configures for the benchmark, or the
-  registered loader's default subset. `match: task_id` drops a source recorded on that
+  through the loaders with that `benchmark_name` of the benchmarks `--benchmark` names,
+  else through that benchmark's registered loader with its defaults; `subset: null` takes
+  every such loader for the benchmark, or the registered loader's default subset. `match: task_id` drops a source recorded on that
   benchmark whose task id its eval loader lists; `site_instruction` drops one whose
-  start-URL host and normalised instruction (case-folded, whitespace collapsed) match a task
+  start point (the browser's: the start URL's host, `TaskIdentity.start_point`) and normalised instruction (case-folded, whitespace collapsed) match a task
   of its task loader (a task-variant branch is checked with its own and its source task's
   instruction, `TaskIdentity.instructions`); `either` drops on either test. A benchmark whose loaders cannot load
   fails the export (`ExportConfigError`).
@@ -677,12 +697,12 @@ of `configs/flywheel/`.
 name: first-live
 root: traces/chains/first-live        # everything lands under it (traces/ is git-ignored)
 evidence: live                         # live | rehearsal
-tasks: {benchmark: online_mind2web, subset: All, task_ids: [...], limit: null}   # record / control only
+tasks: {benchmark: online_mind2web, task_ids: [...], limit: null}   # record / control only; alias or path, required
 token_limit: 2000000                   # every run stage together; unlimited (the default): no limit
 record:    {config: <recording YAML>, timeout: 600, evaluate: false}   # timeout defaults to 300
 control:   {config: <the recording with archive: []>}                  # optional overhead control
-same_path: {config: configs/flywheel/same_path_ui_tars_archive.yaml}
-branch:    {config: <branch YAML>}
+same_path: {config: configs/flywheel/same_path_ui_tars_archive.yaml, benchmark: configs/flywheel/branches_last_step.yaml}
+branch:    {config: <branch run YAML>, benchmark: <branches YAML>}             # benchmark: branch stages only, required
 export:    {config: <export YAML>, repeat: 2}                          # 1: no determinism check
 report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}  # value or env, exactly one
 ```
@@ -697,8 +717,10 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
 
 - Each stage calls an existing CLI's `main(argv)` in this process. The chain writes only path
   fields: `trace_writer.trace_dir` for each run stage, the `trace_branches` loader's
-  `data_dir`, and the exporter's `sources_root`, `sources` and `output_dir`. A stage YAML
-  missing one of those blocks, or holding two, is refused before anything runs. Everything
+  `data_dir` in a branch stage's branches YAML (written to `<root>/configs/<stage>_branches.yaml`
+  and handed to bench as `--benchmark`), and the exporter's `sources_root`, `sources` and
+  `output_dir`. A stage YAML missing one of those blocks, or holding two, is refused before
+  anything runs. Everything
   else (agent, tier, archivers, selector, `verify`) is the stage YAML's own.
 - A chain's export YAML uses `filters.require_eval: null` (the chain does not evaluate) and
   `decontamination: {against: []}` (the sources are the benchmark's own tasks) — both the

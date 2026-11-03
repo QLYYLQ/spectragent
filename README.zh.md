@@ -58,7 +58,7 @@ YAML ─▶ ConfigComposer ─▶ AgentRuntime.prepare() ─▶ execute ─▶ R
 | Hook | `trace_writer`、`live_monitor`、`prompt_contribution`、`omit_source_replies`、`ui_navigation_guard` |
 | 归档器 | `browser.network`（WARC）、`browser.storage`、`browser.dom_raw`、`browser.frames`、`browser.replay_log` |
 | 回放 | replayability `none`、`pinned`；网络来源 `live`、`archive`；miss 策略 `strict` |
-| Task loader | `online_mind2web`、`browsecomp`、`lexbench_browser`、`trace_branches`（从录制的 run 生成任务）；选步器 `explicit`、`every_k`、`all`、`last` |
+| 基准 | `online_mind2web`、`browsecomp`、`lexbench_browser`、`androidworld`，以及 `trace_branches`（分叉 sweep 的任务来源，从录制的 run 生成任务）；每个基准持有同名的任务加载器；发布在 `configs/benchmarks/<别名>.yaml`，用 `--benchmark <别名或路径>` 选；选步器 `explicit`、`every_k`、`all`、`last` |
 | Evaluator | `exact_match`、`online_mind2web`、`browsecomp`、`lexbench_browser` |
 | 导出 | 导出器 `openai_messages`；翻译器 `identity`、`index_to_coordinate` |
 | 回放审查器 | `jev` |
@@ -91,7 +91,7 @@ uv run spectragent run --config configs/browser_use_local.yaml \
 
 # 跑 5 个 benchmark 任务，只记录不判分
 uv run spectragent bench --config configs/browser_use_local.yaml \
-  --benchmark online_mind2web --subset All --limit 5 --no-eval
+  --benchmark online_mind2web --limit 5 --no-eval
 
 # 查看记录
 uv run spectragent runs list
@@ -166,8 +166,8 @@ uv run spectragent components list --layer agent
 |---|---|---|
 | 录制 | `run` 或 `bench` | `configs/flywheel/record_ui_tars_pinned.yaml`：`pinned` 固定种子、时钟、时区、locale、DPR 和配色；归档网络（WARC）、存储和原始 DOM |
 | 回放 | `run --replay-archive DIR` | `configs/flywheel/replay_ui_tars_archive.yaml`：每个请求都由归档应答；没命中的按 `strict` 处理（主 frame 文档失败，beacon 回 204，其余子资源回 404） |
-| 分叉 | `bench` 配 `trace_branches` | `configs/flywheel/branch_ui_tars_archive.yaml`：恢复到第 *t* 步之前，逐步校验恢复结果，让 teacher 重新决策 |
-| 原路径回放 | `bench` 配 `trace_branches` | `configs/flywheel/same_path_ui_tars_archive.yaml`：把每条录制恢复到最后一步，跑两遍，度量保真与确定性 |
+| 分叉 | `bench --benchmark <分叉 YAML>` | `configs/flywheel/branch_ui_tars_archive.yaml` 配 `branches_all_steps.yaml`：恢复到第 *t* 步之前，逐步校验恢复结果，让 teacher 重新决策 |
+| 原路径回放 | `bench --benchmark <分叉 YAML>` | `configs/flywheel/same_path_ui_tars_archive.yaml` 配 `branches_last_step.yaml`：把每条录制恢复到最后一步，跑两遍，度量保真与确定性 |
 | 导出 | `export` | `configs/flywheel/export_sft.yaml`，学生配置 `configs/flywheel/ui_tars_student.yaml`：按学生自己的格式渲染成 `openai_messages` |
 | 度量 | `flywheel run`、`flywheel report` | 自己写的链规格；产出 `report.json` 和 `report.md` |
 | 诊断 | `flywheel diagnose` | 对齐录制与回放的截图，标出有变化的网格单元，供人工审查 |
@@ -183,8 +183,10 @@ uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml \
   --replay-archive traces/recorded/<run>
 
 # 分叉所有录制的 run、导出，再跑一条带度量的链
-uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --list
-uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval
+uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
+  --benchmark configs/flywheel/branches_all_steps.yaml --list
+uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
+  --benchmark configs/flywheel/branches_all_steps.yaml --no-eval
 uv run spectragent export --config configs/flywheel/export_sft.yaml
 uv run spectragent flywheel run --spec chain.yaml
 ```

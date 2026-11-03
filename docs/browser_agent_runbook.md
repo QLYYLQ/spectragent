@@ -62,7 +62,7 @@ uv run spectragent config generate
 uv run spectragent run --config configs/browser_use_local.yaml \
   --start-url https://example.com --task "报告当前页面标题" --tui
 uv run spectragent bench --config configs/browser_use_local.yaml \
-  --benchmark online_mind2web --subset All --limit 5 --no-eval --tui
+  --benchmark online_mind2web --limit 5 --no-eval --tui
 ```
 
 批量命令在 trace 根目录的 `.sessions/` 中记录所选任务及停止原因，保留未启动任务。文件里的 running 只表示未记录收尾，不是进程存活证明。`--json` 将结构化结果写到 stdout，日志仍到 stderr；不能与 `--tui` 同用。
@@ -120,16 +120,12 @@ evaluator:
       model: 替换为已验证支持图像的型号
       provider: {name: direct}
       # base_url: 已验证的兼容接口地址
-eval_loader:
-  - benchmark_name: lexbench_browser
-    subset: All
-    # data_dir: 本地含 data_info.json 的参考数据目录
 ```
 
-这里的 `openai/direct` 是配置形状示例，型号或网关采用别的协议时，整体替换为验证过的 `llm` 块。密钥从相应环境变量读取；入口也加载 `.env`。参考数据默认由 `SPECTRAGENT_BENCHMARK_DATA` 指定的根目录定位。每次只组合一个 evaluator 和一个 eval_loader；不接受 agent、environment 或 hook 块。
+这里的 `openai/direct` 是配置形状示例，型号或网关采用别的协议时，整体替换为验证过的 `llm` 块。密钥从相应环境变量读取；入口也加载 `.env`。参考答案来自 `--benchmark` 选的基准：发布的别名（`configs/benchmarks/<别名>.yaml`）或自己写的基准 YAML 的路径；基准 YAML 没写 `eval_loader` 时，用它的任务加载器的键下注册的评测加载器、按任务加载器的 subset 读参考数据，数据默认由 `SPECTRAGENT_BENCHMARK_DATA` 指定的根目录定位，要读别处的数据就在自己的基准 YAML 里给 `eval_loader` 写 `data_dir`。每次只组合一个 evaluator 和一个基准；YAML 只接受 `evaluator` 与 `llm`，不接受 agent、environment、hook 或加载器块。
 
 ```bash
-uv run spectragent eval --config tmp/evaluation.yaml \
+uv run spectragent eval --config tmp/evaluation.yaml --benchmark lexbench_browser \
   --traces traces/chains/example/traces/record \
   --out evals/example-first --dry-run
 
@@ -158,7 +154,7 @@ uv run spectragent run --config configs/browser_use_local.yaml \
   --start-url https://example.com --task "报告当前页面标题"
 ```
 
-本地配置默认打开可见的 Chrome 窗口。Chrome/Chromium 必须已安装；自动发现失败时设置 `CHROME_EXECUTABLE_PATH` 为可执行文件路径。`--start-url` 让 browser capability 在 agent 开始前打开页面，三个 agent 都能使用。它要写成一个完整的 `http://` 或 `https://` URL：只写主机名（`example.com`）、写别的协议头、写几个站点，`--dry-run` 就报错，消息点名这个起始页。`spectragent run` 会读取仓库根目录的 `.env`，也接受已导出的环境变量。`--dry-run` 会验证 YAML、实例化配置并执行 `AgentRuntime.prepare()` 的协商检查；不会启动 Chrome 或调用模型。
+本地配置默认打开可见的 Chrome 窗口。Chrome/Chromium 必须已安装；自动发现失败时设置 `CHROME_EXECUTABLE_PATH` 为可执行文件路径。`--start-url` 让 browser capability 在 agent 开始前打开页面，三个 agent 都能使用。它是 browser 声明的起始参数（与 `--storage-state`、`--replay-archive` 一起，`spectragent run --help` 在 "browser start flags" 一组里列出，tab 补全也有）：运行配置没有 browser capability 时用它会被拒绝。它要写成一个完整的 `http://` 或 `https://` URL：只写主机名（`example.com`）、写别的协议头、写几个站点，`--dry-run` 就报错，消息点名这个起始页。`spectragent run` 会读取仓库根目录的 `.env`，也接受已导出的环境变量。`--dry-run` 会验证 YAML、实例化配置并执行 `AgentRuntime.prepare()` 的协商检查；不会启动 Chrome 或调用模型。
 
 每步动作上限由 `agent_loop.max_actions_per_step` 唯一决定。Runtime 将有类型的 `ExecutionLimits` 交给 Agent 原有 `prepare`，三个发货 Agent 用它构造自己的提示；消费声明或异步提示入口不匹配时，`--dry-run` 就拒绝。`metrics.execution_ms` 从环境 setup 前计到 Loop 结束（含分叉恢复、终止观测），不含结束 hook 与资源释放；任务表的 `elapsed_ms` 则包含完整收尾和结果回读。超时预算仍只覆盖 `agent.run`。
 
@@ -308,18 +304,21 @@ network_source: { source_id: live }
 
 ## 跑数据集
 
-单任务命令只接收自由文本。需要数据集身份、任务起始 URL、逐任务 trace 时，用 `spectragent bench`。基准数据不包含在安装包中；数据根目录约定为 `<root>/browser/<benchmark>/data_info.json`。
+需要数据集身份、任务起始 URL、逐任务 trace 时，用 `spectragent bench --benchmark`。基准是一份只有 `benchmark:` 一段的 YAML，写着任务从哪里来（任务加载器与它的 subset、数据目录）；`--benchmark` 收发布的别名（`configs/benchmarks/` 下的 `online_mind2web`、`browsecomp`、`lexbench_browser`、`androidworld`）或自己写的基准 YAML 的路径。运行配置只写 agent、环境与 hook，写了 `benchmark:` 段会被拒绝。基准数据不包含在安装包中；数据根目录约定为 `<root>/browser/<benchmark>/data_info.json`。
 
 ```bash
 export OPENAI_API_KEY="你的密钥"
 export SPECTRAGENT_BENCHMARK_DATA="$HOME/agent-data"
 uv run spectragent bench --config configs/browser_use_local.yaml \
-  --benchmark online_mind2web --subset All --list
+  --benchmark online_mind2web --list
 uv run spectragent bench --config configs/browser_use_local.yaml \
-  --benchmark online_mind2web --subset All --limit 1 --no-eval
+  --benchmark online_mind2web --limit 1 --no-eval
+# 只跑其中一个任务，与 bench 跑它时同一份上下文与身份：
+uv run spectragent run --config configs/browser_use_local.yaml \
+  --benchmark online_mind2web --task-id <ID>
 ```
 
-把 `--config` 换成上面的其他 agent YAML，就使用同一个数据集入口。也可以用 `--task-id <ID>` 指定任务，或用 `--limit N` 控制数量。`--list` 会先加载数据并只打印选中的任务 ID，不启动浏览器。数据集 loader 把每个任务的 `start_url` 传给 browser capability，trace 记下的也是这一个。
+把 `--config` 换成上面的其他 agent YAML，就使用同一个数据集入口。也可以用 `--task-id <ID>` 指定任务，或用 `--limit N` 控制数量。`--list` 会先加载数据并只打印选中的任务 ID，不启动浏览器。要换 subset（例如 `online_mind2web` 的 `Hard`）或数据目录，复制 `configs/benchmarks/online_mind2web.yaml`、改它的 `task_loader`，再用 `--benchmark ./我的基准.yaml` 选它；`bench` 不再有 `--subset`。数据集 loader 把每个任务的 `start_url` 传给 browser capability，trace 记下的也是这一个。
 
 起始页必须是完整的 http(s) URL。`lexbench_browser` 的数据（每个 split）把起始页写成不带协议头的主机名，例如 `www.bilibili.com`、`s.weibo.com/top/summary`，加载器把它补成 `https://www.bilibili.com` 再交出去，飞轮报告和导出按这个 URL 的主机认站点。写成文字或几个站点的起始页（L1 有 7 个、L2 有 3 个，例如 `www.xiachufang.com或其他美食网站`、`jd.com + tmall.com + suning.com`）原样留下，在 `prepare()` 被拒，不打开 trace，消息点名这个起始页：这样的任务若是 sweep 的第一个任务，开跑前的预检查停下，退出码 2；否则只记在那个任务上，汇总表里那一行写着原因（算作 infrastructure failure，退出码 1）。其他数据集的起始页本来就是完整的 URL，加载器不改。`spectragent bench` 不调用 `load_dotenv()`，所以运行前要在 shell 导出模型及云后端需要的密钥。需要自动评分时，在 YAML 中配置 `evaluator:`，然后去掉 `--no-eval`；只有任务数据与 trace 不会自动产生评分。
 
