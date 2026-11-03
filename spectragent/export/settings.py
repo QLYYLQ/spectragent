@@ -178,10 +178,10 @@ class BenchmarkRef:
     subset: str | None = Field(
         default=None,
         description=(
-            "The subset to read: the export document's loaders of this subset (or, when it "
-            "configures none for the benchmark, the registered loader built with it). None: "
-            "every loader the document configures for the benchmark, else the registered "
-            "loader's default subset."
+            "The subset to read: the loaders of this subset that the benchmarks named with "
+            "--benchmark configure (or, when they configure none for the benchmark, the "
+            "registered loader built with it). None: every loader they configure for the "
+            "benchmark, else the registered loader's default subset."
         ),
     )
 

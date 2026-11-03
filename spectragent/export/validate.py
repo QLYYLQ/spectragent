@@ -10,7 +10,8 @@ fails the whole export — nothing reaches ``output_dir``:
   screenshot's viewport, the point the student's reply executes lies in the
   image, and the grid point it writes lies on the student's grid;
 - **reference leak** — a task's reference answer (its benchmark's eval
-  loader, read through the export document's loaders, ``benchmarks.py``;
+  loader, read through the loaders of the benchmarks ``--benchmark`` names,
+  ``benchmarks.py``;
   normalised, at least 8 characters) never appears in text the export itself
   puts into a prompt: the seed (system) messages and the task text. The page
   showing the answer is the world, not a leak. Only a sample whose answer
@@ -157,11 +158,12 @@ def check_coordinates(rendered: RenderedSample, space: CoordinateSpace) -> None:
 class ReferenceScanner:
     """Reads each source task's reference answer from its benchmark's eval loader.
 
-    The loaders are the export document's (``benchmarks.py``): the eval
-    loaders it configures for the benchmark, searched in document order for
-    the task, else the benchmark's registered eval loader built with its
-    defaults and the source run's subset. A loader that cannot load, or has
-    no reference for the task, fails the export.
+    The loaders are those of the benchmarks the export names with
+    ``--benchmark`` (``benchmarks.py``): the eval loaders they configure for
+    the benchmark, searched in the order named for the task, else the
+    benchmark's registered eval loader built with its defaults and the source
+    run's subset. A loader that cannot load, or has no reference for the
+    task, fails the export.
 
     Counted for the manifest, apart — a sample nothing was compared for is
     never counted as compared:
@@ -215,7 +217,7 @@ class ReferenceScanner:
             raise ReferenceLeakError(sample_id, "task")
 
     def _eval_loaders(self, benchmark: str, subset: str, sample_id: str) -> tuple[Any, ...]:
-        """The document's eval loaders for *benchmark*, else its registered default, else ``()``."""
+        """The named benchmarks' *benchmark* eval loaders, else its registered one, else ``()``."""
         configured = self._loaders.configured("eval", benchmark)
         if configured:
             return configured

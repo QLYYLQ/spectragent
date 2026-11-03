@@ -141,8 +141,8 @@ class TestShippedConfigs:
             return
         if set(root) == {"benchmark"}:
             # A branches YAML: the branch sweep's task source, selected with
-            # --benchmark (§4.10.1). ``test_benchmark_selection.py`` runs it
-            # with its run configuration.
+            # --benchmark (§4.10.1). ``TestShippedConfigsRunThroughTheirBenchmarks``
+            # below composes it with its run configuration.
             benchmark = run.single("benchmark")
             assert benchmark.benchmark_id == "trace_branches"
             assert benchmark.task_loader.benchmark_name == "trace_branches"
