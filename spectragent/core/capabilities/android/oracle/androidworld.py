@@ -111,6 +111,8 @@ _HEALTH_CALL_S = 2.0
 #: Starlette answers before uvicorn logs the handler's traceback.
 _TRACEBACK_WAIT_S = 2.0
 _TRACEBACK_POLL_S = 0.05
+#: The line uvicorn logs right before the traceback of a handler that raised.
+_HANDLER_RAISED = "Exception in ASGI application"
 _LOOPBACK = "localhost,127.0.0.1,::1"
 
 
@@ -281,21 +283,29 @@ def _size(log: Path) -> int:
 
 
 def _logged_a_traceback(log: Path, since: int) -> bool:
-    """Whether *log* holds, past byte *since*, a whole traceback: its last line is the exception."""
+    """Whether *log* holds, past byte *since*, a handler's whole traceback: its last line is the exception.
+
+    Only what follows uvicorn's ``Exception in ASGI application`` counts.
+    AndroidWorld logs tracebacks of its own while it handles a request (absl
+    logs each adb command it retries), and those end before the handler fails.
+    """
     try:
         with log.open("rb") as stream:
             stream.seek(since)
             written = stream.read().decode(errors="replace")
     except OSError:
         return False
-    if "Traceback (most recent call last):" not in written or not written.endswith("\n"):
+    _, found, handler = written.rpartition(_HANDLER_RAISED)
+    if not found or "Traceback (most recent call last):" not in handler:
         return False
-    last = [line for line in written.splitlines() if line.strip()][-1]
+    if not handler.endswith("\n"):
+        return False
+    last = [line for line in handler.splitlines() if line.strip()][-1]
     return not last.startswith((" ", "\t", "Traceback", "During handling", "The above exception"))
 
 
 async def _until_traceback_logged(log: Path, since: int, limit_s: float) -> None:
-    """Wait, at most *limit_s*, until *log* holds a whole traceback written past byte *since*."""
+    """Wait, at most *limit_s*, until *log* holds a handler's whole traceback written past byte *since*."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + limit_s
     while not _logged_a_traceback(log, since) and loop.time() < deadline:

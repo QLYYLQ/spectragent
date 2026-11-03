@@ -735,6 +735,47 @@ async def test_a_server_error_ends_with_the_traceback_the_service_logs_after_ans
     assert str(caught.value).endswith(cause)
 
 
+async def test_a_server_error_ends_with_the_handlers_traceback_not_one_logged_on_the_way(
+    root: Path, tmp_path: Path
+) -> None:
+    """While it handles a request, AndroidWorld logs tracebacks of its own: absl's, of an adb command it retries."""
+    retried = (
+        "ERROR:absl:Failed to execute ADB command (try 1 of 3): [adb shell am start  -W -n "
+        "net.osmand/net.osmand.plus.activities.MapActivity]\n"
+        "Traceback (most recent call last):\n"
+        '  File "adb_controller.py", line 122, in execute_command\n'
+        "subprocess.TimeoutExpired: Command 'am start' timed out after 5.0 seconds\n"
+        "WARNING:absl:serve.py: not restarting the adb server the run shares; retrying\n"
+    )
+    cause = "sqlite3.OperationalError: no such table: map_markers"
+    traceback = (
+        "ERROR:    Exception in ASGI application\n"
+        "Traceback (most recent call last):\n"
+        '  File "sqlite_utils.py", line 164, in delete_all_rows_from_table\n'
+        f"{cause}\n"
+    )
+    write_behaviour(
+        root,
+        {
+            "/task/initialize": {
+                "status": 500,
+                "log_before": retried,
+                "log": traceback,
+                "log_after_s": 0.5,
+            }
+        },
+    )
+    oracle = _oracle(root)
+
+    with pytest.raises(
+        AndroidWorldError, match="POST /task/initialize answered HTTP 500"
+    ) as caught:
+        await oracle.start(_device(tmp_path), _task())
+    await oracle.stop()
+
+    assert str(caught.value).endswith(cause)
+
+
 async def test_a_server_error_whose_cause_is_never_logged_waits_only_its_limit(
     root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
