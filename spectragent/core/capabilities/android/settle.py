@@ -45,14 +45,15 @@ Two more rules hold the wait (user ruling 2026-11-03):
   AndroidWorld's M3A sleeps 2 s after every action before it reads the screen
   again, and a run that runs M3A as AndroidWorld does sets 2000 ms.
 - **The app's content is in the UI tree.** A capture whose tree has no app
-  window with content (:func:`shows_an_app`) was taken before the screen
-  finished changing: the capability waits again within the same limit
-  (*started*) and captures again. The tree comes with the capture, so the
-  rule holds only where a capture takes the tree the agent reads. In
-  AndroidWorld's seed-42 sweep (2026-11-03) 25 of 1634 captures, in 21 of
-  115 runs, had no app window or only app windows with nothing in them, each
-  right after a tap, a key or an app start; the agent saw the status bar
-  alone, or the window's empty root, and acted on it.
+  window with content, and no window with input focus that has some
+  (:func:`shows_an_app`), was taken before the screen finished changing: the
+  capability waits again within the same limit (*started*) and captures
+  again. The tree comes with the capture, so the rule holds only where a
+  capture takes the tree the agent reads. In AndroidWorld's seed-42 sweep
+  (2026-11-03) 25 of 1634 captures, in 21 of 115 runs, had no app window or
+  only app windows with nothing in them, each right after a tap, a key or an
+  app start; the agent saw the status bar alone, or the window's empty root,
+  and acted on it.
 
 The wait ends ``settled`` after a quiet period with no change; ``capped`` at
 its limit, ``pending`` naming what changed within the last quiet period or
@@ -171,17 +172,22 @@ async def wait_until_still(
 
 
 def shows_an_app(forest: AndroidAccessibilityForest) -> bool:
-    """Whether *forest* has an app window with content: a node in it that says something or can be acted on.
+    """Whether *forest* has an app window, or a window with input focus, with content in it.
 
-    A node says something with its text or its content description, and can be
-    acted on when it is clickable, long-clickable, editable, scrollable or
-    checkable. In the seed-42 sweep (module docstring) the app windows without
-    content held their empty root alone, or layout containers and a splash
-    image; stable screens with a single element (the brightness slider, a
-    video playing full screen) say something.
+    Content is a node that says something or can be acted on: it has text or
+    a content description, or it is clickable, long-clickable, editable,
+    scrollable or checkable. The window with focus counts whatever its type:
+    the notification shade pulled down, quick settings and a system dialog
+    ("... isn't responding") are system windows, and the shade takes focus
+    when it is down, so a still screen showing it is still. In the seed-42
+    sweep (module docstring) the app windows without content held their empty
+    root alone, or layout containers and a splash image; stable screens with
+    a single element (the brightness slider, a video playing full screen) say
+    something.
     """
     return any(
-        window.window_type == "TYPE_APPLICATION" and any(map(_has_content, window.tree.nodes))
+        (window.window_type == "TYPE_APPLICATION" or window.is_focused)
+        and any(map(_has_content, window.tree.nodes))
         for window in forest.windows
     )
 

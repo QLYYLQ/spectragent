@@ -223,6 +223,26 @@ def test_a_tree_shows_an_app_once_an_app_window_has_content() -> None:
     assert shows_an_app(_forest(EMPTY_APP, app(text="Open with"))), "one window with content"
 
 
+def test_the_window_with_input_focus_counts_whatever_its_type() -> None:
+    """The notification shade pulled down is a system window that takes focus; on the emulator
+    no app window is listed behind it (2026-11-03). Quick settings and system dialogs are the same."""
+    shade = {
+        **_window(
+            "TYPE_SYSTEM",
+            {"class_name": "android.widget.TextView", "text": "23:46"},
+            {"class_name": "android.widget.Switch", "content_description": "Wi-Fi"},
+        ),
+        "is_focused": True,
+    }
+
+    assert shows_an_app(_forest(shade)), "the shade alone"
+    assert shows_an_app(_forest(EMPTY_APP, shade)), "the shade over an app whose window is empty"
+    assert not shows_an_app(_forest({**_window("TYPE_SYSTEM"), "is_focused": True})), (
+        "a focused window with nothing in it: the shade collapsing"
+    )
+    assert not shows_an_app(_forest(STATUS_BAR)), "a system window without focus still says nothing"
+
+
 def test_a_wait_that_saw_no_app_and_waits_no_more_says_so() -> None:
     settled = SettleState(outcome="settled", waited_ms=900, loaded=None)
     capped = SettleState(outcome="capped", waited_ms=2000, loaded=None, pending=("frames",))
