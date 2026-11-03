@@ -625,6 +625,52 @@ def test_the_launcher_counts_only_a_pull_as_one_that_lost_a_file() -> None:
     assert not _launcher().pull_lost_a_file(RuntimeError("No such file or directory"))
 
 
+@dataclass
+class _AppOps:
+    """The device's shell, faked for the launcher's All files access grant: each app's uid mode."""
+
+    allowed: set[str]
+    commands: list[list[str]] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    def shell(self, command: list[str]) -> str:
+        self.commands.append(command)
+        verb, _, package, op, *mode = command[1:]
+        assert (command[0], op) == ("appops", "MANAGE_EXTERNAL_STORAGE")
+        if verb == "set":
+            assert mode == ["allow"]
+            self.allowed.add(package)
+            return ""
+        if package in self.allowed:
+            return "MANAGE_EXTERNAL_STORAGE: allow; time=+1m ago\n"
+        return "No operations.\nDefault mode: default\n"
+
+    def grant(self) -> None:
+        _launcher().grant_all_files_access(self.shell, warn=self.notes.append)
+
+
+def test_the_launcher_grants_all_files_access_where_androidworlds_setup_left_none() -> None:
+    ops = _AppOps(allowed={"org.videolan.vlc"})
+
+    ops.grant()
+
+    assert ops.allowed == {
+        "net.gsantner.markor",
+        "com.simplemobiletools.gallery.pro",
+        "org.videolan.vlc",
+    }
+    assert [command[1] for command in ops.commands] == ["get", "set", "get", "set", "get"]
+    assert ops.commands[1] == [
+        "appops",
+        "set",
+        "--uid",
+        "net.gsantner.markor",
+        "MANAGE_EXTERNAL_STORAGE",
+        "allow",
+    ]
+    assert len(ops.notes) == 2 and all("All files access" in note for note in ops.notes)
+
+
 _UTTERANCE = "com.google.androidenv.miniwob.app.GET_UTTERANCE_ACTION"
 
 

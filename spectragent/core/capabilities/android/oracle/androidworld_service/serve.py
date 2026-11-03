@@ -34,6 +34,9 @@ it was cloned:
   emulator reported;
 - Android deletes AndroidWorld's per-app snapshots at every boot, so the app
   states tasks restore are taken again once the service is up;
+- AndroidWorld's one-time app setup gives Markor, Simple Gallery Pro and VLC
+  All files access, which a fresh boot of AndroidWorld's AVD lacks: it is
+  granted again once the service is up (:func:`grant_all_files_access`);
 - AndroidWorld clears an app's table before a task, and when the table is
   missing it launches the app and deletes 7 s later, while OsmAnd, started on a
   fresh boot, makes its markers table 12-16 s after its process starts: the
@@ -79,6 +82,11 @@ ANDROID_ENV = "1.2.3"
 TABLE_WAIT_S = 30.0
 #: The pause between two looks; each look pulls the database's whole directory.
 TABLE_POLL_S = 1.0
+#: The apps AndroidWorld's one-time app setup (``env/setup_device/apps.py``) gives
+#: All files access: ``MarkorApp``, ``SimpleGalleryProApp`` and ``VlcApp`` tap
+#: "Allow access to manage all files" on the system's page
+#: (:func:`grant_all_files_access`).
+ALL_FILES_ACCESS = ("net.gsantner.markor", "com.simplemobiletools.gallery.pro", "org.videolan.vlc")
 #: The id of the cover MiniWoB++'s ``core.js`` puts over the task when its page
 #: has loaded (``core.startEpisode``, which every page's ``window.onload`` runs),
 #: until an episode starts (``core.startEpisodeReal`` hides it).
@@ -198,6 +206,35 @@ def pull_lost_a_file(error: Exception) -> bool:
         and " pull " in command
         and "No such file or directory" in output
     )
+
+
+def grant_all_files_access(
+    shell: Callable[[list[str]], str], *, warn: Callable[[str], object]
+) -> None:
+    """Give the apps in :data:`ALL_FILES_ACCESS` All files access, as AndroidWorld's setup does, where it is missing.
+
+    AndroidWorld's setup opens Markor, Simple Gallery Pro and VLC and taps
+    "Allow access to manage all files" on the system's All files access page,
+    which sets the app's ``MANAGE_EXTERNAL_STORAGE`` app op to allow for its
+    uid. A fresh boot of AndroidWorld's AVD has every runtime permission and
+    the overlay app op the same setup grants, but not this one for any of the
+    three (``appops get`` answers "No operations", 2026-11-03). So every run
+    of a task in those apps met the app's storage dialog and the system page
+    first: in our seed-42 runs, 16 paid 4-7 steps for it; AndroidWorld's own
+    runner keeps its device, so only its first such task of a slice did
+    (``docs/architecture_design.md`` §11.2).
+
+    For each package it asks the uid's mode with *shell* (``appops get --uid
+    <package> MANAGE_EXTERNAL_STORAGE``) and, unless it is allow, sets it as
+    the system's page does (``appops set --uid <package>
+    MANAGE_EXTERNAL_STORAGE allow``). *warn* hears each grant.
+    """
+    for package in ALL_FILES_ACCESS:
+        op = ["--uid", package, "MANAGE_EXTERNAL_STORAGE"]
+        if "MANAGE_EXTERNAL_STORAGE: allow" in shell(["appops", "get", *op]):
+            continue
+        shell(["appops", "set", *op, "allow"])
+        warn(f"{package} lacked the All files access AndroidWorld's app setup gives it: granted")
 
 
 def read_in_the_foreground(
@@ -577,6 +614,12 @@ def _patch(args: argparse.Namespace) -> None:
             emulator_setup=False,
         )
         env = load(*rest, **named)
+        grant_all_files_access(
+            lambda command: adb_utils.issue_generic_request(
+                ["shell", *command], env.controller
+            ).generic.output.decode("utf-8"),
+            warn=warn,
+        )
         from android_world.env.setup_device import setup
         from android_world.utils import app_snapshot
 
