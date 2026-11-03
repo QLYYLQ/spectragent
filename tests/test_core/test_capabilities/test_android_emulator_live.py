@@ -7,11 +7,9 @@ The capability is composed from YAML, as a run composes it, with the
 ``local_emulator`` provider, the accessibility service's gestures as its tap
 injector and ``set_text`` as its typing backend, which every API level from 30
 runs; ``SPECTRAGENT_TEST_TYPING_BACKEND`` names another by its ``typing_id``.
-With ``key_events`` on API 33 (2026-11-03) every test passed but one: the tap
-on the "Password" label was refused, as it should be, but the refusal named
-the keyboard's own view, not the "Network name" field (the open item on
-typing keys in ``docs/architecture_design.md`` §11.2 "以后，或还没定的"). The
-one boot covers, in file order:
+With ``key_events`` on API 33 every test passed (2026-11-04, device protocol
+8; ``click`` by index timed out once at a load of about 50 and passed on its
+own). The one boot covers, in file order:
 
 - the key hygiene of ``docs/architecture_design.md`` §11.2 ("两把钥匙"): from
   API 31 the emulator hands the guest the run's own key (its log's "Sending
