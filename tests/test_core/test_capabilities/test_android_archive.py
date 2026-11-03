@@ -7,13 +7,15 @@ archiver's own, over the fake ADB server's scripted phone:
 - a run that records it can clean every step's tree again offline, read back
   through the trace's archive boundary, into exactly the fragment that step
   recorded; a run without it writes no ``env/``;
-- only a capture that succeeded is archived, and a screen that did not change
-  is stored once;
+- only a capture that succeeded is archived, whether or not the run
+  negotiates the tree, and a screen that did not change is stored once;
 - a tree at the source's node limit is kept whole, in a fraction of its JSON,
   without a second request to the device and without encoding inside the
   capture: the encoding runs when the trace hook collects;
-- a run whose agent reads no tree refuses the archiver before it starts, and
-  the archiver is chosen only through ``trace_writer.archive``.
+- a run whose agent reads no tree archives a tree captured for the archive
+  alone, which the agent never sees, and a failure of that capture is a gap of
+  the archive, never a failed observation (user ruling 2026-11-03);
+- the archiver is chosen only through ``trace_writer.archive``.
 """
 
 from __future__ import annotations
@@ -27,7 +29,6 @@ from pydantic import JsonValue
 
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.ui_tars import UITarsAgent
-from spectragent.core.capabilities.android.archive.base import UnmetArchiverNeeds
 from spectragent.core.capabilities.android.archive.ui_tree_raw import (
     RawUITree,
     RawUITreeArchiver,
@@ -55,7 +56,7 @@ from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.android_archive import AndroidArchiveDriver
 from tests._helpers.android_device import ScriptedPhone, configured, fake_service_apk, phone_server
 from tests._helpers.android_runs import ScriptedModel
-from tests._helpers.assembly import AGENT_ID, NoModel, make_env, make_run
+from tests._helpers.assembly import AGENT_ID, make_env, make_run
 
 
 def _screen(*rows: str) -> JsonObject:
@@ -147,9 +148,17 @@ class _TreeReader:
 
 
 async def _run(
-    phone: ScriptedPhone, tmp_path: Path, *, archive: bool
+    phone: ScriptedPhone,
+    tmp_path: Path,
+    *,
+    archive: bool,
+    agent: Any = None,
+    model: ScriptedModel | None = None,
 ) -> tuple[RunTrace, AndroidCapability]:
-    """Two steps on *phone* (a tap on element 0, then done) and the terminal observation, traced."""
+    """Steps of *agent* on *phone* and the terminal observation, traced.
+
+    By default the agent reads the UI tree: it taps element 0, then it is done.
+    """
     writer = TraceWriter(
         trace_dir=str(tmp_path / "traces"), archive=[RawUITreeArchiver()] if archive else None
     )
@@ -159,10 +168,10 @@ async def _run(
         )
         configured(capability, adb)
         run = make_run(
-            agent=_TreeReader(),
+            agent=agent or _TreeReader(),
             loop=ReactLoop(max_steps=5, terminal_observation=True),
             env=make_env(AndroidEnvironment, {"android#0": capability}),
-            llm=ScriptedModel("tap the first row", "done"),
+            llm=model or ScriptedModel("tap the first row", "done"),
             memory=SimpleMemory(),
             hooks=[writer],
         )
@@ -229,8 +238,13 @@ async def test_a_run_without_the_archiver_writes_no_env(tmp_path: Path) -> None:
 # ── what is archived, and when ────────────────────────────────────────
 
 
-async def test_only_a_capture_that_succeeded_is_archived() -> None:
-    driver = AndroidArchiveDriver(fragments=frozenset({UI_TREE, SCREENSHOT}))
+@pytest.mark.parametrize(
+    "fragments",
+    [frozenset({UI_TREE, SCREENSHOT}), frozenset({SCREENSHOT})],
+    ids=["tree negotiated", "tree for the archive alone"],
+)
+async def test_only_a_capture_that_succeeded_is_archived(fragments: frozenset[str]) -> None:
+    driver = AndroidArchiveDriver(fragments=fragments)
     driver.capability.bind_archivers(list(driver.archivers))
     try:
         await driver.ensure_setup()
@@ -359,33 +373,79 @@ async def test_a_tree_at_the_node_limit_is_kept_whole_without_costing_the_captur
     assert len(file.data) * 8 < json_bytes, f"{len(file.data)} B gzipped of {json_bytes} B"
 
 
-# ── refused, and chosen ───────────────────────────────────────────────
+# ── a run whose agent reads no tree (user ruling 2026-11-03) ──────────
 
 
-def test_a_run_whose_agent_reads_no_tree_refuses_the_archiver_before_it_starts(
+async def test_a_run_whose_agent_reads_no_tree_archives_a_tree_it_never_sees(
     tmp_path: Path,
 ) -> None:
-    capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
-    writer = TraceWriter(trace_dir=str(tmp_path / "traces"), archive=[RawUITreeArchiver()])
-    run = make_run(
-        agent=UITarsAgent(),
-        loop=ReactLoop(),
-        env=make_env(AndroidEnvironment, {"android#0": capability}),
-        llm=NoModel(),
-        memory=SimpleMemory(),
-        hooks=[writer],
+    """UI-TARS reads the screenshot alone; the archive gets each capture's tree all the same."""
+    phone = ScriptedPhone(forest=dict(HOME))
+    model = ScriptedModel("Action: press_home()", "Action: finished(content='done')")
+    trace, _ = await _run(
+        phone,
+        tmp_path,
+        archive=True,
+        agent=UITarsAgent(prompt_template="mobile_use"),
+        model=model,
     )
 
-    with pytest.raises(UnmetArchiverNeeds) as refused:
-        AgentRuntime.for_agent(run, AGENT_ID).prepare(task_id="refused")
+    records = trace.step_records
+    assert [record.origin for record in records] == ["policy", "policy", "terminal"]
+    for step in (record.step for record in records):
+        assert trace.observation_fragment(step, UI_TREE) is None, "the run negotiated no tree"
+        (raw,) = raw_ui_trees(trace, step)
+        assert raw.forest == AndroidAccessibilityForest.model_validate(HOME)
+        assert (raw.producer, raw.screen) == ("accessibility_service", (1080, 2400))
+    assert phone.service_calls("tree") == 3, "one ask per capture, for the archive alone"
+    prompts = [str(message.content) for call in model.calls for message in call]
+    assert not any("Network & internet" in prompt for prompt in prompts), "the agent never sees it"
+    assert trace.manifest.status == "complete"
 
-    assert str(refused.value) == (
-        "This run captures no UI tree: its negotiation leaves 'android.ui_tree' out (an agent "
-        "that reads only the screen negotiates none), so 'android.ui_tree_raw', which records "
-        "the tree of each capture, would record nothing. Leave it out of trace_writer.archive, "
-        "or run an agent that reads the UI tree."
+
+@pytest.mark.parametrize(
+    "helper_screenshots", [True, False], ids=["helper's screenshot", "service's screenshot"]
+)
+async def test_a_failed_capture_for_the_archive_is_its_gap_and_the_observation_goes_on(
+    helper_screenshots: bool,
+) -> None:
+    """A walk past its limit costs the archive its tree, never the agent its screenshot.
+
+    The service answers a connection's requests one at a time, and takes the
+    screenshot where the helper cannot (API 30, 34 and up): asked first, the
+    walk would hold that screenshot past its own limit and fail the capture.
+    """
+    driver = AndroidArchiveDriver(fragments=frozenset({SCREENSHOT}))
+    driver.phone.helper_screenshots = helper_screenshots
+    driver.capability.bind_archivers(list(driver.archivers))
+    try:
+        await driver.ensure_setup()
+        driver.capability.ui_tree_timeout_s = 0.2
+        driver.capability.screenshot_timeout_s = 0.3
+        driver.phone.tree_delay_s = 0.5
+        await driver.observe()  # the screenshot is served
+        missed = await driver.capability.collect_archive()
+
+        driver.phone.tree_delay_s = 0.0
+        await driver.observe()
+        taken = await driver.capability.collect_archive()
+    finally:
+        await driver.close()
+
+    assert not missed.files
+    (gap,) = missed.gaps
+    assert (gap.archiver_id, gap.error) == ("android.ui_tree_raw", "TimeoutError")
+    assert gap.detail == (
+        "the UI tree of observation cycle 1 was not captured: no answer within 0.2 s"
     )
-    assert writer.run_dir is None, "refused before the trace opened"
+    (file,) = taken.files
+    assert not taken.gaps and file.meta.cycle == 2
+    assert RawUITree.decode(file.data).forest == AndroidAccessibilityForest.model_validate(
+        driver.phone.forest
+    )
+
+
+# ── chosen ────────────────────────────────────────────────────────────
 
 
 def test_the_archiver_is_chosen_through_trace_writer_archive() -> None:

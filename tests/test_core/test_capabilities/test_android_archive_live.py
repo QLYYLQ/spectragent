@@ -13,12 +13,18 @@ device-side APK. One read-only boot, the archiver bound before setup:
   archive budget (``ARCHIVE_MAX_P50_OVERHEAD_MS``; a busy machine may raise it
   with ``SPECTRAGENT_ARCHIVE_OVERHEAD_P50_MS``, as the browser's benchmark
   reads it). The module prints the tree's size and that time, for the design
-  doc.
+  doc;
+- negotiated to the screenshot alone, as an agent that reads only the screen
+  is (user ruling 2026-11-03), each capture still archives one tree, which the
+  agent cannot read; the module prints what that costs a capture, measured
+  against the same captures with the archiver unbound, on Settings' main page
+  and on the licence page.
 """
 
 from __future__ import annotations
 
 import os
+import statistics
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -46,8 +52,14 @@ pytestmark = [
 ]
 
 APK_VARIABLE = "SPECTRAGENT_TEST_SERVICE_APK"
-#: How long the licence page may take to load and show its WebView's nodes.
-_LOADED_S = 90.0
+#: How long the licence page may take to load and show its WebView's nodes: it
+#: loaded within 90 s at a 1-minute load of 4, and not at 15 (2026-11-03).
+_LOADED_S = 240.0
+#: How long one walk of the tree may take here. The capability's default is 10 s;
+#: the first walk of the loaded licence page took 8.4 s at a load of 4 to 9, and
+#: kept passing 10 s at 15 (2026-11-03). This module waits for a page, not for
+#: the default limit.
+_TREE_TIMEOUT_S = 30.0
 
 
 @dataclass
@@ -84,6 +96,7 @@ async def up() -> AsyncIterator[Up]:
                 "typing_backend": {"typing_id": "set_text"},
                 "ui_tree_cleaner": {"cleaner_id": "androidworld"},
                 "ui_tree_serializer": {"serializer_id": "m3a"},
+                "ui_tree_timeout_s": _TREE_TIMEOUT_S,
             }
         ]
     }
@@ -171,3 +184,93 @@ async def test_a_licence_page_past_the_node_limit_cleans_back_and_says_it_is_par
         f"collecting the licence page's tree took {loaded.collect_s * 1000:.0f} ms (bound "
         f"{bound:.0f} ms; override with SPECTRAGENT_ARCHIVE_OVERHEAD_P50_MS)"
     )
+
+
+async def _capture_s(up: Up) -> float:
+    """One screenshot-only observation: how long its capture took, seconds."""
+    up.cycle += 1
+    await up.capability.begin_observation(up.cycle)
+    started = time.perf_counter()
+    await up.capability.resolve_fragment(SCREENSHOT)
+    return time.perf_counter() - started
+
+
+async def _costs(up: Up, rounds: int) -> tuple[list[float], list[float], list[RawUITree]]:
+    """Captures with the archiver unbound and bound, alternating: their times, and the trees archived."""
+    archiver = RawUITreeArchiver()
+    without: list[float] = []
+    with_tree: list[float] = []
+    trees: list[RawUITree] = []
+    for _ in range(rounds):
+        up.capability.bind_archivers([])
+        without.append(await _capture_s(up))
+        assert (await up.capability.collect_archive()).is_empty
+        up.capability.bind_archivers([archiver])
+        with_tree.append(await _capture_s(up))
+        batch = await up.capability.collect_archive()
+        (file,) = batch.files
+        assert not batch.gaps, batch.gaps
+        trees.append(RawUITree.decode(file.data))
+    return without, with_tree, trees
+
+
+def _nodes(tree: RawUITree) -> int:
+    return sum(len(window.tree.nodes) for window in tree.forest.windows)
+
+
+#: A licence page that shows its WebView's content has more nodes than this.
+#: Not ``omitted_offscreen``: on API 30 the page left no subtree out.
+_LOADED_NODES = 1000
+
+
+def _ms(times: list[float]) -> str:
+    ordered = sorted(times)
+    p90 = ordered[min(len(ordered) - 1, round(0.9 * (len(ordered) - 1)))]
+    return f"median {statistics.median(times) * 1000:.0f} ms, p90 {p90 * 1000:.0f} ms"
+
+
+async def test_a_run_that_reads_only_the_screen_archives_a_tree_it_cannot_read(up: Up) -> None:
+    session = up.capability._session
+    assert session is not None
+    adb = AdbClient(session.endpoint.host, session.endpoint.port)
+    up.capability.apply_negotiation(frozenset({SCREENSHOT}))
+    try:
+        with pytest.raises(KeyError, match="does not capture 'android.ui_tree'"):
+            await _capture_s(up)  # the screenshot is served...
+            await up.capability.resolve_fragment(UI_TREE)  # ...the tree never is
+        await up.capability.collect_archive()
+
+        shown = await adb.shell(session.serial, "am start -W -n com.android.settings/.Settings")
+        assert shown.exit_code == 0, shown.stderr.decode(errors="replace")
+        without, with_tree, trees = await _costs(up, rounds=8)
+        assert all(tree.forest.windows for tree in trees)
+        main_nodes = max(_nodes(tree) for tree in trees)
+        report = [
+            f"Settings' main page ({main_nodes} nodes): capture {_ms(without)} without the "
+            f"archiver, {_ms(with_tree)} with it"
+        ]
+
+        shown = await adb.shell(session.serial, "am start -W -a android.settings.LICENSE")
+        assert shown.exit_code == 0, shown.stderr.decode(errors="replace")
+        up.capability.bind_archivers([RawUITreeArchiver()])
+        deadline = time.monotonic() + _LOADED_S
+        loaded = False
+        while not loaded and time.monotonic() < deadline:
+            await _capture_s(up)
+            batch = await up.capability.collect_archive()
+            loaded = any(_nodes(RawUITree.decode(f.data)) > _LOADED_NODES for f in batch.files)
+        assert loaded, f"the licence page showed no content within {_LOADED_S:g} s"
+        without, with_tree, trees = await _costs(up, rounds=5)
+        assert all(_nodes(tree) > _LOADED_NODES for tree in trees)
+        report.append(
+            f"licence page ({max(_nodes(tree) for tree in trees)} nodes, "
+            f"{max(tree.omitted_offscreen for tree in trees)} off-screen subtrees left out): "
+            f"capture {_ms(without)} without the archiver, {_ms(with_tree)} with it"
+        )
+        print(
+            f"\nscreenshot-only captures, screenshots by {up.capability.bridge.screen.producer}, "
+            "with the tree for the archive alone:\n" + "\n".join(report)
+        )
+    finally:
+        up.capability.apply_negotiation(frozenset({UI_TREE, SCREENSHOT}))
+        up.capability.bind_archivers([RawUITreeArchiver()])

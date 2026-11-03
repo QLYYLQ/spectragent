@@ -4,11 +4,19 @@
 dropped node cannot be brought back, so this archiver keeps the whole tree the
 source captured (the views that are not important for accessibility, the view
 ids, the off-screen nodes up to the source's node limit), and another cleaner
-can clean it again offline (§11.2, user ruling 2026-11-01). It asks the device
-for nothing: it keeps the very answer the capture cleaned, handed over once
-every fragment of the capture was built (``AndroidCapability``). A capture that
-failed leaves nothing here, and a capture takes as long with the archiver as
-without it.
+can clean it again offline (§11.2, user ruling 2026-11-01). The capability
+hands a tree over once every fragment of its capture was built
+(``AndroidCapability``), so a capture that failed leaves nothing here:
+
+- In a run that negotiates ``android.ui_tree``, it is the very answer the
+  capture cleaned. The archiver asks the device for nothing, and a capture
+  takes as long with it as without it.
+- In a run that does not (an agent that reads only the screen), the capability
+  asks the tree source in the same capture for the archive alone, as
+  ``browser.dom_raw`` captures the DOM for UI-TARS, and the agent never sees
+  the tree (user ruling 2026-11-03: forking and resuming compare screens with
+  it). When that ask fails, the step's archive names the missing tree as a gap
+  and the observation goes on.
 
 One gzip JSON file per tree (:class:`RawUITree`): the forest in android_env's
 proto3 JSON form, as our service sends it (``device/forest.py``), beside the
@@ -30,7 +38,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from spectragent.core.archive import ArchiveFile, ArchiveProvenance
+from spectragent.core.archive import ArchiveBatch, ArchiveFile, ArchiveGap, ArchiveProvenance
 from spectragent.core.archive.source import ArchiveReader
 from spectragent.core.capabilities.android.archive.base import (
     AndroidArchiveContext,
@@ -38,6 +46,7 @@ from spectragent.core.capabilities.android.archive.base import (
     AndroidArchiverBase,
     AndroidArchiveSession,
     CommittedTree,
+    MissingTree,
 )
 from spectragent.core.capabilities.android.device.forest import AndroidAccessibilityForest
 from spectragent.core.capabilities.android.ui_tree._registrar import ScreenSize
@@ -88,10 +97,26 @@ class RawUITreeArchiver(AndroidArchiverBase):
 
 
 class RawUITreeSession(AndroidArchiveSession):
-    """Encodes the committed trees when the trace hook collects."""
+    """Encodes the committed trees when the trace hook collects, and names the missed ones as gaps."""
 
-    async def collect(self) -> list[ArchiveFile]:
-        return [self._file(tree) for tree in self.ctx.trees.drain()]
+    async def collect(self) -> ArchiveBatch:
+        files: list[ArchiveFile] = []
+        gaps: list[ArchiveGap] = []
+        for entry in self.ctx.trees.drain():
+            if isinstance(entry, MissingTree):
+                gaps.append(
+                    ArchiveGap(
+                        archiver_id=self.archiver_id,
+                        error=type(entry.error).__name__,
+                        detail=(
+                            f"the UI tree of observation cycle {entry.cycle} was not captured: "
+                            f"{str(entry.error) or type(entry.error).__name__}"
+                        ),
+                    )
+                )
+            else:
+                files.append(self._file(entry))
+        return ArchiveBatch(files=tuple(files), gaps=tuple(gaps))
 
     def _file(self, tree: CommittedTree) -> ArchiveFile:
         document = RawUITree(

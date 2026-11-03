@@ -4,7 +4,8 @@
 behind a fake ADB server and an ``AndroidCapability`` on it, and sets the
 capability up on first use, once a test has bound what it binds (the runtime's
 order). Each :meth:`AndroidArchiveDriver.observe` is one observation cycle that
-captures the UI tree; :meth:`AndroidArchiveDriver.close` tears down what it set up.
+resolves every negotiated fragment (the UI tree unless a test negotiates
+otherwise); :meth:`AndroidArchiveDriver.close` tears down what it set up.
 """
 
 from __future__ import annotations
@@ -14,13 +15,13 @@ from contextlib import AsyncExitStack, ExitStack
 from pathlib import Path
 from unittest import mock
 
-from spectragent.core.archive import ArchiveFile
+from spectragent.core.archive import ArchiveBatch
 from spectragent.core.capabilities.android.archive.ui_tree_raw import (
     RawUITreeArchiver,
     RawUITreeSession,
 )
 from spectragent.core.capabilities.android.capability import AndroidCapability
-from spectragent.core.capabilities.android.observations import UI_TREE, AndroidUITreeObs
+from spectragent.core.capabilities.android.observations import UI_TREE
 from tests._helpers.android_device import (
     ScriptedPhone,
     configured,
@@ -55,14 +56,13 @@ class AndroidArchiveDriver:
         await self.capability.setup(negotiation=self.fragments)
         self._resources.push_async_callback(self.capability.teardown)
 
-    async def observe(self) -> AndroidUITreeObs:
-        """One observation cycle: the capture, and the tree it served."""
+    async def observe(self) -> None:
+        """One observation cycle: one capture, every negotiated fragment served from it."""
         await self.ensure_setup()
         self._cycle += 1
         await self.capability.begin_observation(self._cycle)
-        tree = await self.capability.resolve_fragment(UI_TREE)
-        assert isinstance(tree, AndroidUITreeObs)
-        return tree
+        for key in sorted(self.fragments):
+            await self.capability.resolve_fragment(key)
 
     async def produce(self, step: int) -> None:
         """One step: a screen of its own, observed."""
@@ -72,7 +72,7 @@ class AndroidArchiveDriver:
     def break_collect(self) -> None:
         """Encoding the tree fails from now on: every collection names the loss."""
 
-        async def failing(session: RawUITreeSession) -> list[ArchiveFile]:
+        async def failing(session: RawUITreeSession) -> ArchiveBatch:
             raise OSError("the tree could not be encoded")
 
         self._patches.enter_context(mock.patch.object(RawUITreeSession, "collect", failing))
