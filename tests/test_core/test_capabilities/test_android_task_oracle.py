@@ -14,6 +14,7 @@ import asyncio
 import importlib.util
 import os
 import shutil
+import time
 from pathlib import Path
 from types import ModuleType
 
@@ -487,6 +488,50 @@ def test_the_launcher_ends_a_miniwob_episode_on_a_stored_reward_that_is_not_zero
 def test_the_launcher_refuses_a_reward_that_is_no_number() -> None:
     with pytest.raises(ValueError, match="could not convert"):
         _launcher().reward_ends_episode("lost")
+
+
+def test_the_launcher_launches_the_app_once_and_looks_until_its_table_is_there() -> None:
+    launches: list[str] = []
+    looks = iter([False, False, True])
+
+    took = _launcher().launch_and_wait_for_table(
+        lambda: launches.append("osmand"), lambda: next(looks), wait_s=5.0, poll_s=0.01
+    )
+
+    assert launches == ["osmand"]
+    assert took is not None and 0.02 <= took < 5.0, "a pause after each look that missed"
+    assert next(looks, "no look left") == "no look left", "it stopped once it saw the table"
+
+
+def test_the_launcher_stops_looking_for_a_table_the_app_never_makes() -> None:
+    launches: list[str] = []
+    looks: list[bool] = []
+
+    def table_made() -> bool:
+        looks.append(False)
+        return False
+
+    started = time.monotonic()
+    took = _launcher().launch_and_wait_for_table(
+        lambda: launches.append("osmand"), table_made, wait_s=0.2, poll_s=0.01
+    )
+    waited = time.monotonic() - started
+
+    assert took is None and launches == ["osmand"]
+    assert 0.2 <= waited < 1.0, "it gave up once the limit had passed"
+    assert len(looks) > 2, "it looked again after each pause"
+
+
+def test_the_launcher_counts_a_listed_file_adb_found_gone_as_no_table_yet() -> None:
+    gone = (
+        "Error executing adb command: [adb pull /data/data/net.osmand/databases/"
+        'map_markers_db-journal /tmp/x]\nadb stdout: [b"adb: error: failed to stat remote '
+        "object '/data/data/net.osmand/databases/map_markers_db-journal': No such file or "
+        'directory\\n"]'
+    )
+
+    assert _launcher().lost_a_file(RuntimeError(gone))
+    assert not _launcher().lost_a_file(RuntimeError("adb: device 'emulator-5556' not found"))
 
 
 async def test_a_service_that_builds_another_task_is_refused_and_stopped(
