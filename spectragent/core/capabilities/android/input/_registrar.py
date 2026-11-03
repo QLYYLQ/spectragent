@@ -126,6 +126,14 @@ class AndroidTypingBackend(Protocol):
         """
         ...
 
+    def text_to_type(self, text: str) -> str:
+        """The text this backend enters for *text*: *text* itself, unless it changes it first.
+
+        ``key_events`` with ``fold_accents`` folds accents away; the action
+        records the folded text in its effect, so a fold is never silent.
+        """
+        ...
+
     async def enter(self, device: DevicePrograms, text: str, *, replace: bool) -> TextTarget:
         """Enter *text*: over the field's whole text with *replace*, else at its cursor.
 
@@ -169,3 +177,6 @@ class AndroidTypingBackendBase(metaclass=AndroidTypingBackendRegistrar.Meta):
         ``set_text`` finds its field otherwise, and says so itself.
         """
         return True
+
+    def text_to_type(self, text: str) -> str:
+        return text

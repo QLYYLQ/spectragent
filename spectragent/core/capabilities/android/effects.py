@@ -81,14 +81,20 @@ class AndroidTextEffect(ActionEffect):
     ``text_entered``: whether any text went in. When it did, ``entered_by`` is
     the typing backend, by its registry key, and ``replaced`` whether the text
     replaced the field's own (``clear``) or went at its cursor; the field is
-    named as the device reports it (the input method knows only its package).
-    The text itself, and its length, are never recorded.
+    named as the device reports it (the input method knows only its package,
+    key events name none). The text the action was given is in its params and
+    is not recorded again, nor its length; ``folded_text`` is the text that
+    went in instead, when the backend folded it first (``key_events`` with
+    ``fold_accents``: ``Sauté`` typed as ``Saute``), so a fold is never silent
+    in the trace. A model is not told: :meth:`describe` says what happened on
+    the screen, which shows the folded text.
     """
 
     tap: Touch | None = None
     text_entered: bool
     entered_by: str | None = None
     replaced: bool | None = None
+    folded_text: str | None = None
     field_package: str | None = None
     field_class: str | None = None
     field_view_id: str | None = None
@@ -97,6 +103,8 @@ class AndroidTextEffect(ActionEffect):
     def _how_only_when_entered(self) -> Self:
         if self.text_entered != (self.entered_by is not None and self.replaced is not None):
             raise ValueError("entered_by and replaced are given exactly when text was entered")
+        if self.folded_text is not None and not self.text_entered:
+            raise ValueError("folded_text is given only when text was entered")
         return self
 
     def describe(self, *, write_point: PointWriter = write_viewport_point) -> str:

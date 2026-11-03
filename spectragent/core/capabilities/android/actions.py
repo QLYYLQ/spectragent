@@ -532,8 +532,9 @@ class _FocusedTyping:
                 effect=AndroidTextEffect(effect_id=effect_id, tap=tapped, text_entered=False),
             )
         replace = self.clear_by_default if clear is None else clear
+        typed = device.text_to_type(text)
         try:
-            field = await device.enter_text(text, replace=replace)
+            field = await device.enter_text(typed, replace=replace)
         except RemoteError as exc:
             if exc.code not in UNCHANGED_FIELD_CODES:
                 raise  # some of the text may have gone in: the effect cannot say none did
@@ -550,6 +551,7 @@ class _FocusedTyping:
                 text_entered=True,
                 entered_by=device.typing,
                 replaced=replace,
+                folded_text=typed if typed != text else None,
                 field_package=field.package_name,
                 field_class=field.class_name,
                 field_view_id=field.view_id_resource_name,

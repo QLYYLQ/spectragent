@@ -1200,12 +1200,14 @@ def test_prepare_refuses_a_typing_backend_the_providers_device_cannot_run(tmp_pa
 
 def test_a_run_types_with_key_events_on_every_api_level_the_apk_runs_on(tmp_path: Path) -> None:
     """The helper injects keys from API 30, the APK's lowest, as it injects ``key``."""
-    raw: dict[str, JsonValue] = {
-        "capability": [_android_block(typing_backend={"typing_id": "key_events"})]
-    }
-    composed = ConfigComposer.for_config(raw).compose(raw).single("capability")
-    assert isinstance(composed, AndroidCapability)
-    assert isinstance(composed.typing_backend, KeyEventsBackend)
+    for written, folds in (({}, False), ({"fold_accents": True}, True)):
+        raw: dict[str, JsonValue] = {
+            "capability": [_android_block(typing_backend={"typing_id": "key_events", **written})]
+        }
+        composed = ConfigComposer.for_config(raw).compose(raw).single("capability")
+        assert isinstance(composed, AndroidCapability)
+        assert isinstance(composed.typing_backend, KeyEventsBackend)
+        assert composed.typing_backend.fold_accents is folds
 
     capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
     capability.typing_backend = KeyEventsBackend()

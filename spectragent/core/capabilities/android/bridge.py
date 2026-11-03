@@ -162,6 +162,10 @@ class InputInjection(Protocol):
         """Press and release one key, named as Android names it (``KEYCODE_BACK``)."""
         ...
 
+    def text_to_type(self, text: str) -> str:
+        """The text the typing backend enters for *text*: *text* itself, unless it folds it first."""
+        ...
+
     async def enter_text(self, text: str, *, replace: bool) -> TextTarget:
         """Enter *text* into the field with input focus: over its text with *replace*, else at its cursor."""
         ...
@@ -270,6 +274,9 @@ class DeviceInput:
         if not _KEYCODE.fullmatch(keycode):
             raise ValueError(f"not an Android key code: {keycode!r}")
         await self.side.helper.key(keycode)
+
+    def text_to_type(self, text: str) -> str:
+        return self.typing_backend.text_to_type(text)
 
     async def enter_text(self, text: str, *, replace: bool) -> TextTarget:
         return await self.typing_backend.enter(self.side, text, replace=replace)

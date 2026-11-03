@@ -15,8 +15,9 @@ cached forwarder, and ffmpeg on PATH;
 why a module skips, :func:`write_task_list` writes a task list under
 AndroidWorld's interpreter, and :func:`androidworld_capability` composes the
 Android capability from one YAML block, so a receptor the capability starts
-to require is written here once. It types with ``key_events``, as AndroidWorld
-and MiniWoB++ runs do, for parity with AndroidWorld's own typing.
+to require is written here once. It types with ``key_events`` and
+``fold_accents``, as AndroidWorld and MiniWoB++ runs do, for parity with
+AndroidWorld's own typing.
 """
 
 from __future__ import annotations
@@ -126,8 +127,9 @@ def androidworld_capability() -> AndroidCapability:
                 },
                 "service_apk": os.environ[APK_VARIABLE],
                 "tap_injector": {"injector_id": "shell_injection"},
-                # AndroidWorld's own typing, for parity (user ruling 2026-11-03).
-                "typing_backend": {"typing_id": "key_events"},
+                # AndroidWorld's own typing, for parity (user ruling 2026-11-03): key
+                # events, with accents folded away as AndroidWorld folds them.
+                "typing_backend": {"typing_id": "key_events", "fold_accents": True},
                 "ui_tree_cleaner": {"cleaner_id": "androidworld"},
                 "ui_tree_serializer": {"serializer_id": "m3a"},
                 "task_oracle": {"oracle_id": "androidworld", "root": str(installation().root)},

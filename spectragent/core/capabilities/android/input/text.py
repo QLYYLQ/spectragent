@@ -14,6 +14,12 @@ key event after another, so a page that listens for keys sees them.
 
 from __future__ import annotations
 
+import unicodedata
+from dataclasses import dataclass
+from typing import Annotated
+
+from pydantic import Field
+
 from spectragent.core.capabilities.android.device.clients import TextTarget
 from spectragent.core.capabilities.android.input._registrar import (
     AndroidTypingBackendBase,
@@ -64,6 +70,7 @@ class CommitTextBackend(AndroidTypingBackendBase):
         return await device.service.commit_text(text, replace=replace)
 
 
+@dataclass
 class KeyEventsBackend(AndroidTypingBackendBase):
     """Key events injected by the shell helper, as AndroidWorld's ``adb shell input text`` types.
 
@@ -75,7 +82,9 @@ class KeyEventsBackend(AndroidTypingBackendBase):
     (Chinese, an accented letter) is refused and no key is pressed, where
     AndroidWorld drops those characters and types the rest. A combining accent
     counts as having no key: the map's are dead keys, which would put the
-    accent on the character typed after them. A replacement is
+    accent on the character typed after them. With ``fold_accents`` the text
+    is folded first, as AndroidWorld folds it (``Sauté`` types as ``Saute``),
+    and only what still has no key is refused. A replacement is
     ctrl+A then Delete before the text, as AndroidWorld clears a field. The keys
     go to the window with focus and the helper learns nothing of the field, so
     the effect names none.
@@ -83,8 +92,27 @@ class KeyEventsBackend(AndroidTypingBackendBase):
 
     __registry_key__ = "key_events"
 
+    fold_accents: Annotated[
+        bool,
+        Field(
+            description=(
+                "Fold accents away before typing, as AndroidWorld does: the text is decomposed "
+                "(NFKD) and its combining marks dropped, so 'Sauté' types as 'Saute' and "
+                "'Schönberg' as 'Schonberg'. What still has no key (Chinese) is refused, where "
+                "AndroidWorld drops it. The action's effect records the folded text. Off, a "
+                "text with an accented letter is refused whole."
+            )
+        ),
+    ] = False
+
     def unsupported(self, sdk_int: int) -> str | None:
         return None
+
+    def text_to_type(self, text: str) -> str:
+        if not self.fold_accents:
+            return text
+        decomposed = unicodedata.normalize("NFKD", text)
+        return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
 
     async def enter(self, device: DevicePrograms, text: str, *, replace: bool) -> TextTarget:
         await device.helper.type_text(text, replace=replace)

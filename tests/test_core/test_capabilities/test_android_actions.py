@@ -607,6 +607,31 @@ async def test_the_key_events_backend_types_through_the_shell_helper() -> None:
     assert refused.error is not None and "'é' (U+00E9)" in refused.error
 
 
+async def test_key_events_fold_accents_as_androidworld_does_and_the_effect_records_it() -> None:
+    """``fold_accents`` types ``Sauté`` as ``Saute`` (decomposed, combining marks dropped); the
+    effect records the folded text, never the text as given, and only when a fold changed it."""
+    phone = ScriptedPhone(text_field=True)
+    async with (
+        phone_server(phone) as adb,
+        android_capability(adb, typing_backend=KeyEventsBackend(fold_accents=True)) as capability,
+    ):
+        folded = await act(capability, "type_coordinate", text="Sauté in Schönberg")
+        plain = await act(capability, "type_coordinate", text="Saute", clear=False)
+        typed_so_far = list(phone.inputs)
+        refused = await act(capability, "type_coordinate", text="蓝牙", clear=False)
+
+    assert typed_so_far[-2:] == [
+        "helper type_text 'Saute in Schonberg' replace",
+        "helper type_text 'Saute' at the cursor",
+    ]
+    assert isinstance(folded.effect, AndroidTextEffect)
+    assert folded.effect.folded_text == "Saute in Schonberg"
+    assert folded.effect.describe() == "Entered the text into the field, replacing its text."
+    assert isinstance(plain.effect, AndroidTextEffect) and plain.effect.folded_text is None
+    assert phone.inputs == typed_so_far, "what still has no key is refused, folded or not"
+    assert refused.error is not None and "unmappable_text" in refused.error
+
+
 async def test_a_text_that_fails_partway_is_reported_as_partly_typed() -> None:
     """Some keys went in before one failed, so the action fails without saying that no text
     went in."""
