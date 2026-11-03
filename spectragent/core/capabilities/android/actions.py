@@ -54,6 +54,7 @@ from spectragent.core.capabilities.android.effects import (
     ScreenPoint,
     Touch,
 )
+from spectragent.core.capabilities.android.input._registrar import UNCHANGED_FIELD_CODES
 from spectragent.core.capabilities.android.ui_tree.models import ElementIndexError
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
@@ -459,10 +460,12 @@ class _FocusedTyping:
     after the tap (none right after it, the field half a second later,
     measured 2026-11-03), while the input method's connection the shared rule
     reads can be there already: with the keyboard up, it stays from the field
-    before. When the wait runs out the text is entered as asked; a backend
-    that then enters nothing fails the action with its own reason
-    (``RemoteError: set_text: no_focused_field: ...``), and the effect reports
-    the tap with no text entered, as a refusal does.
+    before. When the wait runs out the text is entered as asked. A backend
+    refusal that leaves the field as it was (``UNCHANGED_FIELD_CODES``) fails
+    the action with its own reason (``RemoteError: set_text: no_focused_field:
+    ...``), and the effect reports the tap with no text entered, as a refusal
+    does; any other device error leaves the action with no effect, since some
+    of the text may have gone in.
     """
 
     clear_by_default: Annotated[
@@ -522,7 +525,9 @@ class _FocusedTyping:
         replace = self.clear_by_default if clear is None else clear
         try:
             field = await device.enter_text(text, replace=replace)
-        except RemoteError as exc:  # the device answered that it entered nothing
+        except RemoteError as exc:
+            if exc.code not in UNCHANGED_FIELD_CODES:
+                raise  # some of the text may have gone in: the effect cannot say none did
             return ActionResult(
                 success=False,
                 error=f"{type(exc).__name__}: {exc}",

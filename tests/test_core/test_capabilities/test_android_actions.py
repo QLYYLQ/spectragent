@@ -866,6 +866,19 @@ async def test_a_backend_that_enters_nothing_fails_the_action_and_its_effect_kee
     assert effect.describe() == "Tapped (540, 160). No text was entered."
 
 
+async def test_a_device_error_that_may_have_entered_text_leaves_no_effect(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """Only a refusal that leaves the field as it was reports the tap with no text entered; an
+    internal error may come after some of the text went in, so no effect claims either way."""
+    phone.text_field, phone.text_failure = True, "internal"
+
+    result = await act(capability, "type_coordinate", coordinate_x=540, coordinate_y=160, text="hi")
+
+    assert (result.success, result.effect) == (False, None)
+    assert result.error is not None and "set_text: internal:" in result.error
+
+
 async def test_a_tap_that_gives_no_text_field_focus_types_nothing(
     capability: AndroidCapability, phone: ScriptedPhone
 ) -> None:

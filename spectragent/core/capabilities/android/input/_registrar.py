@@ -89,6 +89,16 @@ class AndroidTapInjectorBase(metaclass=AndroidTapInjectorRegistrar.Meta):
         return self.__registry_key__
 
 
+#: The codes of a typing backend's refusals that leave the field as it was: the
+#: device answered before any text went in (``android/service/``: ``set_text``'s
+#: and ``commit_text``'s own checks, and an ``ACTION_SET_TEXT`` the field did not
+#: perform). Any other device error, such as ``internal``, says nothing about
+#: the field: some of the text may have gone in.
+UNCHANGED_FIELD_CODES = frozenset(
+    {"no_focused_field", "password_field", "set_text_failed", "no_input_method"}
+)
+
+
 class TypingBackendUnsupported(ValueError):
     """The device's API level cannot run the configured typing backend; the message says why."""
 
@@ -120,8 +130,11 @@ class AndroidTypingBackend(Protocol):
         Returns the field that took it, as the device names it.
 
         Raises:
-            RemoteError: No field took it; the code says why
-                (``no_focused_field``).
+            RemoteError: No text went in and the field is as it was, when the
+                code is one of :data:`UNCHANGED_FIELD_CODES`
+                (``no_focused_field``, ``password_field``, ``set_text_failed``,
+                ``no_input_method``); any other code (``internal``) says
+                nothing about the field.
         """
         ...
 
