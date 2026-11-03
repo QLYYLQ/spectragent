@@ -287,10 +287,11 @@ class TestFilters:
     @pytest.mark.parametrize(
         ("wanted", "kept"),
         [
-            ("any", {"done", "failed", "timed-out"}),
+            ("any", {"done", "failed", "timed-out", "ended"}),
             ("done", {"done"}),
             ("error", {"failed"}),
             ("timeout", {"timed-out"}),
+            ("episode_over", {"ended"}),
             ("vetoed", set()),
         ],
     )
@@ -299,9 +300,10 @@ class TestFilters:
         write_source(tmp_path, "done", steps=1)
         write_source(tmp_path, "failed", steps=1, agent_done=AgentDoneStatus.ERROR)
         write_source(tmp_path, "timed-out", steps=1, agent_done=AgentDoneStatus.TIMEOUT)
+        write_source(tmp_path, "ended", steps=1, agent_done=AgentDoneStatus.EPISODE_OVER)
         tasks = loader(tmp_path, agent_outcome=wanted)
         assert {task_id.split("/")[0] for task_id in tasks.task_ids()} == kept
-        for name in {"done", "failed", "timed-out"} - kept:
+        for name in {"done", "failed", "timed-out", "ended"} - kept:
             assert tasks.skipped[name].startswith("filtered: its agent ended ")
             assert f"(agent_outcome: {wanted})" in tasks.skipped[name]
 
@@ -482,6 +484,10 @@ _PRECONDITIONS: dict[str, tuple[Any, str]] = {
             task_setup=setup_record({"start_url": START_URL, "replay_archive": "/rec"}),
         ),
         "it is a replay run",
+    ),
+    "task_text_completed_at_setup": (
+        lambda root: write_source(root, "run-x", steps=1, task_text_setter="android"),
+        "its task text was completed at setup by capability 'android'",
     ),
     "no_archive": (
         lambda root: write_source(root, "run-x", steps=1, archivers=()),

@@ -204,6 +204,9 @@ class TestTheRealFailures:
             async def observe(self, _negotiated: Any) -> Any:
                 return _screenshot()
 
+            async def episode_over(self) -> bool:
+                return False
+
         class _LLM:
             inference_kind = "chat"
             model = "stub"

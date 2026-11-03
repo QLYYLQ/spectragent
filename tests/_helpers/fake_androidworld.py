@@ -10,13 +10,19 @@ whitelisted environment, its process group.
 
 Run as a program, this file is the service: it answers the endpoints the oracle
 calls (``/health``, ``/suite/reinitialize``, ``/task/goal``,
-``/task/initialize``, ``/reset``, ``/execute_action``, ``/task/score``,
-``/task/tear_down``) as the real one does, and, like it, listens only once its
+``/task/initialize``, ``/reset``, ``/execute_action``, ``/task/episode_over``,
+``/task/score``, ``/task/tear_down``) as the real one does (the launcher adds
+``/task/episode_over`` to it), and, like it, listens only once its
 startup is over. What it
 does is read from ``<root>/behaviour.json``, again for every request, so a test
 can change an endpoint's answer while the service runs: per path, ``{"status": 500}``
-answers an error, ``{"hang": true}`` never answers, ``{"text": ...}`` answers
-that text, ``{"json": ...}`` answers that object; the top level may also say
+answers an error and then logs a traceback, as uvicorn logs one after Starlette
+has answered (``"log"`` is the text it logs, ``"log_after_s"`` how long after
+the answer), ``{"hang": true}`` never answers, ``{"text": ...}`` answers
+that text, ``{"json": ...}`` answers that object, ``{"json_in_turn": [...]}``
+answers the path's first request with the first object, its second with the
+second, and every later one with the last (a goal AndroidWorld rewrites at
+initialize reads differently before and after); the top level may also say
 ``start_delay_s`` (how long before it listens), ``exit_code`` (exit at once
 with it) and ``ignore_sigterm``. It records every request in
 ``<root>/record/requests.jsonl`` (its JSON body too, when it has one), its PID,
@@ -46,6 +52,13 @@ if TYPE_CHECKING:  # run as a program, this file imports only the standard libra
     import pytest
     from pydantic import JsonValue
 
+#: What the service logs after it answered a server error, unless the rule says otherwise.
+TRACEBACK = (
+    "ERROR:    Exception in ASGI application\n"
+    "Traceback (most recent call last):\n"
+    '  File "fake_androidworld.py", line 1, in _answer\n'
+    "RuntimeError: the fake service failed\n"
+)
 #: What each endpoint answers when the behaviour file says nothing about it.
 DEFAULT_ANSWERS: dict[str, dict[str, JsonValue]] = {
     "/health": {"status": "success"},
@@ -54,6 +67,7 @@ DEFAULT_ANSWERS: dict[str, dict[str, JsonValue]] = {
     "/task/initialize": {"status": "success", "message": "Task initialized."},
     "/reset": {"status": "success", "message": "Environment reset."},
     "/execute_action": {"status": "success", "message": "Action executed."},
+    "/task/episode_over": {"over": False},
     "/task/score": {"score": 1.0},
     "/task/tear_down": {"status": "success", "message": "Task torn down."},
 }
@@ -135,6 +149,7 @@ def _serve(argv: list[str]) -> None:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
     time.sleep(behaviour.get("start_delay_s", 0))
     lock = threading.Lock()
+    counts: dict[str, int] = {}
 
     class Handler(BaseHTTPRequestHandler):
         def _answer(self) -> None:
@@ -148,6 +163,7 @@ def _serve(argv: list[str]) -> None:
                     "body": json.loads(sent) if sent else None,
                 }
                 log.write(json.dumps(entry) + "\n")
+                counts[url.path] = turn = counts.get(url.path, 0) + 1
             rule = json.loads((root / "behaviour.json").read_text()).get(url.path, {})
             if rule.get("hang"):
                 time.sleep(3600)
@@ -158,10 +174,16 @@ def _serve(argv: list[str]) -> None:
             )
             if "status" in rule:
                 status, body, kind = rule["status"], "Internal Server Error", "text/plain"
+                logged = rule.get("log", TRACEBACK)
+                threading.Timer(
+                    rule.get("log_after_s", 0), lambda: print(logged, end="", flush=True)
+                ).start()
             elif "text" in rule:
                 body, kind = rule["text"], "text/plain"
             elif "json" in rule:
                 body = json.dumps(rule["json"])
+            elif "json_in_turn" in rule:
+                body = json.dumps(rule["json_in_turn"][min(turn, len(rule["json_in_turn"])) - 1])
             data = body.encode()
             self.send_response(status)
             self.send_header("Content-Type", kind)

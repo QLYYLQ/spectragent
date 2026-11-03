@@ -61,7 +61,7 @@ TRACE_FORMAT_VERSION = 7
 class TraceStatus(StrEnum):
     """Whether a trace is a complete record of its run — the trace's ledger, not the agent's.
 
-    How the agent ended (done, max_steps, error, timeout, vetoed) is
+    How the agent ended (done, max_steps, episode_over, error, timeout, vetoed) is
     ``result.json``'s ``agent_done``; this says only whether what the run
     did within its declared recording scope is on disk. A run that timed
     out, or whose model call failed, has a complete trace when every
@@ -194,6 +194,10 @@ class TraceManifest(BaseModel):
     #: ``result.json``; ``None`` when there is no such record (no oracle scored
     #: the task, or the run never reached the scoring point).
     oracle_scores: str | None = None
+    #: ``task_text.json``, the task text a capability's setup completed
+    #: (``SetupTaskText``), committed before step 0; ``None`` when no setup
+    #: completed one (``TraceConfig.task_text_setter`` says whether one was to).
+    task_text: str | None = None
 
 
 class ExtraFileRecord(BaseModel):
@@ -294,7 +298,7 @@ class ArchiveRecord(BaseModel):
 
 
 #: What a committed file is (:class:`CommittedFile`): the run's own files
-#: (``manifest``, ``config``, ``result``, ``oracle_scores``), what the manifest
+#: (``manifest``, ``config``, ``result``, ``oracle_scores``, ``task_text``), what the manifest
 #: lists (``step``, ``fragment`` — an observation's JSON or its recorded
 #: failure —, ``artifact``, ``llm_call``, ``extra_index``, ``output_schema``,
 #: ``prompt_image``), and what an extra index lists (``extra``).
@@ -303,6 +307,7 @@ CommittedKind = Literal[
     "config",
     "result",
     "oracle_scores",
+    "task_text",
     "step",
     "fragment",
     "artifact",
@@ -679,15 +684,17 @@ class TraceConfig(BaseModel):
     under ``env/`` — the state of the world the agent acted in,
     privacy-marked on its own terms.
 
-    Three per-task facts sit beside the layers: :attr:`task_setup`, the
+    Four per-task facts sit beside the layers: :attr:`task_setup`, the
     environment setup context the task started from, redacted by value;
-    :attr:`branch`, where a branch run came from; and :attr:`max_steps`, the
-    step budget the Loop ran the task under.
+    :attr:`branch`, where a branch run came from; :attr:`max_steps`, the
+    step budget the Loop ran the task under; and :attr:`task_text_setter`,
+    the capability whose setup completes the task's text.
 
     **A per-task or per-feature field is written only when it has a
     value** (``docs/architecture_design.md`` §5.3): ``branch`` only in a
     branch run, ``task_setup`` only when the task was started with a setup
     context, ``max_steps`` only when the Loop has a step budget,
+    ``task_text_setter`` only when a setup completes the task's text,
     ``env_evidence_privacy`` only when archivers were bound,
     ``extra`` only when the caller passed some. A placeholder such as
     ``"branch": null`` in every other run's ``config.json`` would be one
@@ -772,6 +779,16 @@ class TraceConfig(BaseModel):
     #: ``resolved``). Per task, so not part of the digest: the configured
     #: ceiling moves it through ``resolved``.
     max_steps: int | None = Field(default=None, exclude_if=_absent)
+    #: The capability whose setup completes this task's text
+    #: (``Environment.task_text_setter``, asked in ``AgentRuntime.prepare``),
+    #: or ``None`` (not written) when the loader's text, :attr:`task`, is the
+    #: run's. The completed text is ``task_text.json``
+    #: (:attr:`TraceManifest.task_text`): a run that names a setter and
+    #: committed a step but has no such record lost it, and
+    #: ``RunTrace.task_text`` refuses rather than fall back to :attr:`task`
+    #: (``docs/architecture_design.md`` §5.3). Per task, so not part of the
+    #: digest.
+    task_text_setter: str | None = Field(default=None, exclude_if=_absent)
 
     #: Which source file launched this run, across all historical versions.
     #: Absent for callers and older traces without explicit source provenance.
@@ -792,8 +809,9 @@ class TraceConfig(BaseModel):
         result — the archive binding (``active_archivers`` /
         ``archive_bindings``) moves it through the latter, with no special
         case. Excluded: ``task`` / ``task_id`` (which task, not which
-        configuration), ``extra``, ``task_setup``, ``branch`` and
-        ``max_steps`` (per-task data) and the provenance fields
+        configuration), ``extra``, ``task_setup``, ``branch``,
+        ``max_steps`` and ``task_text_setter`` (per-task data) and the
+        provenance fields
         ``config_source`` / ``secrets_recorded`` / ``env_evidence_privacy``.
 
         Args:

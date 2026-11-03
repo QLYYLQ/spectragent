@@ -72,6 +72,7 @@ from spectragent.core.trace.encoding import (
     PROMPT_IMAGES_DIR,
     RESULT_FILE,
     STEPS_DIR,
+    TASK_TEXT_FILE,
     WAL_OWNED_DIRS,
     WAL_OWNED_FILES,
     EncodedFragment,
@@ -100,6 +101,7 @@ from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.oracle_score import OracleScore
 from spectragent.schemas.recording import RecordingProblem
 from spectragent.schemas.step_record import StepRecord
+from spectragent.schemas.task import SetupTaskText
 
 _ORACLE_SCORES: TypeAdapter[list[OracleScore]] = TypeAdapter(list[OracleScore])
 
@@ -110,7 +112,7 @@ class WALWriter:
     Creates and manages the trace directory (§5.3)::
 
         traces/{run_id}/
-            manifest.json   config.json   result.json   [oracle_scores.json]
+            manifest.json   config.json   result.json   [oracle_scores.json]   [task_text.json]
             steps/  observations/  messages/  evals/  [env/]
 
     ``env/`` holds environment evidence when a run binds archivers. It is
@@ -399,6 +401,33 @@ class WALWriter:
             plan,
             manifest.model_copy(
                 update={"oracle_scores": ORACLE_SCORES_FILE, "updated_at": datetime.now(UTC)}
+            ),
+        )
+
+    def commit_task_text(self, record: SetupTaskText) -> None:
+        """Commit the task text a capability's setup completed as ``task_text.json``; the manifest points to it.
+
+        Once per run, after setup and before step 0 (``docs/architecture_design.md``
+        §5.3), by the same protocol as a step: the file durably, then the
+        manifest. ``RunTrace.setup_task_text`` reads it back.
+
+        Raises:
+            ValueError: The run already committed its task text, or *record*
+                is not a :class:`SetupTaskText` — before any byte is written.
+            OSError: Writing or ``fsync``-ing failed. If the manifest was
+                already replaced, it is reconciled before another write.
+        """
+        manifest = self._require_manifest()
+        if manifest.task_text is not None:
+            raise ValueError(f"{TASK_TEXT_FILE} is already committed to {self._run_dir}")
+        if not isinstance(record, SetupTaskText):
+            raise ValueError(f"a task text record is a SetupTaskText, not {type(record).__name__}")
+        plan = self._plan()
+        plan.add_record(TraceFile(TASK_TEXT_FILE, record.model_dump_json(indent=2).encode()))
+        self._commit(
+            plan,
+            manifest.model_copy(
+                update={"task_text": TASK_TEXT_FILE, "updated_at": datetime.now(UTC)}
             ),
         )
 

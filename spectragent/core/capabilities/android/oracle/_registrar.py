@@ -5,7 +5,10 @@ task's score from the live device at the Runtime's scoring point (§4.2) and
 ends the task at teardown. ``AndroidCapability`` holds one as its
 ``task_oracle`` receptor (``none`` selects no benchmark), implements ``TaskOracle`` by
 delegating ``read_score`` to it, and passes it the task's data unread: an
-Android task's ``oracle_task`` (``AndroidSetup``) is the oracle's own.
+Android task's ``oracle_task`` (``AndroidSetup``) is the oracle's own. It
+implements ``TaskTextFromSetup`` and ``EpisodeEnd`` through it too: an oracle
+that makes the task's goal on the device completes the run's task text, and
+one whose benchmark ends episodes says when (§4.1, §4.10).
 
 The oracle also says what it needs of the device beyond ADB
 (:attr:`AndroidTaskOracle.device_needs`); the capability hands that to the
@@ -39,9 +42,12 @@ OracleTask = Mapping[str, JsonValue]
 class AndroidTaskOracle(Protocol):
     """Prepares, scores and ends one task of a benchmark on the device.
 
-    The capability calls, in order: :meth:`check_setup` (in ``prepare()``,
-    and again in its own ``setup()``), :meth:`start` once the device is up,
-    :meth:`read_score` at the scoring point, :meth:`stop` at teardown.
+    The capability calls, in order: :meth:`check_setup` and :meth:`makes_goal`
+    (in ``prepare()``; ``check_setup`` again in its own ``setup()``),
+    :meth:`start` once the device is up, :meth:`made_goal` after setup when
+    the oracle makes the goal, :meth:`answers_episode_over` after each of the
+    agent's steps and, when it does, :meth:`episode_over` once the screen is
+    still, :meth:`read_score` at the scoring point, :meth:`stop` at teardown.
     """
 
     @property
@@ -61,6 +67,43 @@ class AndroidTaskOracle(Protocol):
 
     async def start(self, device: AndroidProviderSession, task: OracleTask | None) -> None:
         """Prepare *task* on *device*, which the provider booted meeting :attr:`device_needs`."""
+        ...
+
+    def makes_goal(self, task: OracleTask | None) -> bool:
+        """Whether :meth:`start` makes *task*'s goal on the device, which completes the run's task text.
+
+        Reads *task* only: ``prepare()`` asks it through the capability's
+        ``sets_task_text`` (``docs/architecture_design.md`` §4.10). A benchmark
+        whose goal is made as the task starts (AndroidWorld's MiniWoB++)
+        answers ``True``.
+        """
+        ...
+
+    def made_goal(self) -> str | None:
+        """After :meth:`start`: the goal it made on the device, as the benchmark hands it to an agent.
+
+        ``None`` when it made none: the task's goal is the listed one.
+        """
+        ...
+
+    def answers_episode_over(self) -> bool:
+        """After :meth:`start`: whether the benchmark ends this task's episode itself, so :meth:`episode_over` asks it.
+
+        Reads the started task only. The capability waits for a still screen
+        before it asks :meth:`episode_over`, and only for a task this answers
+        ``True`` for (AndroidWorld: a MiniWoB++ task); every other task pays
+        nothing (``docs/architecture_design.md`` §11.2).
+        """
+        ...
+
+    async def episode_over(self) -> bool:
+        """Whether the task's episode is over, as the benchmark decides; ``False`` for one it never ends.
+
+        Asked after each of the agent's steps (``EpisodeEnd``,
+        ``docs/architecture_design.md`` §4.1), so a task whose benchmark ends
+        no episode answers without a call. Turns its own transport failures
+        into ordinary exceptions and lets no ``CancelledError`` of its own escape.
+        """
         ...
 
     async def read_score(self, *, answer: str | None) -> OracleReading | None:

@@ -69,7 +69,10 @@ selects no benchmark) prepares, scores and ends a benchmark's task on the
 device. The capability hands the provider what the oracle needs of the device
 (``device_needs``), passes it the task's ``oracle_task`` unread, starts it once
 the device is up, stops it first at teardown, and implements ``TaskOracle`` and
-``SetupCheck`` by asking it (§11.2 "任务裁判与 ``AndroidSetup``").
+``SetupCheck`` by asking it (§11.2 "任务裁判与 ``AndroidSetup``"). It implements
+``TaskTextFromSetup`` and ``EpisodeEnd`` by asking it too: the goal an oracle
+makes on the device completes the run's task text, and an oracle whose
+benchmark ends episodes says when (§11.2 "MiniWoB++").
 
 **Archivers** (``archive/``, the archive axis of §4.5) are bound before setup
 and chosen only by the trace hook's ``archive`` list. Setup assembles the
@@ -179,6 +182,7 @@ from spectragent.core.capabilities.android.ui_tree.models import ElementIndexErr
 from spectragent.core.trace.redaction import trace_safe
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
+from spectragent.schemas.observation.capture_state import SettleState
 from spectragent.schemas.oracle_score import OracleReading
 
 logger = logging.getLogger(__name__)
@@ -725,6 +729,54 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         """The task oracle's score, given the run's *answer*; ``None`` with ``none`` (``TaskOracle``)."""
         return await self.task_oracle.read_score(answer=answer)
 
+    def sets_task_text(self, context: Mapping[str, Any]) -> bool:
+        """Whether the task oracle makes this task's goal on the device (``TaskTextFromSetup``)."""
+        return self.task_oracle.makes_goal(context.get("oracle_task"))
+
+    async def task_text_from_setup(self) -> str | None:
+        """The goal the task oracle made on the device; ``None`` when the task's goal is the listed one."""
+        return self.task_oracle.made_goal()
+
+    async def episode_over(self) -> bool:
+        """Whether the task oracle says the task's episode is over (``EpisodeEnd``), once the screen is still.
+
+        Only a task whose oracle answers the question
+        (``answers_episode_over``: AndroidWorld's MiniWoB++) is asked, and only
+        after the wait for a still screen a capture takes, with the same
+        settings: asked at once, a page may not yet have stored the reward the
+        step's last action earned (``docs/architecture_design.md`` §11.2).
+        Every other task answers ``False`` with no wait.
+        """
+        oracle = self.task_oracle
+        if not oracle.answers_episode_over():
+            return False
+        await self._wait_until_still()
+        return await oracle.episode_over()
+
+    async def _wait_until_still(self) -> None:
+        """The wait for a still screen a capture takes, as a job of the device's queue; none when it is off."""
+        if self.settle_max_wait_s <= 0:
+            return
+        device = self._device
+        if device is None:
+            raise RuntimeError("the Android device is not set up")
+
+        async def job() -> SettleState | None:
+            await self._keep_service()
+            return await self._settle()
+
+        settle = await device.run(
+            job,
+            what="waiting for a still screen",
+            wait_s=self.queue_wait_s,
+            run_s=self.service_start_timeout_s
+            + self.settle_max_wait_s
+            + 3 * self.query_timeout_s
+            + 1,
+        )
+        if settle is not None and settle.outcome != "settled":
+            logger.debug("android: asking whether the episode is over on a screen %s", settle)
+
     @property
     def is_alive(self) -> bool:
         return self._device is not None
@@ -919,13 +971,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         """
         await self._keep_service()
         wanted = self.provided_fragments
-        settle = None
-        if self.settle_max_wait_s > 0:
-            settle = await wait_until_still(
-                self._poll_screen,
-                quiet_s=self.settle_quiet_ms / 1000,
-                max_wait_s=self.settle_max_wait_s,
-            )
+        settle = await self._settle()
         sources: dict[str, Source[FragmentBase | TreeCapture]] = {}
         if SCREENSHOT in wanted:
             sources[SCREENSHOT] = Source(self._screenshot, self.screenshot_timeout_s)
@@ -1004,6 +1050,16 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         if isinstance(for_archive, (TreeCapture, Exception)):
             return answers, for_archive
         raise for_archive  # cancelled
+
+    async def _settle(self) -> SettleState | None:
+        """Wait for a still screen (``settle.py``), inside a job of the device's queue; ``None`` when the wait is off."""
+        if self.settle_max_wait_s <= 0:
+            return None
+        return await wait_until_still(
+            self._poll_screen,
+            quiet_s=self.settle_quiet_ms / 1000,
+            max_wait_s=self.settle_max_wait_s,
+        )
 
     async def _poll_screen(self) -> ScreenPoll:
         """One poll of the wait for a still screen (``settle.py``).

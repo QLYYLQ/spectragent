@@ -33,10 +33,12 @@ from spectragent.evaluator.trace_view import TraceView
 from spectragent.schemas.observation.fragments import StepInfoObs
 from spectragent.schemas.restoration import BranchProvenance
 from tests._helpers.branch_fakes import (
+    CAP_ID,
     CLICK,
     DONE,
     PAGE_KEY,
     BranchFakeAgent,
+    BranchFakeCap,
     BranchFakeEnv,
     make_cap,
     record_source,
@@ -131,6 +133,38 @@ class TestBudget:
             tmp_path, source, 1, ["click 102"], loop=BranchLoop(terminal_observation=False)
         )
         assert _origins(out.run_dir) == [(0, "restored"), (1, "policy")]
+
+
+class _EpisodeEndingCap(BranchFakeCap):
+    """The same site, whose environment says the episode is over whenever asked (``EpisodeEnd``)."""
+
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
+    asked: int = 0
+
+    async def episode_over(self) -> bool:
+        self.asked += 1
+        return True
+
+
+class TestEpisodeEnd:
+    async def test_the_environment_ends_the_branch_after_its_first_policy_step(
+        self, tmp_path: Path, source: Path
+    ) -> None:
+        """Asked after policy steps only: a restored step is the source's, already decided."""
+        cap = make_cap(cls=_EpisodeEndingCap)
+        assert isinstance(cap, _EpisodeEndingCap)
+        out = await run_branch(
+            tmp_path,
+            source,
+            1,
+            ["click 102", "click 100"],
+            loop=BranchLoop(continue_steps=2),
+            cap=cap,
+        )
+        assert out.result is not None
+        assert (out.result.agent_done.value, out.result.metrics.steps) == ("episode_over", 1)
+        assert cap.asked == 1
+        assert _origins(out.run_dir) == [(0, "restored"), (1, "policy"), (2, "terminal")]
 
 
 class TestRecords:
@@ -529,6 +563,18 @@ class _NarrowAgent(BranchFakeAgent):
         return await super().build_react_prompt(obs, context=context)
 
 
+class _TextSettingCap(BranchFakeCap):
+    """The same site, whose setup completes the run's task text (``TaskTextFromSetup``)."""
+
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
+
+    def sets_task_text(self, context: Any) -> bool:
+        return True
+
+    async def task_text_from_setup(self) -> str | None:
+        return "made at setup"
+
+
 class TestCheckpointCompatibility:
     @pytest.mark.parametrize(
         "case",
@@ -640,6 +686,31 @@ class TestCheckpointCompatibility:
         assert "task variant 'warranty'" in message
         assert "task_variants" in message
         assert "history_source: source" in message and "history_source: restored" in message
+
+    async def test_a_source_whose_task_text_setup_completed_is_refused_before_setup(
+        self, tmp_path: Path, source: Path
+    ) -> None:
+        """Its setup makes the text anew on every run (§4.10): no branch can decide on the source's."""
+        config = source / "config.json"
+        document = json.loads(config.read_text())
+        document["task_text_setter"] = CAP_ID
+        config.write_text(json.dumps(document))
+        cap = make_cap()
+        with pytest.raises(IncompatibleCheckpointError) as caught:
+            await run_branch(tmp_path, source, 2, ["click 100"], cap=cap, run_id="refused")
+        assert cap.setups == 0
+        assert not (tmp_path / "branches" / "refused").exists()
+        assert f"task text was completed at setup by capability {CAP_ID!r}" in str(caught.value)
+
+    async def test_a_run_whose_own_setup_would_complete_its_task_text_is_refused_before_setup(
+        self, tmp_path: Path, source: Path
+    ) -> None:
+        cap = make_cap(cls=_TextSettingCap)
+        with pytest.raises(IncompatibleCheckpointError) as caught:
+            await run_branch(tmp_path, source, 2, ["click 100"], cap=cap, run_id="refused")
+        assert cap.setups == 0
+        assert not (tmp_path / "branches" / "refused").exists()
+        assert f"would be completed at setup by capability {CAP_ID!r}" in str(caught.value)
 
     async def test_a_task_variant_runs_with_restored_history_under_its_own_task(
         self, tmp_path: Path, source: Path

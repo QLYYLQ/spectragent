@@ -255,7 +255,7 @@ def _summary(trace: RunTrace, key: str, usage: Any = None) -> dict[str, Any]:
         "key": key,
         "run_id": trace.run_id,
         "task_id": config.task_id,
-        "task": config.task,
+        "task": trace.task_text(),
         "benchmark": config.benchmark,
         "subset": config.subset,
         "agent_id": config.agent_id,

@@ -260,6 +260,7 @@ def step_rows(run: Run, runs: RunSet) -> Iterator[StepRow]:
     variant = run.config.branch.task_variant if run.config.branch is not None else None
     result = run.trace.result
     outcome = str(result.agent_done) if result is not None else None
+    task = run.trace.task_text()  # the one a setup completed, if one did
     for step in run.steps():
         record = run.records[step]
         if record.origin not in ROW_ORIGINS or not run.has_observation(step):
@@ -270,7 +271,7 @@ def step_rows(run: Run, runs: RunSet) -> Iterator[StepRow]:
             run_id=run.run_id,
             kind=run.kind,
             site=run.site,
-            task=run.config.task,
+            task=task,
             task_variant=variant,
             run_outcome=outcome,
             step=step,

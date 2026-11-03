@@ -116,6 +116,7 @@ from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.oracle_score import OracleScore
 from spectragent.schemas.recording import RecordingTiming
 from spectragent.schemas.step_record import StepRecord
+from spectragent.schemas.task import SetupTaskText
 
 M = TypeVar("M", bound=BaseModel)
 
@@ -240,6 +241,48 @@ class RunTrace:
         return _parse(
             path, _read_bytes(path), _ORACLE_SCORES.validate_python, "list of OracleScore"
         )
+
+    def setup_task_text(self) -> SetupTaskText | None:
+        """The task text a capability's setup completed (``task_text.json``); ``None`` when none did.
+
+        The record beside the loader's text, :attr:`TraceConfig.task`
+        (``docs/architecture_design.md`` §5.3). A record the manifest points to
+        that cannot be read raises :class:`TraceSchemaError` naming it.
+        """
+        rel = self._manifest.task_text
+        if rel is None:
+            return None
+        path = self._listed(rel)
+        return _parse(path, _read_bytes(path), SetupTaskText.model_validate, "SetupTaskText")
+
+    def task_text(self) -> str:
+        """The run's task text: the one its setup completed, else the loader's.
+
+        Every reader of a run's task goes through this (evaluators, the
+        training export, the replay reviewer, inspection), never through
+        ``config.task`` directly (``docs/architecture_design.md`` §4.10).
+
+        Raises:
+            TraceSchemaError: The run names a capability whose setup was to
+                complete its text (``TraceConfig.task_text_setter``) and
+                committed a step, so its agent ran on that text, but the
+                record is missing: falling back to the loader's text would
+                misstate what the agent was given. A run that never got that
+                far (its setup failed) committed no step, and the loader's
+                text is the task it stands for.
+        """
+        made = self.setup_task_text()
+        if made is not None:
+            return made.text
+        config = self._config
+        if config.task_text_setter is not None and self._manifest.steps:
+            raise TraceSchemaError(
+                f"{self._trace_dir}: capability {config.task_text_setter!r} was to complete "
+                f"this run's task text at setup and the run committed steps, but it has no "
+                f"task_text.json; its loader's text is not what its agent was given",
+                path=self._trace_dir / MANIFEST_FILE,
+            )
+        return config.task
 
     @cached_property
     def _result(self) -> AgentResult | None:
@@ -500,8 +543,8 @@ class RunTrace:
         """Every file this run committed, one entry per listing, in commit order.
 
         The run's own files first (``manifest.json``, ``config.json``,
-        ``result.json`` when the run wrote one, and ``oracle_scores.json`` when
-        the manifest points to it); then, step by step in
+        ``result.json`` when the run wrote one, and ``oracle_scores.json`` and
+        ``task_text.json`` when the manifest points to them); then, step by step in
         manifest order, the step record, each fragment's file and artifact,
         each LLM call, the extra index and every file it lists; then each
         trailing commit's calls, index and files; then the requested reply
@@ -532,6 +575,8 @@ class RunTrace:
             files.append(CommittedFile(path=RESULT_FILE, kind="result"))
         if self._manifest.oracle_scores is not None:
             files.append(self._listing(self._manifest.oracle_scores, "oracle_scores", None))
+        if self._manifest.task_text is not None:
+            files.append(self._listing(self._manifest.task_text, "task_text", None))
         for entry in self._manifest.steps:
             files.append(self._listing(entry.step_file, "step", entry.step))
             for key, fragment in entry.fragments.items():

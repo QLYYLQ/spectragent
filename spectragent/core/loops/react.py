@@ -45,6 +45,7 @@ from spectragent.core.loops.errors import ParseError, RunAbort
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.run import LoopRun
 from spectragent.core.loops.validation import IncompatibleError
+from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.agent_result import AgentResult
@@ -341,6 +342,9 @@ class ReactLoop(AgentLoopBase):
             result = await run.step_executor.execute_step(run, step_idx)
             if result is not None:
                 return result
+            ended = await self.end_of_episode(run)
+            if ended is not None:
+                return ended
 
         # Max steps reached. The best answer seen so far is carried onto
         # *every* termination path — an agent that produced the deliverable
@@ -950,6 +954,19 @@ class ReactLoop(AgentLoopBase):
         if not self.terminal_observation:
             return result
         return await self.observe_after_result(run, result)
+
+    async def end_of_episode(self, run: ReactRun) -> AgentResult | None:
+        """After a policy step that did not end the run: its result when the environment ends it.
+
+        :meth:`end_if_episode_over`, with ReAct's terminal observation after an
+        ``episode_over`` ending as after any normal one; a question that failed
+        ends the run as the environment failure it is, without one
+        (``docs/architecture_design.md`` §4.1).
+        """
+        ended = await self.end_if_episode_over(run)
+        if ended is None or ended.agent_done != AgentDoneStatus.EPISODE_OVER:
+            return ended
+        return await self.with_terminal(run, ended)
 
     async def _note_abort(
         self,

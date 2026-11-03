@@ -116,6 +116,8 @@ class Decontaminator:
                         "instruction"
                         if instruction == identity.task
                         else "its source task's instruction (the run is a task variant)"
+                        if instruction == identity.source_task
+                        else "its loader's instruction (setup completed the run's)"
                     )
                     return (
                         f"decontaminated: site {identity.site} and {what} match an "

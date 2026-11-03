@@ -79,6 +79,9 @@ class _Env:
         self._active = active
         self._boom = boom
 
+    async def episode_over(self) -> bool:
+        return False  # the Loop asks after every policy step; nothing ends this episode
+
     async def observe(self, negotiated=None):
         if self._boom:
             raise RuntimeError("CDP disconnected")

@@ -51,6 +51,9 @@ class _FakeEnv:
     def __init__(self, active: frozenset[str]) -> None:
         self._model = build_observation_model(active)
 
+    async def episode_over(self) -> bool:
+        return False  # the Loop asks after every policy step; nothing ends this episode
+
     async def observe(self, *_a: Any, **_kw: Any) -> Any:
         return self._model()
 

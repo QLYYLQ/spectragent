@@ -307,7 +307,7 @@ async def prepare_case(pair: ReviewPair, reviewer: BaseReplayReviewer) -> Review
             viewport_image_sources=readings,
         )
         return ReviewCase(
-            task=source.config.task,
+            task=source.task_text(),
             next_actions=original.actions,
             reference=reference,
             replay=restored,

@@ -597,7 +597,7 @@ def assess(run: Run, method: DifferenceMethod | None = None) -> RunHealth:
         run_id=run.run_id,
         site=run.site,
         task_id=run.task_id,
-        task=run.config.task,
+        task=run.trace.task_text(),
         verdict="unusable" if any(reason.basis == "recording" for reason in why) else "usable",
         reasons=why,
         policy_screens=len(found),

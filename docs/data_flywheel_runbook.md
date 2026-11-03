@@ -535,7 +535,7 @@ task_loader:
     data_dir: traces/recorded          # 源 run 所在的目录
     step_selector: { selector_id: all }
     branches_per_step: 3               # 每个选中的步分 b0、b1、b2，各自采样
-    agent_outcome: any                 # done | max_steps | error | timeout | vetoed：源 run 的 agent 怎么结束
+    agent_outcome: any                 # done | max_steps | episode_over | error | timeout | vetoed：源 run 的 agent 怎么结束
     on_unbranchable: raise             # skip：跳过并记下原因
     exclude_unloaded_checkpoints: true # 页面还没加载完就采集的检查点不分叉，记下原因
 ```

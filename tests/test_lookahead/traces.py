@@ -67,6 +67,7 @@ from spectragent.schemas.restoration import (
     RestorationCheck,
 )
 from spectragent.schemas.step_record import ActionSpan, StepRecord
+from spectragent.schemas.task import SetupTaskText
 from tests._helpers.browser_evidence import browser_evidence
 
 SIZE = (128, 96)
@@ -384,12 +385,14 @@ def write_run(
     result: AgentResult | None = None,
     viewport: tuple[int, int] = SIZE,
     pointer: tuple[int, int] | None = (5, 5),
+    made: SetupTaskText | None = None,
 ) -> Path:
     """One run directory ``base/run_id``; the path.
 
     Screenshots are ``SIZE`` pixels showing a *viewport* of CSS pixels (by
     default the same size: device scale 1); *pointer* is the pointer position
-    each capture recorded (``None``: unknown).
+    each capture recorded (``None``: unknown). *made* is the task text a
+    setup completed, which the run's agent was given instead of *task*.
     """
     resolved: dict[str, Any] = {}
     if network_source is not None:
@@ -426,8 +429,11 @@ def write_run(
                 context={"start_url": start_url}, redactions=RedactionLedger()
             ),
             branch=branch,
+            task_text_setter=made.capability_id if made is not None else None,
         )
     )
+    if made is not None:
+        wal.commit_task_text(made)
     for spec in steps:
         fragments = []
         if spec.observed and spec.image is not None:

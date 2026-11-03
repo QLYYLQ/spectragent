@@ -13,14 +13,18 @@ from pathlib import Path
 import pytest
 
 from spectragent.core.trace.errors import TraceSchemaError
+from spectragent.core.trace.models import TraceConfig
 from spectragent.core.trace.reader import RunTrace
+from spectragent.core.trace.wal import WALWriter
 from spectragent.evaluator import EvaluationRunner, ExactMatchEvaluator
 from spectragent.evaluator.errors import TraceIncompleteError
 from spectragent.evaluator.trace_view import TraceView
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.eval_reference import EvalReference
+from spectragent.schemas.task import SetupTaskText
 from tests._helpers.export_traces import ExportStep
 from tests._helpers.export_traces import write_run as write_export_run
+from tests._helpers.trace_builder import agent_result, step_record
 from tests.test_evaluator.conftest import png_bytes, write_trace
 
 
@@ -73,6 +77,17 @@ class TestTheProjectionReadsModels:
             "browser.click({'index': 1})",
         ]
         assert view.step_count == 2
+
+    def test_the_task_is_the_text_the_runs_setup_completed(self, traces_dir):
+        """Not the loader's half: what the agent was given (§4.10)."""
+        made = SetupTaskText(capability_id="android", text="Find it: the blue kettle")
+        wal = WALWriter(traces_dir, "run-made")
+        wal.init_run(TraceConfig(task="Find it", task_id="task-0", task_text_setter="android"))
+        wal.commit_task_text(made)
+        wal.commit_step(0, step_record(0))
+        wal.write_result(agent_result(task_id="task-0", task=made.text))
+
+        assert TraceView(RunTrace(wal.run_dir)).task_text == made.text
 
     def test_metrics_are_never_absent(self, traces_dir):
         """``AgentMetrics`` is required on ``AgentResult``, so this is total.

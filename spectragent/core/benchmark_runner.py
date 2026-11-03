@@ -347,7 +347,7 @@ class BenchmarkRunSummary:
         return sum(1 for o in self.outcomes if o.infrastructure_error is not None)
 
     def count_by_done(self) -> dict[str, int]:
-        """How the agents ended: done, max_steps, error, timeout, vetoed (not_started: no result)."""
+        """How the agents ended: done, max_steps, episode_over, error, timeout, vetoed (not_started: no result)."""
         return _count(outcome.agent_done for outcome in self.outcomes)
 
     def count_by_environment(self) -> dict[str, int]:

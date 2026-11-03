@@ -11,7 +11,7 @@ Spectragent::
 It makes the suite AndroidWorld's own runner makes (``create_suite``: each
 task's instances, their seeds derived from the suite seed, the task and the
 index) and writes ``<data dir>/<split>.json``, format
-``androidworld-tasks-1`` (``spectragent/core/capabilities/android/oracle/androidworld_tasks.py``),
+``androidworld-tasks-2`` (``spectragent/core/capabilities/android/oracle/androidworld_tasks.py``),
 then names the split in ``<data dir>/data_info.json``. Point the loader's
 ``data_dir`` there, or write it to
 ``$SPECTRAGENT_BENCHMARK_DATA/android/androidworld``.
@@ -20,8 +20,15 @@ Each task records the narrowest family whose registry holds it
 (``android``, ``information_retrieval`` or ``miniwob``); asking for
 ``android_world`` yields the first two. A parameter that is not JSON is written
 in a plain form: a dataclass as its fields, an image as its size, mode and the
-sha256 of its pixels. A MiniWoB task's goal is made on the device when it is
-initialized, so its ``goal`` is the template's fixed part.
+sha256 of its pixels.
+
+``goal_at_initialize`` says what AndroidWorld's initialize does to a goal,
+read off its own code: a MiniWoB task's is ``made`` on the device then, so its
+``goal`` is the template's fixed part; an information-retrieval task whose goal
+names a date parameter has it ``rewritten`` (``_maybe_replace_date`` rewords
+the date, "October 26 2023" into "the Thursday after next", drawing with the
+instance's seed), so its ``goal`` is the one before initialize; every other
+goal stays ``unchanged``.
 """
 
 from __future__ import annotations
@@ -30,12 +37,17 @@ import argparse
 import dataclasses
 import hashlib
 import json
+import string
 import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-FORMAT = "androidworld-tasks-1"
+if TYPE_CHECKING:
+    from android_world.task_evals.task_eval import TaskEval
+
+FORMAT = "androidworld-tasks-2"
 #: Searched in this order for the family that holds a task.
 FAMILIES = ("android", "information_retrieval", "miniwob")
 
@@ -67,11 +79,30 @@ def _plain(value: object) -> object:
     raise TypeError(f"no plain JSON form for a {type(value).__name__} parameter")
 
 
+def _goal_at_initialize(instance: TaskEval) -> str:
+    """What AndroidWorld's ``initialize_task`` does to *instance*'s goal: ``made``, ``rewritten`` or ``unchanged``."""
+    from android_world.task_evals.information_retrieval import datetime_utils, information_retrieval
+    from android_world.task_evals.miniwob import miniwob_base
+
+    if isinstance(instance, miniwob_base.MiniWoBTask):
+        return "made"
+    if isinstance(instance, information_retrieval.InformationRetrieval):
+        named = {field for _, field, _, _ in string.Formatter().parse(instance.template) if field}
+        for name, value in instance.params.items():
+            # The parameters _maybe_replace_date rewords: a date in its format.
+            if name in named and name != "seed" and isinstance(value, str) and value:
+                try:
+                    datetime_utils.get_date(value)
+                except ValueError:
+                    continue
+                return "rewritten"
+    return "unchanged"
+
+
 def main() -> None:
     args = _arguments()
     sys.path.insert(0, args.src)
     from android_world import registry, suite_utils
-    from android_world.task_evals.miniwob import miniwob_base
 
     commit = subprocess.run(
         ["git", "-C", args.src, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
@@ -88,8 +119,8 @@ def main() -> None:
     for name, instances in suite.items():
         family = next(family for family, held in holders.items() if name in held)
         for index, instance in enumerate(instances):
-            made_at_initialize = isinstance(instance, miniwob_base.MiniWoBTask)
-            if made_at_initialize:
+            at_initialize = _goal_at_initialize(instance)
+            if at_initialize == "made":
                 goal = type(instance).template.partition("{")[0].rstrip(" :") + "."
             else:
                 goal = instance.goal
@@ -102,7 +133,7 @@ def main() -> None:
                     "suite_seed": args.seed,
                     "params": json.loads(json.dumps(instance.params, default=_plain)),
                     "goal": goal,
-                    "goal_made_at_initialize": made_at_initialize,
+                    "goal_at_initialize": at_initialize,
                     "complexity": float(instance.complexity),
                     "start_on_home_screen": bool(type(instance).start_on_home_screen),
                 }

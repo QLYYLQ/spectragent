@@ -137,7 +137,7 @@ def canonicalise(
                 loop_id=config.loop_id,
                 llm_model=config.llm_model,
                 config_hash=trace.manifest.config_hash,
-                task=config.task,
+                task=trace.task_text(),
                 observations=observations,
                 image=image,
                 history_steps=history,

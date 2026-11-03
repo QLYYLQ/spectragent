@@ -56,6 +56,9 @@ class _Memory:
 
 
 class _Env:
+    async def episode_over(self) -> bool:
+        return False  # the Loop asks after every policy step; nothing ends this episode
+
     async def observe(self, negotiated: Any) -> Any:
         return object()
 

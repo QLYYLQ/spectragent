@@ -327,6 +327,7 @@ STEP_COLUMNS = ("Step", "Origin", "Check", "Measured", "Actions", "Time", "Error
 _ENDING_TONE: dict[str, Tone] = {
     "done": "plain",
     "max_steps": "plain",
+    "episode_over": "plain",
     "timeout": "warn",
     "error": "bad",
     "vetoed": "bad",

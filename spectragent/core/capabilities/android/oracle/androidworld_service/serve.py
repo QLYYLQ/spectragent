@@ -35,6 +35,12 @@ it was cloned:
 - Android deletes AndroidWorld's per-app snapshots at every boot, so the app
   states tasks restore are taken again once the service is up.
 
+It also adds one endpoint the app lacks. AndroidWorld's runner ends a MiniWoB++
+episode itself, when the page has reported a reward, and asks after every step
+(``miniwob_base.is_episode_terminated``); ``GET /task/episode_over`` answers
+that question for the oracle, which asks after each of the agent's steps
+(:func:`reward_ends_episode`).
+
 The oracle starts it with a whitelisted environment: android_env logs its
 whole environment when its log level is INFO, which this file never sets.
 """
@@ -52,6 +58,62 @@ from pathlib import Path
 #: would be added, not patched (a missed _restart_server would run adb
 #: kill-server on the run's own server), so the launcher refuses to start.
 ANDROID_ENV = "1.2.3"
+
+
+def reward_ends_episode(raw: str) -> bool:
+    """Whether a MiniWoB++ page's stored raw reward *raw* ends its episode, as AndroidWorld's runner says.
+
+    AndroidWorld ends the episode when the reward the app stores is not empty
+    and not zero (``miniwob_base.is_episode_terminated``). It reads the reward
+    with ``int``, which raises on the fractional rewards seven tasks give
+    (``use-colorwheel``, ``tic-tac-toe``'s draw ...), and its runner records an
+    exception for the episode. Read as a number instead, those episodes end
+    like the rest, and their score still fails as on AndroidWorld
+    (``is_successful`` reads with ``int``): they stay unscored
+    (``docs/architecture_design.md`` §11.2).
+
+    Raises:
+        ValueError: *raw* is no number.
+    """
+    return bool(raw) and float(raw) != 0.0
+
+
+def _add_episode_over(android_server) -> None:
+    """Add ``GET /task/episode_over`` to the app: whether the addressed task's episode is over.
+
+    As AndroidWorld's runner decides: only a task whose name starts with
+    ``miniwob`` has an episode the environment ends, and it is over when the
+    reward the MiniWoB++ app stores ends it (:func:`reward_ends_episode`), read
+    through the same broadcast ``miniwob_base`` reads it with (three tries, a
+    second apart). A reward the app does not give answers HTTP 500.
+    """
+    import fastapi
+    from android_world.task_evals.miniwob import miniwob_base
+
+    # A renamed private name would fail every question at run time; refuse to start.
+    if not callable(getattr(miniwob_base, "_extract_data", None)) or not isinstance(
+        getattr(miniwob_base, "_APP_NAME", None), str
+    ):
+        raise SystemExit(
+            "serve.py reads a MiniWoB++ reward through miniwob_base._extract_data and "
+            "_APP_NAME, which this AndroidWorld does not define"
+        )
+    app = android_server.app
+
+    @app.get("/task/episode_over")
+    async def episode_over(task_type: str, task_idx: int):
+        task = app.state.suite[task_type][task_idx]
+        if not task.name.lower().startswith("miniwob"):
+            return {"over": False}
+        reward = miniwob_base._extract_data(
+            f"{miniwob_base._APP_NAME}.app.GET_REWARD_ACTION",
+            app.state.app_android_env.controller.env,
+        )
+        if reward is None:
+            raise fastapi.HTTPException(
+                status_code=500, detail="the MiniWoB++ app gave no reward when asked"
+            )
+        return {"over": reward_ends_episode(reward)}
 
 
 def _arguments() -> argparse.Namespace:
@@ -208,6 +270,7 @@ def main() -> None:
     import uvicorn
     from server import android_server
 
+    _add_episode_over(android_server)
     uvicorn.run(android_server.app, host="127.0.0.1", port=args.port, log_level="warning")
 
 

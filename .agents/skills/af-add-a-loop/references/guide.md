@@ -212,6 +212,13 @@ Runtime closes out a vetoed run and re-raises `RunAbort` even with `raise_on_err
 The benchmark layer decides that a veto stops a sweep and still evaluates completed
 outcomes. A Loop does not know whether a sweep exists.
 
+### The environment may end the episode
+
+Every Loop calls `end_if_episode_over(run)` after each policy step that did not end the
+run, and returns its result when there is one, with its own terminal observation
+(`docs/architecture_design.md` §4.1): `episode_over` when the environment says the
+episode is over, an environment failure when the question fails.
+
 ### Recording failures belong to the recorder
 
 The Loop hands execution facts to `record_step`; the recording component owns collection,

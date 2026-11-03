@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from spectragent.core.capabilities.base import PreparedSetupContext
     from spectragent.schemas.oracle_score import OracleScore
     from spectragent.schemas.restoration import RestorationEvidence, Retarget
+    from spectragent.schemas.task import SetupTaskText
 
 
 @runtime_checkable
@@ -277,6 +278,47 @@ class Environment(Protocol):
         ``None`` is left out, and a timeout or an ``Exception`` comes back as a
         ``not_scored`` entry. Never raises ``Exception``. A cancellation
         cancels the oracles still running, waits for them, and then propagates.
+        """
+        ...
+
+    # ── The task text a setup completes; the episode the environment ends ──
+
+    def task_text_setter(self, context: Mapping[str, Any] | None = None) -> str | None:
+        """The capability whose setup completes this task's text; ``None`` when none does.
+
+        ``AgentRuntime.prepare()`` asks it after :meth:`check_setup`, with the
+        same context (``docs/architecture_design.md`` §4.2, §4.10). The context
+        is routed as :meth:`setup` routes it, and every capability implementing
+        ``TaskTextFromSetup`` (``core/capabilities/base.py``) answers for its
+        own slice. Reads configuration and task data only, so a structural
+        implementation needs it too: Runtime asks on every run.
+
+        Raises:
+            ValueError: A context key no capability accepts, or more than one
+                capability would complete the text: a run has one task text.
+        """
+        ...
+
+    async def task_text_from_setup(self) -> SetupTaskText | None:
+        """After setup: the task text a capability's setup completed, with its id; ``None`` when none did.
+
+        Asks every ``TaskTextFromSetup`` capability in capability order. Public
+        so the trace hook records it, as it records :meth:`read_oracle_scores`.
+
+        Raises:
+            ValueError: More than one capability completed a text, or one
+                completed a blank one.
+        """
+        ...
+
+    async def episode_over(self) -> bool:
+        """Whether the task's episode is over: some ``EpisodeEnd`` capability says so.
+
+        The Loop asks after every step of the agent's that did not end the run
+        (``docs/architecture_design.md`` §4.1), so a structural implementation
+        needs it too. Asks in capability order, one at a time, and stops at the
+        first ``True``; with no such capability it touches none and answers
+        ``False``. A capability's exception and a cancellation propagate.
         """
         ...
 

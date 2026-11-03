@@ -341,14 +341,17 @@ class ExportRunner:
         for source in sources:
             try:
                 reason = filtered_out(source, exporter.filters, readable)
+                if reason is None:
+                    # The run's own text (one its setup completed) and the loader's
+                    # are both its instructions to decontaminate on.
+                    identity = task_identity(source.config, task=source.trace.task_text())
+                    selected.append((source, identity))
             except TraceSchemaError as exc:
                 logger.warning("export: skipping %s, it does not read back: %s", source.rel, exc)
                 skipped[source.rel] = unreadable_reason(source.trace.trace_dir, exc)
                 continue
             if reason is not None:
                 filtered[source.rel] = reason
-                continue
-            selected.append((source, task_identity(source.config)))
 
         decontaminator = Decontaminator.configure(exporter.decontamination, loaders=self.benchmarks)
         if not decontaminator.decontaminated:

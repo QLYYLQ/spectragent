@@ -21,11 +21,15 @@ class AgentDoneStatus(StrEnum):
     ledger instead (``TraceStatus``): a run that timed out can have a
     complete trace, and one that ended ``done`` an incomplete one.
     ``vetoed``: a guard (a ``RunAbort``) stopped the run, during setup or
-    during the run.
+    during the run. ``episode_over``: the environment said the task's episode
+    was over after one of the agent's steps (a MiniWoB++ page that reported a
+    reward), apart from the agent's ``done`` and from running out of steps
+    (``docs/architecture_design.md`` §4.1).
     """
 
     DONE = "done"
     MAX_STEPS = "max_steps"
+    EPISODE_OVER = "episode_over"
     TIMEOUT = "timeout"
     ERROR = "error"
     VETOED = "vetoed"

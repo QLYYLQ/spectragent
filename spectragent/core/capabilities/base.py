@@ -433,6 +433,66 @@ class TaskOracle(Protocol):
         ...
 
 
+@runtime_checkable
+class TaskTextFromSetup(Protocol):
+    """Optional: this capability's setup completes the run's task text.
+
+    Some benchmarks make a task's text in the environment as it starts
+    (AndroidWorld's MiniWoB++ pages write their instruction then); the
+    loader's text is only the part known before. ``AgentRuntime.prepare()``
+    asks, through ``Environment.task_text_setter``, whether this task's setup
+    completes it, and after setup reads the text through
+    ``Environment.task_text_from_setup``, records it and hands it to the
+    agent as the run's task (``docs/architecture_design.md`` §4.2, §4.10).
+    The environment adds this capability's id. Not part of
+    :class:`BaseCapability`; ``CapabilityBase`` gives no default.
+
+    Transport failures become ordinary exceptions; a ``CancelledError`` of
+    its own never escapes (the ``TaskOracle`` convention).
+    """
+
+    def sets_task_text(self, context: Mapping[str, Any]) -> bool:
+        """Whether setup, with *context*, completes the run's task text.
+
+        *context* is this capability's routed slice of the task's setup
+        context. Reads configuration and *context* only, like ``check_setup``:
+        no backend, no state written. It must agree with setup: a ``True``
+        here and no text from :meth:`task_text_from_setup` after setup fails
+        the run's setup.
+        """
+        ...
+
+    async def task_text_from_setup(self) -> str | None:
+        """After setup: the task text it completed, exactly as the agent gets it; ``None`` when it completed none."""
+        ...
+
+
+@runtime_checkable
+class EpisodeEnd(Protocol):
+    """Optional: whether the task's episode is over, as the benchmark decides.
+
+    Some benchmarks end an episode themselves: AndroidWorld's runner asks a
+    MiniWoB++ page after every step whether it reported a reward, and ends the
+    episode when it has. The Loop asks, through ``Environment.episode_over``,
+    after every step of the agent's that did not end the run, and ends the run
+    as ``episode_over`` when it is (``docs/architecture_design.md`` §4.1).
+    Only whether it is over: the score is still read at the scoring point
+    (:class:`TaskOracle`). Not part of :class:`BaseCapability`;
+    ``CapabilityBase`` gives no default.
+
+    Transport failures become ordinary exceptions; a ``CancelledError`` of
+    its own never escapes (the ``TaskOracle`` convention).
+    """
+
+    async def episode_over(self) -> bool:
+        """Whether this task's episode is over; ``False`` for a task its benchmark never ends.
+
+        Asked after every step, so a task whose benchmark ends no episode
+        answers without touching the environment. Reads only: changes nothing.
+        """
+        ...
+
+
 @dataclass(frozen=True)
 class PreparedSetupContext:
     """Execution inputs and recordable provenance after their owner prepared them.

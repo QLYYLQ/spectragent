@@ -144,6 +144,7 @@ class TestTraceWriterRegistration:
             ("llm", "around_ainvoke"),
             ("env", "around_act"),
             ("env", "after_read_oracle_scores"),
+            ("env", "after_task_text_from_setup"),
             ("loop", "around_record_step"),
             ("loop", "around_execute_step"),
             ("loop", "around_observe_terminal"),
