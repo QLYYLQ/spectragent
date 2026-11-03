@@ -367,7 +367,7 @@ def test_a_rewritten_goal_must_be_a_goal(goal: object, message: str | None) -> N
 async def test_an_empty_goal_fails_the_start_and_the_service_is_stopped(
     root: Path, tmp_path: Path
 ) -> None:
-    """A page that had not loaded when AndroidWorld read its instruction leaves only the prefix."""
+    """A page that had shown no instruction when AndroidWorld read it leaves only the prefix."""
     empty = "Follow the instructions shown on the top of the screen: "
     write_behaviour(root, {"/task/goal": {"json": {"goal": empty}}})
     oracle = _oracle(root)
@@ -375,7 +375,7 @@ async def test_an_empty_goal_fails_the_start_and_the_service_is_stopped(
     with pytest.raises(
         AndroidWorldError,
         match=r"click-button #0 \(suite seed 42\) the goal '.*: ', which says nothing after its "
-        r"fixed part: the page had not shown its instruction",
+        r"fixed part: the page had shown no instruction when AndroidWorld read it",
     ):
         await oracle.start(_device(tmp_path), _miniwob_task())
     await oracle.stop()  # what the capability's teardown does after a failed setup
@@ -672,6 +672,79 @@ def test_the_launcher_asks_three_times_like_androidworld_before_it_gives_up() ->
     unanswered = _Broadcasts(answers=[None, None, None])
     assert unanswered.read() is None
     assert len(unanswered.sent) == 3
+
+
+@dataclass
+class _Page:
+    """What AndroidWorld's UI tree shows of a MiniWoB++ page, faked for the launcher's waits for it."""
+
+    #: The ids each look sees on the screen, in turn; the last one repeats.
+    screens: list[set[str]]
+    looks: int = 0
+    notes: list[str] = field(default_factory=list)
+
+    def shown(self) -> set[str]:
+        self.looks += 1
+        return self.screens.pop(0) if len(self.screens) > 1 else self.screens[0]
+
+    def wait(self, *, there: bool, wait_s: float = 5.0) -> None:
+        _launcher().wait_for_the_cover(
+            self.shown, there=there, warn=self.notes.append, wait_s=wait_s, poll_s=0.01
+        )
+
+
+#: A page still loading, one whose onload has covered the task until its episode
+#: starts, and one whose reset has started the episode and hidden the cover.
+_LOADING: set[str] = set()
+_COVERED = {"click-canvas", "sync-task-cover", "query", "subbtn"}
+_RUNNING = {"click-canvas", "query", "subbtn"}
+
+
+def test_the_launcher_resets_a_page_that_loaded_within_androidworlds_second_at_once() -> None:
+    page = _Page(screens=[_COVERED])
+
+    page.wait(there=True)
+
+    assert page.looks == 1 and page.notes == []
+
+
+def test_the_launcher_waits_for_a_page_still_loading_after_androidworlds_second() -> None:
+    page = _Page(screens=[_LOADING, _LOADING, _COVERED])
+
+    page.wait(there=True)
+
+    assert page.looks == 3
+    assert len(page.notes) == 1 and page.notes[0].endswith("its reset waited")
+
+
+def test_the_launcher_reads_the_instruction_once_the_reset_has_started_the_episode() -> None:
+    """count-shape: read before the page had made it, the instruction was empty."""
+    page = _Page(screens=[_COVERED, _COVERED, _RUNNING])
+
+    page.wait(there=False)
+
+    assert page.looks == 3
+    assert len(page.notes) == 1 and page.notes[0].endswith("the instruction's read waited")
+
+
+@pytest.mark.parametrize(
+    ("there", "screen", "message"),
+    [
+        (True, _LOADING, "had not loaded 0.2 s after AndroidWorld's 1 s"),
+        (False, _COVERED, "had not started its episode 0.2 s after its reset"),
+    ],
+)
+def test_the_launcher_fails_initialize_on_a_page_that_never_gets_there(
+    there: bool, screen: set[str], message: str
+) -> None:
+    page = _Page(screens=[screen])
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match=message):
+        page.wait(there=there, wait_s=0.2)
+
+    assert 0.2 <= time.monotonic() - started < 1.0
+    assert page.notes == []
 
 
 async def test_a_service_that_builds_another_task_is_refused_and_stopped(

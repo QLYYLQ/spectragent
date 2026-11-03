@@ -42,7 +42,12 @@ it was cloned:
   reward for the score and the episode question) through ordered broadcasts,
   which after a boot wait in the background queue behind Play Services' burst,
   past adb's 10 s timeout: they go to the foreground queue
-  (:func:`read_in_the_foreground`).
+  (:func:`read_in_the_foreground`);
+- AndroidWorld's MiniWoB++ initialize resets the task's page a fixed 1 s after
+  loading it and reads its instruction right after: a page that has not
+  loaded by then starts no episode, and a read before the page has made the
+  instruction hands over an empty one. The reset waits for the page to load,
+  and the read for its episode to start (:func:`wait_for_the_cover`).
 
 It also adds one endpoint the app lacks. AndroidWorld's runner ends a MiniWoB++
 episode itself, when the page has reported a reward, and asks after every step
@@ -61,7 +66,7 @@ import importlib.metadata
 import os
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Container
 from pathlib import Path
 
 #: The android_env these patches replace private names of: the version the
@@ -74,6 +79,15 @@ ANDROID_ENV = "1.2.3"
 TABLE_WAIT_S = 30.0
 #: The pause between two looks; each look pulls the database's whole directory.
 TABLE_POLL_S = 1.0
+#: The id of the cover MiniWoB++'s ``core.js`` puts over the task when its page
+#: has loaded (``core.startEpisode``, which every page's ``window.onload`` runs),
+#: until an episode starts (``core.startEpisodeReal`` hides it).
+COVER = "sync-task-cover"
+#: How long the launcher waits for a MiniWoB++ page to load, and then for its
+#: episode to start (:func:`wait_for_the_cover`).
+PAGE_WAIT_S = 30.0
+#: The pause between two looks; each look reads AndroidWorld's UI tree.
+PAGE_POLL_S = 0.5
 
 #: AndroidWorld's ``sqlite_utils.delete_all_rows_from_table``: it deletes every
 #: row of a table, given the table, the database's path on the device, the
@@ -229,6 +243,68 @@ def read_in_the_foreground(
     return extract_data
 
 
+def wait_for_the_cover(
+    shown: Callable[[], Container[str]],
+    *,
+    there: bool,
+    warn: Callable[[str], object],
+    wait_s: float = PAGE_WAIT_S,
+    poll_s: float = PAGE_POLL_S,
+) -> None:
+    """Wait until a MiniWoB++ page's cover is on the screen (*there*), or gone from it.
+
+    AndroidWorld's initialize (``MiniWoBTask.initialize_task``) loads the
+    task's page, sleeps a fixed 1 s, sends the app ``reset`` and ``step``, and
+    reads the instruction. ``reset`` runs ``core.startEpisodeReal()`` in the
+    page: it makes the problem (unseeded, ``Math.random``), logs its
+    instruction, which the app keeps for the read, and then hides the cover
+    the page's ``window.onload`` put over the task. On a fresh boot the app
+    starts cold, and its page can take far longer than that second. Then the
+    episode went wrong (2026-11-03): the instruction was still empty when
+    AndroidWorld read it, so the goal was the fixed part alone (count-sides;
+    in a reproduction click-pie's page showed up 10 s after initialize began,
+    running an episode its reset had made, while AndroidWorld had read an
+    empty instruction at 8 s); or the script made the problem before
+    ``onload``, failed to hide the cover it did not have yet, and ``onload``
+    then covered the page for good (click-option's agent spent 30 steps on
+    the black cover). The read can beat the script on a loaded page too: with
+    the reset sent to a loaded page, count-shape's instruction still came
+    back empty.
+
+    So the launcher's initialize waits twice. After AndroidWorld's 1 s it
+    waits until the cover is there: the page has loaded and waits for its
+    episode, as AndroidWorld's sleep assumes. After the reset and the step it
+    waits until the cover is gone: the episode has started, and its
+    instruction, logged before the cover went, is there for the read. It
+    looks at the screen with *shown*, the ids of the visible elements in
+    AndroidWorld's UI tree, *poll_s* apart, at most *wait_s*; *warn* hears how
+    long a wait took when the first look missed.
+
+    Raises:
+        RuntimeError: The cover was not there, or still there, after *wait_s*.
+    """
+    began = time.monotonic()
+
+    def done() -> bool:
+        return (COVER in shown()) == there
+
+    if done():
+        return
+    if not _look_until(done, began + wait_s, poll_s):
+        raise RuntimeError(
+            f"the MiniWoB++ page had not loaded {wait_s:g} s after AndroidWorld's 1 s"
+            if there
+            else f"the MiniWoB++ page had not started its episode {wait_s:g} s after its reset"
+        )
+    took = time.monotonic() - began
+    warn(
+        f"the MiniWoB++ page loaded {took:.1f} s after AndroidWorld's 1 s; its reset waited"
+        if there
+        else f"the MiniWoB++ page started its episode {took:.1f} s after its reset; "
+        "the instruction's read waited"
+    )
+
+
 def reward_ends_episode(raw: str) -> bool:
     """Whether a MiniWoB++ page's stored raw reward *raw* ends its episode, as AndroidWorld's runner says.
 
@@ -382,6 +458,44 @@ def _patch(args: argparse.Namespace) -> None:
         ),
         adb_utils.extract_broadcast_data,
     )
+
+    # A renamed method would be added, not replaced, and a page AndroidWorld
+    # resets or reads too early would start no episode or give no goal again.
+    task_class = miniwob_base.MiniWoBTask
+    if (
+        "initialize_task" not in vars(task_class)
+        or not isinstance(getattr(miniwob_base, "_MAIN_ACTIVITY", None), str)
+        or not callable(getattr(miniwob_base, "_get_episode_utterance", None))
+        or not callable(getattr(adb_utils, "start_activity", None))
+    ):
+        raise SystemExit(
+            "serve.py waits for a MiniWoB++ page by replacing MiniWoBTask.initialize_task with "
+            "its own steps, through adb_utils.start_activity, miniwob_base._MAIN_ACTIVITY and "
+            "miniwob_base._get_episode_utterance, which this AndroidWorld does not all define"
+        )
+
+    def shown(env) -> set[str]:  # env: AndroidWorld's AsyncEnv
+        elements = env.controller.get_ui_elements()  # visible ones, from its forwarder's tree
+        return {element.resource_name for element in elements if element.resource_name}
+
+    def initialize_task(self, env) -> None:  # self: a MiniWoBTask
+        # AndroidWorld's MiniWoBTask.initialize_task, step by step, with a wait
+        # for the page before its reset and one for the episode before its read.
+        super(task_class, self).initialize_task(env)
+        task_name = self.params["task_name"]
+        task_config = f'{{"task":"{task_name}"}}'
+        activity = miniwob_base._MAIN_ACTIVITY
+        adb_utils.start_activity(
+            activity, ["--es", "RL_TASK_APP_CONFIG", f"'{task_config}'"], env.controller
+        )
+        time.sleep(1)
+        wait_for_the_cover(lambda: shown(env), there=True, warn=warn)
+        adb_utils.start_activity(activity, ["--ez", "reset", "true"], env.controller)
+        adb_utils.start_activity(activity, ["--ez", "step", "true"], env.controller)
+        wait_for_the_cover(lambda: shown(env), there=False, warn=warn)
+        self._params["utterance"] = miniwob_base._get_episode_utterance(env.controller)
+
+    task_class.initialize_task = initialize_task
 
     adb_init = adb_controller.AdbController.__init__
 
