@@ -573,16 +573,18 @@ class AndroidTypeAction(_FocusedTyping, ActionBase):
     """Type into an element of the UI tree: tap the centre of its bounds, then type as after any tap.
 
     The browser's ``type`` (``docs/architecture_design.md`` §4.9, §11.2): put
-    focus on the element, check that a text field has focus, clear if asked,
-    then insert. Focus goes there by a tap at the element's centre through the
-    configured tap injector, as ``click`` taps it, so the focus rules after it
-    are ``type_coordinate``'s after its tap (:class:`_FocusedTyping`), and the
-    text goes in through the configured typing backend. The tap is a tap: on
-    an element that is not a text field (a button) it acts as ``click`` would,
-    and the typing is then refused, unlike the browser's ``DOM.focus``, which
-    clicks nothing (AndroidWorld's ``input_text`` taps the element too). An
-    index from an older tree, or one the tree lacks, is refused before
-    anything is touched.
+    the text into element N. How the element gets focus is the capability's
+    own behaviour, not part of the action (user ruling 2026-11-03): the
+    browser uses ``DOM.focus`` and presses nothing; Android taps the element's
+    centre through the configured tap injector, as ``click`` taps it, the one
+    general way a user gives any element focus, and AndroidWorld's
+    ``input_text`` does the same. The focus rules after the tap are
+    ``type_coordinate``'s after its tap (:class:`_FocusedTyping`): check that
+    a text field has focus, clear if asked, then insert through the configured
+    typing backend. So on an element that is not a text field (a button) the
+    tap has its own effect, as ``click`` would, and the typing is then
+    refused. An index from an older tree, or one the tree lacks, is refused
+    before anything is touched.
     """
 
     __registry_key__ = "android.type"
