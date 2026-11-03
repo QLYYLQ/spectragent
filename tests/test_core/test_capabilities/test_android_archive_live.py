@@ -258,7 +258,8 @@ async def test_a_run_that_reads_only_the_screen_archives_a_tree_it_cannot_read(u
             f"{_ms(with_tree)} with it"
         )
         print(
-            "\nscreenshot-only captures with the tree for the archive alone:\n" + "\n".join(report)
+            f"\nscreenshot-only captures, screenshots by {up.capability.bridge.screen.producer}, "
+            "with the tree for the archive alone:\n" + "\n".join(report)
         )
     finally:
         up.capability.apply_negotiation(frozenset({UI_TREE, SCREENSHOT}))

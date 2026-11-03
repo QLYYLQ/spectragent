@@ -972,11 +972,16 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     async def _fan_out_beside_a_tree(
         self, sources: Mapping[str, Source[FragmentBase | TreeCapture]]
     ) -> tuple[dict[str, FragmentBase | TreeCapture], TreeCapture | Exception]:
-        """Every source's answer, and the UI tree asked at the same time for the archive alone.
+        """Every source's answer, and the UI tree asked for the archive alone.
 
         The tree's failure is returned, never raised: it is the archive's to
         name, and the observation goes on without it (user ruling 2026-11-03).
-        A source's failure is raised once the tree is settled too, so no ask
+        The tree is asked beside the sources, unless the service takes the
+        screenshot (API 30, 34 and up): the service answers a connection's
+        requests one at a time, so a tree asked first would hold the agent's
+        screenshot for the whole walk, and then the tree is asked only once
+        the sources answered, as a negotiated tree follows the screenshot. A
+        source's failure is raised once the tree is settled, so no ask
         outlives the capture.
         """
 
@@ -986,6 +991,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             except Exception as exc:  # the archive's loss alone
                 return exc
 
+        if SCREENSHOT in sources and self.bridge.screen.producer == "accessibility_service":
+            answers = await fan_out(sources)
+            return answers, await tree()
         answers, for_archive = await asyncio.gather(
             fan_out(sources), tree(), return_exceptions=True
         )

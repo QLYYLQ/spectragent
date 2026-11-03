@@ -403,12 +403,25 @@ async def test_a_run_whose_agent_reads_no_tree_archives_a_tree_it_never_sees(
     assert trace.manifest.status == "complete"
 
 
-async def test_a_failed_capture_for_the_archive_is_its_gap_and_the_observation_goes_on() -> None:
+@pytest.mark.parametrize(
+    "helper_screenshots", [True, False], ids=["helper's screenshot", "service's screenshot"]
+)
+async def test_a_failed_capture_for_the_archive_is_its_gap_and_the_observation_goes_on(
+    helper_screenshots: bool,
+) -> None:
+    """A walk past its limit costs the archive its tree, never the agent its screenshot.
+
+    The service answers a connection's requests one at a time, and takes the
+    screenshot where the helper cannot (API 30, 34 and up): asked first, the
+    walk would hold that screenshot past its own limit and fail the capture.
+    """
     driver = AndroidArchiveDriver(fragments=frozenset({SCREENSHOT}))
+    driver.phone.helper_screenshots = helper_screenshots
     driver.capability.bind_archivers(list(driver.archivers))
     try:
         await driver.ensure_setup()
         driver.capability.ui_tree_timeout_s = 0.2
+        driver.capability.screenshot_timeout_s = 0.3
         driver.phone.tree_delay_s = 0.5
         await driver.observe()  # the screenshot is served
         missed = await driver.capability.collect_archive()
