@@ -6,8 +6,10 @@ execute each action the source executed and compare its outcome; finally one
 more observe for the checkpoint step *t*, verified the same way. Each step is
 handed back as it is restored. Under ``strict`` the first failed check raises
 before any further action; under ``warn`` it is recorded and restoration goes
-on. Each ``RestorationCheck.reason`` comes from its own case here, and the
-precedence when several fire. ``pace: recorded_timeline`` is driven on a
+on. The checks a capability's evidence fails are its own (a test evidence type
+here; the browser's are tested with it); the restorer adds the action reasons,
+each from its own case here, and the order when several fire. Every restored
+observation is announced first (``align_next_observation``). ``pace: recorded_timeline`` is driven on a
 fake clock: its observation and action waits from recorded timestamps, the
 lead taken from the previous observe, no wait when behind, and its refusal of
 a source whose action starts were not measured.
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any, ClassVar, Literal
 
@@ -38,12 +41,23 @@ from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.restoration import (
-    REASON_ORDER,
+    ACTION_REASONS,
     RestorationEvidence,
     Retarget,
 )
 from spectragent.schemas.step_record import ActionSpan, StepRecord
 from tests._helpers.assembly import make_env
+
+
+class _Evidence(RestorationEvidence):
+    """A capability's evidence with two checks; ``failing`` names the ones it fails."""
+
+    REASONS: ClassVar[tuple[str, ...]] = ("world_left", "picture_differs")
+
+    failing: tuple[str, ...] = ()
+
+    def failed_checks(self) -> list[str]:
+        return [reason for reason in self.REASONS if reason in self.failing]
 
 
 def _record(
@@ -84,7 +98,7 @@ class _Env:
         self,
         log: list[tuple[Any, ...]],
         *,
-        evidence: dict[int, RestorationEvidence] | None = None,
+        evidence: Mapping[int, RestorationEvidence] | None = None,
         retargets: dict[int, Retarget] | None = None,
         observe_raises: BaseException | None = None,
     ) -> None:
@@ -101,10 +115,8 @@ class _Env:
         self.observed += 1
         return f"live-{self.observed - 1}"
 
-    async def align_next_observation(
-        self, recorded: Any, *, media_seek_timeout_s: float, media_end_lead_s: float
-    ) -> None:
-        self.log.append(("align", recorded, media_seek_timeout_s, media_end_lead_s))
+    async def align_next_observation(self, recorded: Any) -> None:
+        self.log.append(("align", recorded))
 
     async def verify_restoration(self, recorded: Any, restored: Any) -> list[RestorationEvidence]:
         self.log.append(("verify", recorded, restored))
@@ -156,19 +168,19 @@ class TestOrder:
         steps = await _collect(PrefixReplayRestorer(), _ctx(env, _act(log), source, 2))
 
         assert log == [
-            ("align", "recorded-0", 2.0, 0.5),
+            ("align", "recorded-0"),
             ("observe", 0),
             ("verify", "recorded-0", "live-0"),
             ("retarget", 0, "recorded-0", "live-0"),
             ("act", 1000),
             ("retarget", 1, "recorded-0", "live-0"),
             ("act", 1001),
-            ("align", "recorded-1", 2.0, 0.5),
+            ("align", "recorded-1"),
             ("observe", 1),
             ("verify", "recorded-1", "live-1"),
             ("retarget", 10, "recorded-1", "live-1"),
             ("act", 1010),
-            ("align", "recorded-2", 2.0, 0.5),
+            ("align", "recorded-2"),
             ("observe", 2),
             ("verify", "recorded-2", "live-2"),
         ]
@@ -189,7 +201,7 @@ class TestOrder:
         log: list[tuple[Any, ...]] = []
         steps = await _collect(PrefixReplayRestorer(), _ctx(_Env(log), _act(log), _Source([]), 0))
         assert log == [
-            ("align", "recorded-0", 2.0, 0.5),
+            ("align", "recorded-0"),
             ("observe", 0),
             ("verify", "recorded-0", "live-0"),
         ]
@@ -205,7 +217,7 @@ class TestOrder:
 
     async def test_obs_t_verified(self) -> None:
         log: list[tuple[Any, ...]] = []
-        evidence = {1: RestorationEvidence(capability_id="cap", url_match=True)}
+        evidence = {1: _Evidence(capability_id="cap")}
         steps = await _collect(
             PrefixReplayRestorer(),
             _ctx(_Env(log, evidence=evidence), _act(log), _Source([_record(0)]), 1),
@@ -352,23 +364,11 @@ class TestReasons:
         ("reason", "evidence", "retargets", "results"),
         [
             pytest.param(
-                "document_miss",
-                RestorationEvidence(capability_id="cap", document_misses=2),
+                "world_left",
+                _Evidence(capability_id="cap", failing=("world_left",)),
                 {},
                 {},
-                id="document_miss",
-            ),
-            pytest.param(
-                "url_mismatch",
-                RestorationEvidence(
-                    capability_id="cap",
-                    url_match=False,
-                    recorded_url="https://a.test/",
-                    restored_url="https://b.test/",
-                ),
-                {},
-                {},
-                id="url_mismatch",
+                id="a-capability-check",
             ),
             pytest.param(
                 "retarget_not_found",
@@ -397,22 +397,6 @@ class TestReasons:
                 {},
                 {1000: ActionResult(success=False, error="element detached")},
                 id="action_failed",
-            ),
-            pytest.param(
-                "signature_mismatch",
-                RestorationEvidence(
-                    capability_id="cap", signature_match=False, signature_missing=1
-                ),
-                {},
-                {},
-                id="signature_mismatch",
-            ),
-            pytest.param(
-                "screenshot_distance",
-                RestorationEvidence(capability_id="cap", screenshot_distance=9),
-                {},
-                {},
-                id="screenshot_distance",
             ),
         ],
     )
@@ -465,33 +449,18 @@ class TestReasons:
         )
         assert steps[0].check.verdict == "ok"
 
-    async def test_unmeasured_never_fails(self) -> None:
+    async def test_evidence_that_fails_no_check_passes(self) -> None:
         log: list[tuple[Any, ...]] = []
-        env = _Env(log, evidence={0: RestorationEvidence(capability_id="cap")})
+        env = _Env(log, evidence={0: _Evidence(capability_id="cap")})
         steps = await _collect(
             PrefixReplayRestorer(), _ctx(env, _act(log), _Source([_record(0)]), 1)
         )
         assert steps[0].check.verdict == "ok"
 
-    async def test_the_screenshot_threshold_is_inclusive(self) -> None:
+    async def test_the_observations_checks_come_first_then_the_actions(self) -> None:
+        """A restored observation that already left the recording explains what the actions did."""
         log: list[tuple[Any, ...]] = []
-        env = _Env(
-            log, evidence={0: RestorationEvidence(capability_id="cap", screenshot_distance=5)}
-        )
-        steps = await _collect(
-            PrefixReplayRestorer(), _ctx(env, _act(log), _Source([_record(0)]), 1)
-        )
-        assert steps[0].check.verdict == "ok"
-
-    async def test_precedence(self) -> None:
-        log: list[tuple[Any, ...]] = []
-        evidence = RestorationEvidence(
-            capability_id="cap",
-            document_misses=1,
-            url_match=False,
-            signature_match=False,
-            screenshot_distance=30,
-        )
+        evidence = _Evidence(capability_id="cap", failing=("picture_differs", "world_left"))
         env = _Env(
             log,
             evidence={0: evidence},
@@ -508,21 +477,19 @@ class TestReasons:
         )
         check = steps[0].check
         assert check.reasons == [
-            "document_miss",
-            "url_mismatch",
+            "world_left",
+            "picture_differs",
             "retarget_ambiguous",
             "action_failed",
-            "signature_mismatch",
-            "screenshot_distance",
         ]
-        assert check.reasons == [r for r in REASON_ORDER if r in check.reasons]
-        assert check.reason == "document_miss"
+        assert check.reasons[2:] == [r for r in ACTION_REASONS if r in check.reasons]
+        assert check.reason == "world_left"
 
 
 class TestPolicy:
     async def test_strict_raises_with_the_check_and_observation(self) -> None:
         log: list[tuple[Any, ...]] = []
-        env = _Env(log, evidence={1: RestorationEvidence(capability_id="cap", url_match=False)})
+        env = _Env(log, evidence={1: _Evidence(capability_id="cap", failing=("world_left",))})
         source = _Source([_record(0), _record(1), _record(2)])
         seen: list[RestoredStep] = []
         with pytest.raises(RestorationDivergedError) as caught:
@@ -531,7 +498,7 @@ class TestPolicy:
         assert [s.step for s in seen] == [0]
         assert caught.value.check.step == 1
         assert caught.value.check.verdict == "diverged"
-        assert caught.value.check.reasons == ["url_mismatch"]
+        assert caught.value.check.reasons == ["world_left"]
         assert caught.value.observation == "live-1"
         # A world that already left the recording is not acted on.
         assert ("act", 1010) not in log
@@ -621,7 +588,7 @@ class TestPolicy:
 
     async def test_warn_continues_past_a_failed_checkpoint(self) -> None:
         log: list[tuple[Any, ...]] = []
-        env = _Env(log, evidence={1: RestorationEvidence(capability_id="cap", url_match=False)})
+        env = _Env(log, evidence={1: _Evidence(capability_id="cap", failing=("world_left",))})
         steps = await _collect(
             PrefixReplayRestorer(verify="warn"),
             _ctx(env, _act(log), _Source([_record(0)]), 1),
@@ -630,7 +597,7 @@ class TestPolicy:
 
     async def test_strict_diverges_on_the_checkpoint_observation(self) -> None:
         log: list[tuple[Any, ...]] = []
-        env = _Env(log, evidence={1: RestorationEvidence(capability_id="cap", url_match=False)})
+        env = _Env(log, evidence={1: _Evidence(capability_id="cap", failing=("world_left",))})
         with pytest.raises(RestorationDivergedError) as caught:
             await _collect(PrefixReplayRestorer(), _ctx(env, _act(log), _Source([_record(0)]), 1))
         assert caught.value.check.step == 1
@@ -716,69 +683,25 @@ class TestTheContext:
     def test_the_restorer_is_stateless(self) -> None:
         """Knobs only: nothing per run lives on the restorer."""
         restorer = PrefixReplayRestorer()
-        assert {f.name for f in dataclasses.fields(restorer)} == {
-            "verify",
-            "screenshot_max_distance",
-            "pace",
-            "media",
-            "media_time_tolerance_s",
-            "media_seek_timeout_s",
-            "media_end_lead_s",
-        }
+        assert {f.name for f in dataclasses.fields(restorer)} == {"verify", "pace"}
 
 
-class TestMediaAlignment:
-    """``media: align`` requests an alignment before every restored observation, and nothing more."""
+class TestAlignmentRequests:
+    """Every restored observation is announced to the environment first, and nothing after it.
 
-    async def test_media_align_is_the_default_and_covers_the_checkpoint(self) -> None:
+    Whether a capability aligns anything, and how, is its own configuration
+    (the browser's ``align_media``); the restorer has no switch for it.
+    """
+
+    async def test_every_restored_observation_is_announced_the_checkpoints_included(self) -> None:
         log: list[tuple[Any, ...]] = []
-        restorer = PrefixReplayRestorer(media_seek_timeout_s=0.5, media_end_lead_s=0.25)
-        assert restorer.media == "align" and restorer.media_time_tolerance_s == 1.0
-        await _collect(restorer, _ctx(_Env(log), _act(log), _Source([_record(0)]), 1))
-        aligned = [entry for entry in log if entry[0] == "align"]
-        assert aligned == [
-            ("align", "recorded-0", 0.5, 0.25),
-            ("align", "recorded-1", 0.5, 0.25),
+        await _collect(PrefixReplayRestorer(), _ctx(_Env(log), _act(log), _Source([_record(0)]), 1))
+        assert [entry for entry in log if entry[0] == "align"] == [
+            ("align", "recorded-0"),
+            ("align", "recorded-1"),
         ]
         # Each request is followed by the observation it belongs to, and nothing after t asks.
         assert [entry[0] for entry in log][-3:] == ["align", "observe", "verify"]
-
-    async def test_media_none_requests_nothing(self) -> None:
-        log: list[tuple[Any, ...]] = []
-        await _collect(
-            PrefixReplayRestorer(media="none"),
-            _ctx(_Env(log), _act(log), _Source([_record(0)]), 1),
-        )
-        assert [entry for entry in log if entry[0] == "align"] == []
-
-    async def test_the_media_tolerance_decides_a_position_difference(self) -> None:
-        from spectragent.schemas.restoration import MediaComparison, MediaEvidence
-
-        media = MediaEvidence(
-            comparisons=[
-                MediaComparison(
-                    element="main#0 video",
-                    correspondence="matched",
-                    reading="before",
-                    recorded_time=41.0,
-                    restored_time=10.0,
-                    recorded_paused=True,
-                    restored_paused=True,
-                )
-            ]
-        )
-        evidence = {0: RestorationEvidence(capability_id="cap", media=media)}
-
-        async def verdict(tolerance: float) -> list[Any]:
-            log: list[tuple[Any, ...]] = []
-            steps = await _collect(
-                PrefixReplayRestorer(verify="warn", media_time_tolerance_s=tolerance),
-                _ctx(_Env(log, evidence=evidence), _act(log), _Source([_record(0)]), 1),
-            )
-            return steps[0].check.reasons
-
-        assert await verdict(1.0) == ["media_mismatch"]
-        assert await verdict(60.0) == []
 
 
 # ── pace: recorded_timeline ──────────────────────────────────────────
@@ -896,7 +819,7 @@ def _timed_ctx(env: Any, act_fn: Any, source: Any, t: int) -> RestorationContext
 
 
 def _timeline() -> PrefixReplayRestorer:
-    return PrefixReplayRestorer(pace="recorded_timeline", media="none")
+    return PrefixReplayRestorer(pace="recorded_timeline")
 
 
 def _starts(log: list[tuple[Any, ...]], kind: str) -> list[float]:

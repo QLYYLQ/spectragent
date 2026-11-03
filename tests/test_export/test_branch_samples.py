@@ -16,6 +16,7 @@ from pathlib import Path
 from spectragent.core.composer import ConfigComposer
 from spectragent.schemas.dataset import DatasetManifest
 from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
+from tests._helpers.browser_evidence import browser_evidence
 from tests._helpers.export_runs import exporter_entry, read_jsonl, run_export
 from tests._helpers.export_traces import (
     ExportStep,
@@ -216,7 +217,11 @@ def test_a_warned_restoration_leaves_the_branch_out(
     """
     _sources(tmp_path / "src")
     warned = RestorationCheck(
-        step=0, verdict="warn", reason="url_mismatch", reasons=["url_mismatch"]
+        step=0,
+        verdict="warn",
+        reason="url_mismatch",
+        reasons=["url_mismatch"],
+        evidence=[browser_evidence(url_match=False)],
     )
     write_ui_tars_run(
         tmp_path / "src",

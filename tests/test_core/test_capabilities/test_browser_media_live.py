@@ -50,8 +50,11 @@ from spectragent.core.capabilities.browser.backends.local_chrome import LocalChr
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.media import MediaElementState, MediaReading
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
+from spectragent.core.capabilities.browser.restoration_evidence import (
+    BrowserRestorationEvidence,
+)
 from spectragent.core.loops.restore.checks import judge
-from spectragent.schemas.restoration import RestorationEvidence, RestorationReason
+from tests._helpers.browser_evidence import browser_evidence
 
 pytestmark = pytest.mark.requires_chrome
 
@@ -260,8 +263,12 @@ class _Browser:
             await asyncio.sleep(0.05)
 
 
-async def _open(origin: str, page: str) -> _Browser:
-    cap = BrowserCapability(settle_quiet_ms=100, settle_max_wait_s=1.0)
+#: These pages judge the media alone: no screenshot difference fails a step here.
+_MEDIA_ONLY: dict[str, Any] = {"screenshot_max_distance": 64}
+
+
+async def _open(origin: str, page: str, **knobs: Any) -> _Browser:
+    cap = BrowserCapability(settle_quiet_ms=100, settle_max_wait_s=1.0, **{**_MEDIA_ONLY, **knobs})
     cap.backend = LocalChromeProvider(headless=True)  # type: ignore[assignment]
     await asyncio.wait_for(
         cap.setup(negotiation={"browser.screenshot"}, start_url=f"{origin}/{page}"), 60
@@ -283,7 +290,7 @@ def _recorded(shot: ScreenshotObs, element: MediaElementState, reading: MediaRea
     return _observation(shot.model_copy(update={"media": media}))
 
 
-def _media_of(evidence: RestorationEvidence) -> Any:
+def _media_of(evidence: BrowserRestorationEvidence) -> Any:
     assert evidence.media is not None
     return evidence.media
 
@@ -350,9 +357,7 @@ async def test_alignment_pauses_and_seeks_to_the_exact_recorded_position(origin:
             first, element, MediaReading(current_time=7.3, paused=True, ready_state=4)
         )
 
-        await browser.cap.align_next_observation(
-            recorded, media_seek_timeout_s=2.0, media_end_lead_s=0.5
-        )
+        await browser.cap.align_next_observation(recorded)
         shot = await browser.screenshot()
         evidence = await browser.cap.verify_restoration(recorded, _observation(shot))
         # The request belonged to that one observation: the next one is not aligned.
@@ -369,15 +374,13 @@ async def test_alignment_pauses_and_seeks_to_the_exact_recorded_position(origin:
 
     media = _media_of(evidence)
     (record,) = media.alignment
-    assert record.outcome == "aligned" and record.action == "pause_and_seek"
+    assert record.outcome == "aligned" and record.operation == "pause_and_seek"
     assert record.from_paused is False and record.reached_time == 7.3
     assert record.seek_ms is not None and record.seek_ms < 2000
     (comparison,) = media.comparisons
     assert comparison.correspondence == "matched"
     assert comparison.recorded_time == comparison.restored_time == 7.3
-    check = judge(
-        3, [evidence], [], verify="warn", screenshot_max_distance=64, media_time_tolerance_s=1.0
-    )
+    check = judge(3, [evidence], [], verify="warn")
     assert "media_mismatch" not in check.reasons
 
     assert _media_of(untouched).alignment is None
@@ -396,9 +399,7 @@ async def test_a_playing_source_is_seeked_played_and_captured_at_once(origin: st
         recorded = _recorded(
             first, element, MediaReading(current_time=6.0, paused=False, ready_state=4)
         )
-        await browser.cap.align_next_observation(
-            recorded, media_seek_timeout_s=2.0, media_end_lead_s=0.5
-        )
+        await browser.cap.align_next_observation(recorded)
         shot = await browser.screenshot()
         evidence = await browser.cap.verify_restoration(recorded, _observation(shot))
     finally:
@@ -412,11 +413,9 @@ async def test_a_playing_source_is_seeked_played_and_captured_at_once(origin: st
     assert 6.0 <= playing.before.current_time < 6.5
     media = _media_of(evidence)
     (record,) = media.alignment
-    assert record.outcome == "aligned" and record.action == "seek_and_play"
+    assert record.outcome == "aligned" and record.operation == "seek_and_play"
     assert record.from_paused is True and record.reached_paused is False
-    check = judge(
-        3, [evidence], [], verify="warn", screenshot_max_distance=64, media_time_tolerance_s=1.0
-    )
+    check = judge(3, [evidence], [], verify="warn")
     assert "media_mismatch" not in check.reasons
 
 
@@ -432,16 +431,13 @@ async def test_a_seek_beyond_the_served_bytes_fails_and_is_undone(origin: str) -
         (element,) = first.media.elements
         # Within the served bytes: completes.
         within = _recorded(first, element, MediaReading(current_time=2.0, paused=True))
-        await browser.cap.align_next_observation(
-            within, media_seek_timeout_s=2.0, media_end_lead_s=0.5
-        )
+        await browser.cap.align_next_observation(within)
         inside = await browser.screenshot()
         inside_evidence = await browser.cap.verify_restoration(within, _observation(inside))
-        # Far past them: the seek never completes.
+        # Far past them: the seek never completes (within a shorter bound, the knob's).
         beyond = _recorded(first, element, MediaReading(current_time=10.5, paused=True))
-        await browser.cap.align_next_observation(
-            beyond, media_seek_timeout_s=1.0, media_end_lead_s=0.5
-        )
+        browser.cap.media_seek_timeout_s = 1.0
+        await browser.cap.align_next_observation(beyond)
         outside = await browser.screenshot()
         evidence = await browser.cap.verify_restoration(beyond, _observation(outside))
         state = await browser.evaluate(
@@ -464,9 +460,7 @@ async def test_a_seek_beyond_the_served_bytes_fails_and_is_undone(origin: str) -
     assert outside.media is not None
     (after,) = outside.media.elements
     assert after.before is not None and after.before.current_time == 2.0
-    check = judge(
-        3, [evidence], [], verify="strict", screenshot_max_distance=64, media_time_tolerance_s=1.0
-    )
+    check = judge(3, [evidence], [], verify="strict")
     assert check.verdict == "diverged" and "media_mismatch" in check.reasons
 
 
@@ -479,7 +473,7 @@ async def test_a_playing_target_is_captured_before_a_slow_dom(origin: str) -> No
     alignment had succeeded. A capture with nothing to keep playing keeps
     the DOM first.
     """
-    cap = BrowserCapability(settle_quiet_ms=100, settle_max_wait_s=1.0)
+    cap = BrowserCapability(settle_quiet_ms=100, settle_max_wait_s=1.0, **_MEDIA_ONLY)
     cap.backend = LocalChromeProvider(headless=True)  # type: ignore[assignment]
     await asyncio.wait_for(
         cap.setup(
@@ -498,7 +492,7 @@ async def test_a_playing_target_is_captured_before_a_slow_dom(origin: str) -> No
         recorded = _recorded(
             first, element, MediaReading(current_time=6.0, paused=False, ready_state=4)
         )
-        await cap.align_next_observation(recorded, media_seek_timeout_s=2.0, media_end_lead_s=0.5)
+        await cap.align_next_observation(recorded)
         shot = await browser.screenshot()
         aligned_dom = await cap.resolve_fragment("browser.dom")
         evidence = await cap.verify_restoration(recorded, _observation(shot))
@@ -510,15 +504,13 @@ async def test_a_playing_target_is_captured_before_a_slow_dom(origin: str) -> No
     # The aligned one: the screenshot first, while the video stood at its target.
     assert shot.captured_at < aligned_dom.captured_at
     (record,) = _media_of(evidence).alignment
-    assert (record.outcome, record.action) == ("aligned", "seek_and_play")
+    assert (record.outcome, record.operation) == ("aligned", "seek_and_play")
     assert shot.media is not None
     (playing,) = shot.media.elements
     assert playing.before is not None and playing.before.paused is False
     assert playing.before.current_time is not None
     assert 6.0 <= playing.before.current_time < 6.5
-    check = judge(
-        3, [evidence], [], verify="warn", screenshot_max_distance=64, media_time_tolerance_s=1.0
-    )
+    check = judge(3, [evidence], [], verify="warn")
     assert "media_mismatch" not in check.reasons
 
 
@@ -536,20 +528,12 @@ async def test_without_alignment_position_and_paused_state_differences_fail(orig
     (element,) = shot.media.elements
     restored = _observation(shot)
 
-    def check(reading: MediaReading, tolerance: float) -> list[RestorationReason]:
+    def check(reading: MediaReading, tolerance: float) -> list[str]:
         recorded = _recorded(shot, element, reading)
-        evidence = RestorationEvidence(
-            capability_id="browser",
-            media=_media_evidence(recorded, restored),
+        evidence = browser_evidence(
+            media=_media_evidence(recorded, restored), media_time_tolerance_s=tolerance
         )
-        return judge(
-            1,
-            [evidence],
-            [],
-            verify="warn",
-            screenshot_max_distance=64,
-            media_time_tolerance_s=tolerance,
-        ).reasons
+        return judge(1, [evidence], [], verify="warn").reasons
 
     assert check(MediaReading(current_time=1.5, paused=True), 1.0) == []
     assert check(MediaReading(current_time=8.0, paused=True), 1.0) == ["media_mismatch"]
@@ -584,9 +568,7 @@ async def test_a_cross_site_frame_is_read_and_aligned_on_its_own_session(origin:
         assert first.media is not None
         (element,) = first.media.elements
         recorded = _recorded(first, element, MediaReading(current_time=4.0, paused=True))
-        await browser.cap.align_next_observation(
-            recorded, media_seek_timeout_s=2.0, media_end_lead_s=0.5
-        )
+        await browser.cap.align_next_observation(recorded)
         shot = await browser.screenshot()
         evidence = await browser.cap.verify_restoration(recorded, _observation(shot))
     finally:
@@ -606,9 +588,7 @@ async def test_a_cross_site_frame_is_read_and_aligned_on_its_own_session(origin:
     (aligned,) = shot.media.elements
     assert aligned.before is not None and aligned.before.current_time == 4.0
     assert media.recorded_unreachable_frames == media.restored_unreachable_frames == []
-    check = judge(
-        3, [evidence], [], verify="warn", screenshot_max_distance=64, media_time_tolerance_s=1.0
-    )
+    check = judge(3, [evidence], [], verify="warn")
     assert "media_mismatch" not in check.reasons
 
 
@@ -669,13 +649,8 @@ async def test_a_frame_inside_a_shadow_root_is_unreachable_never_empty(origin: s
     (frame,) = shot.media.unreachable_frames
     assert frame.frame == "main/unplaced-0"
     assert (frame.rect.x, frame.rect.y) == (pytest.approx(10, abs=1), pytest.approx(20, abs=1))
-    evidence = RestorationEvidence(
-        capability_id="browser",
-        media=_media_evidence(_observation(shot), _observation(shot)),
-    )
-    check = judge(
-        1, [evidence], [], verify="warn", screenshot_max_distance=64, media_time_tolerance_s=1.0
-    )
+    evidence = browser_evidence(media=_media_evidence(_observation(shot), _observation(shot)))
+    check = judge(1, [evidence], [], verify="warn")
     assert check.reasons == ["media_mismatch"]
 
 
@@ -699,15 +674,10 @@ async def test_a_cross_site_frame_that_does_not_answer_is_unreachable(origin: st
     assert [f.frame for f in busy.media.unreachable_frames] == ["main/0"]
     assert busy.media.unreachable_frames[0].rect.x == pytest.approx(102, abs=1)
     assert busy.media.elements == []
-    evidence = RestorationEvidence(
-        capability_id="browser",
-        media=_media_evidence(_observation(calm), _observation(busy)),
-    )
+    evidence = browser_evidence(media=_media_evidence(_observation(calm), _observation(busy)))
     assert evidence.media is not None
     assert evidence.media.restored_unreachable_frames == ["main/0"]
-    check = judge(
-        1, [evidence], [], verify="warn", screenshot_max_distance=64, media_time_tolerance_s=1.0
-    )
+    check = judge(1, [evidence], [], verify="warn")
     assert check.reasons == ["media_mismatch"]
 
 
@@ -727,7 +697,8 @@ async def test_an_ended_source_is_played_through_to_its_natural_end(origin: str)
     """The recording saw the video at its end: seek a lead before it and play into it."""
     from spectragent.core.capabilities.browser.restoration import dhash, hamming
 
-    browser = await _open(origin, "one.html")
+    # Played to its end, it must look exactly as recorded: no screenshot distance at all.
+    browser = await _open(origin, "one.html", screenshot_max_distance=0)
     try:
         await browser.wait_until(
             "document.getElementById('v').readyState >= 2"
@@ -736,9 +707,7 @@ async def test_an_ended_source_is_played_through_to_its_natural_end(origin: str)
         assert await browser.evaluate(_PLAY_TO_END) == pytest.approx(12.0)
         ended = await browser.screenshot()  # the "recorded" observation: ended naturally
         assert await browser.evaluate(_BACK_TO_ONE) == 1
-        await browser.cap.align_next_observation(
-            _observation(ended), media_seek_timeout_s=2.0, media_end_lead_s=0.5
-        )
+        await browser.cap.align_next_observation(_observation(ended))
         aligned = await browser.screenshot()
         evidence = await browser.cap.verify_restoration(_observation(ended), _observation(aligned))
     finally:
@@ -749,7 +718,7 @@ async def test_an_ended_source_is_played_through_to_its_natural_end(origin: str)
     assert source.before is not None and source.before.ended is True
     media = _media_of(evidence)
     (record,) = media.alignment
-    assert (record.outcome, record.action) == ("aligned", "seek_and_play_to_end")
+    assert (record.outcome, record.operation) == ("aligned", "seek_and_play_to_end")
     assert record.from_time == 1.0 and record.from_paused is True
     assert record.reached_time == pytest.approx(12.0) and record.reached_paused is True
     assert aligned.media is not None
@@ -757,14 +726,12 @@ async def test_an_ended_source_is_played_through_to_its_natural_end(origin: str)
     assert now.before is not None and now.before.ended is True
     assert ended.image_bytes and aligned.image_bytes
     assert hamming(dhash(ended.image_bytes) or 0, dhash(aligned.image_bytes) or 0) == 0
-    check = judge(
-        3, [evidence], [], verify="warn", screenshot_max_distance=0, media_time_tolerance_s=1.0
-    )
+    check = judge(3, [evidence], [], verify="warn")
     assert check.verdict == "ok"
 
 
 async def test_an_end_beyond_the_served_bytes_fails_and_is_undone(origin: str) -> None:
-    browser = await _open(origin, "one-limited.html")
+    browser = await _open(origin, "one-limited.html", media_seek_timeout_s=1.0)
     try:
         await browser.wait_until(
             "document.getElementById('v').readyState >= 2"
@@ -776,9 +743,7 @@ async def test_an_end_beyond_the_served_bytes_fails_and_is_undone(origin: str) -
         recorded = _recorded(
             first, element, MediaReading(current_time=12.0, paused=True, ended=True)
         )
-        await browser.cap.align_next_observation(
-            recorded, media_seek_timeout_s=1.0, media_end_lead_s=0.5
-        )
+        await browser.cap.align_next_observation(recorded)
         shot = await browser.screenshot()
         evidence = await browser.cap.verify_restoration(recorded, _observation(shot))
         state = await browser.evaluate(
@@ -789,10 +754,8 @@ async def test_an_end_beyond_the_served_bytes_fails_and_is_undone(origin: str) -
         await browser.cap.teardown()
 
     (record,) = _media_of(evidence).alignment
-    assert (record.outcome, record.action) == ("failed", "seek_and_play_to_end")
+    assert (record.outcome, record.operation) == ("failed", "seek_and_play_to_end")
     assert record.rolled_back is True
     assert state == {"t": 1.0, "seeking": False, "paused": True}
-    check = judge(
-        3, [evidence], [], verify="strict", screenshot_max_distance=64, media_time_tolerance_s=1.0
-    )
+    check = judge(3, [evidence], [], verify="strict")
     assert check.verdict == "diverged" and "media_mismatch" in check.reasons

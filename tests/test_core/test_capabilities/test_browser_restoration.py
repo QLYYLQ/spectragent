@@ -59,17 +59,21 @@ from spectragent.core.capabilities.browser.restoration import (
     retarget_action,
     subtree_text,
 )
+from spectragent.core.capabilities.browser.restoration_evidence import (
+    BrowserRestorationEvidence,
+)
 from spectragent.core.loops.restore.checks import judge
 from spectragent.core.trace.encoding import decode_fragment, encode_fragment
 from spectragent.schemas.action import Action
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.failure import FragmentFailure
-from spectragent.schemas.restoration import RestorationEvidence
 from tests._helpers.dom_payloads import CROSS, by_id, clean, reference_page
 from tests._helpers.fragment_samples import FRAME_BUTTON_HANDLE, dom_page
 
 TOLERANCE = 2.0
 SHIFT = 1000
+#: The limits the browser's checks apply, as ``BrowserCapability``'s defaults set them.
+LIMITS: dict[str, Any] = {"screenshot_max_distance": 5, "media_time_tolerance_s": 1.0}
 
 
 # ── building observations ────────────────────────────────────────────
@@ -523,7 +527,7 @@ class TestMeasure:
         evidence = measure(
             recorded_view({"screenshot": before}),
             observation(screenshot=after),
-            capability_id="browser",
+            **LIMITS,
             document_misses=0,
             media=None,
         )
@@ -538,7 +542,7 @@ class TestMeasure:
         evidence = measure(
             recorded_view(fragments),
             restored_view(fragments),
-            capability_id="browser",
+            **LIMITS,
             document_misses=0,
             media=None,
         )
@@ -553,8 +557,10 @@ class TestMeasure:
             "signature_missing": 0,
             "signature_extra": 0,
             "screenshot_distance": 0,
+            "screenshot_max_distance": 5,
             "document_misses": 0,
             "media": None,
+            "media_time_tolerance_s": 1.0,
             "media_areas": None,
         }
 
@@ -564,7 +570,7 @@ class TestMeasure:
         evidence = measure(
             recorded_view(recorded),
             restored_view(restored),
-            capability_id="browser",
+            **LIMITS,
             document_misses=0,
             media=None,
             page_urls=(CART_SESSION,),
@@ -583,7 +589,7 @@ class TestMeasure:
         evidence = measure(
             recorded_view(full(url="https://shop.test/cart?session=1&item=7")),
             restored_view(full(url="https://shop.test/cart?session=2&item=8")),
-            capability_id="browser",
+            **LIMITS,
             document_misses=0,
             media=None,
             page_urls=(CART_SESSION,),
@@ -592,7 +598,11 @@ class TestMeasure:
 
     def test_nothing_measurable_is_none(self) -> None:
         evidence = measure(
-            observation(), observation(), capability_id="browser", document_misses=None, media=None
+            observation(),
+            observation(),
+            document_misses=None,
+            media=None,
+            **LIMITS,
         )
         assert evidence.url_match is None and evidence.recorded_url is None
         assert evidence.signature_match is None
@@ -607,7 +617,7 @@ class TestMeasure:
         evidence = measure(
             recorded_view(fragments),
             restored,
-            capability_id="browser",
+            **LIMITS,
             document_misses=None,
             media=None,
         )
@@ -626,7 +636,7 @@ class TestMeasure:
         evidence = measure(
             recorded_view(fragments),
             restored,
-            capability_id="browser",
+            **LIMITS,
             document_misses=None,
             media=None,
         )
@@ -640,7 +650,7 @@ class TestMeasure:
         evidence = measure(
             recorded_view(recorded),
             observation(dom=relaunched(dom_of(state))),
-            capability_id="browser",
+            **LIMITS,
             document_misses=None,
             media=None,
         )
@@ -648,7 +658,7 @@ class TestMeasure:
         assert (evidence.signature_missing, evidence.signature_extra) == (2, 1)
 
 
-# ── one case per measured reason, judged by the restorer's rules ──────
+# ── one case per measured reason: the evidence's checks, as the restorer reports them ──
 
 
 def _diverged_document() -> ReplayLogEntry:
@@ -682,14 +692,7 @@ def replaying_capability(
 
 async def verdict(capability: BrowserCapability, recorded: Any, restored: Any) -> Any:
     evidence = await capability.verify_restoration(recorded, restored)
-    return judge(
-        2,
-        [evidence],
-        [],
-        verify="strict",
-        screenshot_max_distance=5,
-        media_time_tolerance_s=1.0,
-    )
+    return judge(2, [evidence], [], verify="strict")
 
 
 class TestReasons:
@@ -841,7 +844,7 @@ def media_pair(
     evidence = measure(
         before,
         after,
-        capability_id="browser",
+        **LIMITS,
         document_misses=0,
         media=media_measure(before, after, tolerance_px=TOLERANCE, alignment=None),
         media_areas=rules,
@@ -850,9 +853,7 @@ def media_pair(
 
 
 def judged(evidence: Any) -> Any:
-    return judge(
-        3, [evidence], [], verify="warn", screenshot_max_distance=5, media_time_tolerance_s=1.0
-    )
+    return judge(3, [evidence], [], verify="warn")
 
 
 class TestMediaAreas:
@@ -928,7 +929,9 @@ class TestMediaAreas:
         ], "boxes are clipped to the viewport; one wholly outside it masks nothing"
         assert areas.masked_share == pytest.approx((640 * 360 + 160 * 120) / (1280 * 720), abs=0.01)
         assert areas.mask_applied and areas.detail == ""
-        assert RestorationEvidence.model_validate_json(evidence.model_dump_json()) == evidence
+        assert (
+            BrowserRestorationEvidence.model_validate_json(evidence.model_dump_json()) == evidence
+        )
 
     def test_a_player_frame_the_media_read_could_not_reach_is_masked_too(self) -> None:
         """The player in a frame inside a shadow root, recorded; offline it never loaded."""

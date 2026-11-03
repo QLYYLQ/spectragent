@@ -247,17 +247,20 @@ def uniform_unmeasured_parts(everywhere: dict[str, Any] | None) -> list[Part]:
 
 
 def measured_parts(gap: dict[str, Any] | None, uniform: Sequence[str] = ()) -> list[Part]:
-    """Measured differences and unmeasured facts, counted separately.
+    """Measured differences, unmeasured facts and evidence not shown, counted separately.
 
     "no measured difference" never claims identity, and an unmeasured fact
     is a count of its own, never a zero difference. Facts in ``uniform``
     are unmeasured at every checked step of the run and are stated once
-    for the run instead of on every row.
+    for the run instead of on every row. Evidence this view cannot read
+    (another capability's) is a count of its own too: its checks may have
+    failed, so it never reads as no difference.
     """
     if gap is None:
         return [("—", "muted")]
     differences = len(gap["differences"])
     unmeasured = sum(line not in uniform for line in gap["unmeasured"])
+    not_shown = len(gap["not_shown"])
     parts: list[Part] = []
     if differences:
         parts.append((f"{GLYPH['differs']} {differences} different", "warn"))
@@ -265,6 +268,10 @@ def measured_parts(gap: dict[str, Any] | None, uniform: Sequence[str] = ()) -> l
         if parts:
             parts.append((" ", "plain"))
         parts.append((f"{GLYPH['unknown']} {unmeasured} unmeasured", "muted"))
+    if not_shown:
+        if parts:
+            parts.append((" ", "plain"))
+        parts.append((f"{not_shown} not shown", "muted"))
     return parts or [("no measured difference", "muted")]
 
 
@@ -571,6 +578,8 @@ def _gap_facts(gap: dict[str, Any], uniform: Sequence[str] = ()) -> Sheet:
     for line in gap["unmeasured"]:
         note = " (at every checked step of this run)" if line in uniform else ""
         sheet.append(fact("", (f"{GLYPH['unknown']} {line}{note}", "muted")))
+    for line in gap["not_shown"]:
+        sheet.append(fact("", (line, "muted")))
     return sheet
 
 

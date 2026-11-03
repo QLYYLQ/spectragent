@@ -52,7 +52,7 @@ from spectragent.schemas.observation.dynamic_model import (
 )
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.oracle_score import OracleReading, OracleScore
-from spectragent.schemas.restoration import RestorationEvidence, Retarget
+from spectragent.schemas.restoration import IDENTITY, RestorationEvidence, Retarget
 
 logger = logging.getLogger(__name__)
 
@@ -422,15 +422,16 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         cap = self._by_capability_id().get(prefix) if sep else None
         if isinstance(cap, RestorationSupport):
             return await cap.retarget(action, recorded, restored)
-        return Retarget(action=action.model_copy(deep=True), method="identity")
+        return Retarget(action=action.model_copy(deep=True), method=IDENTITY)
 
     async def verify_restoration(self, recorded: Any, restored: Any) -> list[RestorationEvidence]:
         """Each restoring capability's measurement, in capability order.
 
         Fans out to every capability implementing ``RestorationSupport``,
-        one at a time; each answers with its own ``capability_id``. No
-        implementer means nothing to check: an empty list. Thresholds and
-        verdicts are the restorer's (``docs/architecture_design.md`` §4.3).
+        one at a time; each answers with its own evidence type and its own
+        ``capability_id``. No implementer means nothing to check: an empty
+        list. Each evidence carries its capability's checks; ``strict |
+        warn`` is the restorer's (``docs/architecture_design.md`` §4.3).
         """
         evidence: list[RestorationEvidence] = []
         for cap in self.capabilities.values():
@@ -438,25 +439,20 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
                 evidence.append(await cap.verify_restoration(recorded, restored))
         return evidence
 
-    async def align_next_observation(
-        self, recorded: Any, *, media_seek_timeout_s: float, media_end_lead_s: float
-    ) -> None:
+    async def align_next_observation(self, recorded: Any) -> None:
         """Request, from each aligning capability, the next observation's alignment to *recorded*.
 
         Fans out to every capability implementing
         :class:`~spectragent.core.capabilities.base.RestorationAlignment`, one
         at a time, in capability order; none means nothing to align. Only the
-        request is passed on: each capability aligns inside its own capture
-        of the next observation and reports it with ``verify_restoration``
+        request is passed on: each capability decides by its own
+        configuration what to align, does it inside its own capture of the
+        next observation and reports it with ``verify_restoration``
         (``docs/architecture_design.md`` §4.3).
         """
         for cap in self.capabilities.values():
             if isinstance(cap, RestorationAlignment):
-                await cap.align_next_observation(
-                    recorded,
-                    media_seek_timeout_s=media_seek_timeout_s,
-                    media_end_lead_s=media_end_lead_s,
-                )
+                await cap.align_next_observation(recorded)
 
     # ── Recorded capture vs this configuration (training export) ─
 

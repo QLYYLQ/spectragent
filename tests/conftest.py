@@ -53,6 +53,19 @@ def _isolate_registries(conscribe_isolated):
     yield
 
 
+@pytest.fixture
+def branch_fake_registered(_isolate_registries) -> None:
+    """Register the branch fake capability for one test, so its trace's evidence reads back.
+
+    The trace reader finds restoration evidence through the capability
+    registry; the fake stays unregistered everywhere else
+    (``tests/_helpers/branch_fakes.py::register_branch_fake``).
+    """
+    from tests._helpers.branch_fakes import register_branch_fake
+
+    register_branch_fake()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _every_implementation_imported() -> None:
     """Import every implementation once, before the first test.

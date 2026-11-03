@@ -86,6 +86,16 @@ class TestExpansion:
             branch_group_id="run-a/s2",
         )
 
+    def test_only_a_source_with_a_network_archive_names_a_replay_archive(
+        self, tmp_path: Path
+    ) -> None:
+        """No capability of an environment without a network replay takes the key (§11.2)."""
+        write_source(tmp_path, "run-a", steps=1, archivers=())
+        write_source(tmp_path, "run-b", steps=1, archivers=("browser.storage",))
+        tasks = loader(tmp_path, require_archive=())
+        for task_id in ("run-a/s0/b0", "run-b/s0/b0"):
+            assert tasks.get_task_context(task_id).env == {"start_url": START_URL}
+
     def test_globs_are_relative_to_the_root_and_sorted(self, tmp_path: Path) -> None:
         write_source(tmp_path / "b", "run-1", steps=1)
         write_source(tmp_path / "a", "run-2", steps=1)

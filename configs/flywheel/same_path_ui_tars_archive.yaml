@@ -28,11 +28,6 @@ agent:
       restorer:
         restorer_id: prefix_replay
         verify: warn                     # record a failed check and go on: every step is checked
-        screenshot_max_distance: 5       # Hamming distance of the 64-bit dHashes
-        media: align                     # move matched video/audio to the recorded position before each restored screenshot
-        media_time_tolerance_s: 1.0      # a media position further from the recorded one fails media_mismatch
-        media_seek_timeout_s: 2.0        # an alignment seek (and play) that does not complete in time is undone and fails
-        media_end_lead_s: 0.5            # a video recorded at its end: seek this far before it and play into the end
     llm:                                 # the teacher: the recording's model
       model_type: openai
       model: gpt-4o
@@ -56,6 +51,11 @@ environment:
         dom_cleaner: { cleaner_type: browser_use }
         dom_serializer: { serializer_type: text }
         retarget_tolerance_px: 2.0
+        screenshot_max_distance: 5       # Hamming distance of the 64-bit dHashes a restored screenshot may lie from the recorded one
+        align_media: true                # move matched video/audio to the recorded position before each restored screenshot
+        media_time_tolerance_s: 1.0      # a media position further from the recorded one fails media_mismatch
+        media_seek_timeout_s: 2.0        # an alignment seek (and play) that does not complete in time is undone and fails
+        media_end_lead_s: 0.5            # a video recorded at its end: seek this far before it and play into the end
         background_tabs: freeze           # a tab the agent left runs nothing until it returns; sites that open many tabs replay only with this. Same value when replaying or branching
         backend:
           provider_id: local_chrome

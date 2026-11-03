@@ -6,7 +6,9 @@ Everything a ``BranchLoop`` test needs without a browser or a model:
   function of the clicks so far (so a restored prefix reproduces it exactly),
   whose element ids can be shifted (``id_offset``: a "relaunched" world where
   the same element has a fresh id), and which implements
-  ``RestorationSupport`` by position (``retarget``) and URL (``verify``);
+  ``RestorationSupport`` by position (``retarget``) and URL (``verify``,
+  :class:`BranchFakeEvidence`); :func:`register_branch_fake` lets a test's
+  trace reader read that evidence back;
 - :class:`BranchFakeAgent` — a ReAct agent with a text (or structured) reply
   syntax, a closed-set knob (``style``), a numeric knob its prompt never
   shows (``patience``) and agent state rebuilt only by replaying its parser
@@ -49,6 +51,7 @@ from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.prompt import ReactPromptContext, RestoredHistory
 from spectragent.schemas.restoration import (
+    IDENTITY,
     BranchProvenance,
     Checkpoint,
     RestorationEvidence,
@@ -80,6 +83,19 @@ class BranchPage(FragmentBase):
         return self.url
 
 
+class BranchFakeEvidence(RestorationEvidence):
+    """The fake site's restoration evidence: the two pages' URLs, and one check on them."""
+
+    REASONS: ClassVar[tuple[str, ...]] = ("url_mismatch",)
+
+    url_match: bool
+    recorded_url: str
+    restored_url: str
+
+    def failed_checks(self) -> list[str]:
+        return [] if self.url_match else ["url_mismatch"]
+
+
 class BranchFakeEnv(EnvironmentBase):
     __wiring__ = {"capabilities": "capability"}
     __registry_key__ = "branchfake_env"
@@ -92,7 +108,8 @@ class BranchFakeCap(CapabilityBase):
     far), ``cycle``, ``id_offset`` (element ids are ``offset + 0..2``),
     ``urls`` (cycle → forced URL, to make a restored step diverge),
     ``veto_act_at`` (a ``RunAbort`` raised by the click on this position),
-    ``log`` (every action it executed: the Loop executes ``done``), ``setups``.
+    ``log`` (every action it executed: the Loop executes ``done``), ``setups``,
+    and what the last ``setup`` was handed (``start_url``, ``replay_archive``).
     """
 
     __abstract__ = True  # Directly assembled fake; never a YAML implementation.
@@ -101,6 +118,7 @@ class BranchFakeCap(CapabilityBase):
         "action": ("action", [CLICK]),
         "observation": ("observation", [PAGE_KEY]),
     }
+    RestorationEvidence = BranchFakeEvidence
 
     clicks: list[int]
     cycle: int
@@ -109,6 +127,9 @@ class BranchFakeCap(CapabilityBase):
     veto_act_at: int | None
     log: list[str]
     setups: int
+    #: The ``start_url`` a task's environment context handed ``setup``: kept so
+    #: a test can see the context arrive; the fake's pages never read it.
+    start_url: str | None
     #: The ``replay_archive`` a branch task's environment context handed
     #: ``setup`` (the source run directory) — accepted the way the browser
     #: accepts it; the fake's pages are deterministic without it.
@@ -121,8 +142,15 @@ class BranchFakeCap(CapabilityBase):
             execution["replay_archive"] = str(Path(path).expanduser().resolve())
         return PreparedSetupContext(execution, dict(execution))
 
-    async def setup(self, *, negotiation: Any = None, replay_archive: str | None = None) -> None:
+    async def setup(
+        self,
+        *,
+        negotiation: Any = None,
+        start_url: str | None = None,
+        replay_archive: str | None = None,
+    ) -> None:
         self.setups += 1
+        self.start_url = start_url
         self.replay_archive = replay_archive
         await super().setup(negotiation=negotiation)
 
@@ -158,7 +186,7 @@ class BranchFakeCap(CapabilityBase):
 
     async def retarget(self, action: Action, recorded: Any, restored: Any) -> Retarget:
         if action.name != CLICK:
-            return Retarget(action=action.model_copy(deep=True), method="identity")
+            return Retarget(action=action.model_copy(deep=True), method=IDENTITY)
         before, now = recorded.page.elements, restored.page.elements
         index = action.params.get("index")
         if index not in before:
@@ -168,13 +196,29 @@ class BranchFakeCap(CapabilityBase):
         )
         return Retarget(action=moved, method="geometry_signature", detail="by position")
 
-    async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationEvidence:
-        return RestorationEvidence(
+    async def verify_restoration(self, recorded: Any, restored: Any) -> BranchFakeEvidence:
+        return BranchFakeEvidence(
             capability_id=CAP_ID,
             url_match=recorded.page.url == restored.page.url,
             recorded_url=recorded.page.url,
             restored_url=restored.page.url,
         )
+
+
+def register_branch_fake() -> None:
+    """Register the fake capability under its key for the running test, which rolls it back.
+
+    The trace reader reads restoration evidence back through the capability
+    registry (``docs/architecture_design.md`` §4.9), and the fake itself stays
+    abstract so no other test's registries see it. Call it (or use the
+    ``branch_fake_registered`` fixture) in a test that reads a branch trace's
+    step records.
+    """
+
+    class RegisteredBranchFake(BranchFakeCap):
+        """The fake as the capability registry knows it: what names its evidence type."""
+
+        __registry_key__ = CAP_ID
 
 
 def make_cap(*, id_offset: int = 100, urls: dict[int, str] | None = None) -> BranchFakeCap:
@@ -186,6 +230,7 @@ def make_cap(*, id_offset: int = 100, urls: dict[int, str] | None = None) -> Bra
     cap.veto_act_at = None
     cap.log = []
     cap.setups = 0
+    cap.start_url = None
     cap.replay_archive = None
     return cap
 

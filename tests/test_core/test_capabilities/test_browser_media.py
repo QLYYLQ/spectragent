@@ -34,17 +34,16 @@ from spectragent.core.capabilities.browser.media import (
 )
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.capabilities.browser.restoration import measure, media_measure
-from spectragent.core.loops.restore.checks import judge, media_failed
-from spectragent.core.trace.encoding import decode_fragment, encode_fragment
-from spectragent.schemas.restoration import (
-    REASON_ORDER,
+from spectragent.core.capabilities.browser.restoration_evidence import (
+    BrowserRestorationEvidence,
     MediaAlignment,
     MediaAreaEvidence,
     MediaComparison,
     MediaEvidence,
-    RestorationEvidence,
-    RestorationReason,
+    media_failed,
 )
+from spectragent.core.trace.encoding import decode_fragment, encode_fragment
+from tests._helpers.browser_evidence import browser_evidence
 
 # ── builders ──────────────────────────────────────────────────────────
 
@@ -436,19 +435,12 @@ def test_the_comparison_uses_the_reading_both_sides_took() -> None:
     assert later.reading == "after"
 
 
-def _evidence(media: MediaEvidence) -> RestorationEvidence:
-    return RestorationEvidence(capability_id="browser", media=media)
+def _evidence(media: MediaEvidence, tolerance: float = 1.0) -> BrowserRestorationEvidence:
+    return browser_evidence(media=media, media_time_tolerance_s=tolerance)
 
 
-def _reasons(media: MediaEvidence, tolerance: float = 1.0) -> list[RestorationReason]:
-    return judge(
-        0,
-        [_evidence(media)],
-        [],
-        verify="warn",
-        screenshot_max_distance=5,
-        media_time_tolerance_s=tolerance,
-    ).reasons
+def _reasons(media: MediaEvidence, tolerance: float = 1.0) -> list[str]:
+    return _evidence(media, tolerance).failed_checks()
 
 
 def _compared(recorded: MediaState, restored: MediaState) -> MediaEvidence:
@@ -457,18 +449,14 @@ def _compared(recorded: MediaState, restored: MediaState) -> MediaEvidence:
 
 
 def test_media_mismatch_comes_before_the_screenshot_distance() -> None:
-    assert REASON_ORDER.index("media_mismatch") == REASON_ORDER.index("screenshot_distance") - 1
-    assert REASON_ORDER.index("media_mismatch") > REASON_ORDER.index("signature_mismatch")
-    evidence = RestorationEvidence(
-        capability_id="browser",
+    reasons = BrowserRestorationEvidence.REASONS
+    assert reasons.index("media_mismatch") == reasons.index("screenshot_distance") - 1
+    assert reasons.index("media_mismatch") > reasons.index("signature_mismatch")
+    evidence = browser_evidence(
         screenshot_distance=9,
         media=_compared(state(element(time=41.0)), state(element(time=10.0))),
     )
-    check = judge(
-        0, [evidence], [], verify="warn", screenshot_max_distance=5, media_time_tolerance_s=1.0
-    )
-    assert check.reasons == ["media_mismatch", "screenshot_distance"]
-    assert check.reason == "media_mismatch"
+    assert evidence.failed_checks() == ["media_mismatch", "screenshot_distance"]
 
 
 def test_the_position_is_judged_against_the_tolerance() -> None:
@@ -544,10 +532,7 @@ def test_on_a_page_media_area_rules_declare_the_media_is_kept_but_not_judged(
     declared = _evidence(media).model_copy(
         update={"media_areas": MediaAreaEvidence(rule_ids=["play-media"])}
     )
-    check = judge(
-        0, [declared], [], verify="warn", screenshot_max_distance=5, media_time_tolerance_s=1.0
-    )
-    assert check.verdict == "ok" and check.evidence[0].media == media
+    assert declared.failed_checks() == [] and declared.media == media
 
 
 # ── the screenshot fragment carries it ────────────────────────────────
@@ -583,9 +568,10 @@ def test_measure_reports_media_only_with_a_screenshot_or_an_alignment() -> None:
     evidence = measure(
         old,
         observation(state(element())),
-        capability_id="browser",
         document_misses=None,
         media=media_measure(old, observation(state(element())), tolerance_px=2.0, alignment=None),
+        screenshot_max_distance=5,
+        media_time_tolerance_s=1.0,
     )
     assert evidence.media is not None and evidence.media.comparisons is None
     assert evidence.media.detail == "the recorded screenshot carries no media state"
@@ -611,6 +597,81 @@ def test_the_media_read_budget_is_a_capability_knob(value: float, valid: bool) -
         return
     cap = next(iter(composer.compose(raw).single("environment").capabilities.values()))
     assert cap.media_state_timeout_s == value
+
+
+def _local_config_with(**knobs: Any) -> dict[str, Any]:
+    import yaml
+
+    path = Path(__file__).resolve().parents[3] / "configs/ui_tars_local.yaml"
+    raw = yaml.safe_load(path.read_text())
+    raw["environment"][0]["capabilities"][0].update(knobs)
+    return raw
+
+
+def test_the_restoration_knobs_are_the_capabilitys() -> None:
+    """The screenshot limit and the media knobs moved from the restorer to the browser (§4.9)."""
+    from spectragent.core.composer import ConfigComposer
+
+    knobs = {
+        "screenshot_max_distance": 12,
+        "align_media": False,
+        "media_time_tolerance_s": 2.5,
+        "media_seek_timeout_s": 4.0,
+        "media_end_lead_s": 1.5,
+    }
+    raw = _local_config_with(**knobs)
+    cap = next(
+        iter(
+            ConfigComposer.for_config(raw).compose(raw).single("environment").capabilities.values()
+        )
+    )
+    assert {name: getattr(cap, name) for name in knobs} == knobs
+    defaults = BrowserCapability()
+    assert (defaults.screenshot_max_distance, defaults.align_media) == (5, True)
+    assert (defaults.media_time_tolerance_s, defaults.media_seek_timeout_s) == (1.0, 2.0)
+    assert defaults.media_end_lead_s == 0.5
+
+
+@pytest.mark.parametrize(
+    "knob",
+    [
+        {"screenshot_max_distance": 65},
+        {"align_media": "aligned"},
+        {"media_time_tolerance_s": -1},
+        {"media_seek_timeout_s": 0},
+        {"media_end_lead_s": 0},
+    ],
+    ids=[
+        "distance-range",
+        "alignment-value",
+        "tolerance-range",
+        "seek-timeout-range",
+        "end-lead-range",
+    ],
+)
+def test_a_restoration_knob_outside_its_range_is_refused(knob: dict[str, Any]) -> None:
+    from pydantic import ValidationError
+
+    from spectragent.core.composer import ConfigComposer
+
+    raw = _local_config_with(**knob)
+    with pytest.raises(ValidationError):
+        ConfigComposer.for_config(raw).compose(raw)
+
+
+def test_an_end_lead_that_cannot_finish_in_time_is_refused() -> None:
+    with pytest.raises(ValueError, match="media_end_lead_s"):
+        BrowserCapability(media_seek_timeout_s=1.0, media_end_lead_s=1.0)
+
+
+def test_the_shipped_restoring_configs_align_media() -> None:
+    import yaml
+
+    configs = Path(__file__).resolve().parents[3] / "configs" / "flywheel"
+    for name in ("branch_ui_tars_archive.yaml", "same_path_ui_tars_archive.yaml"):
+        raw = yaml.safe_load((configs / name).read_text("utf-8"))
+        browser = raw["environment"][0]["capabilities"][0]
+        assert browser["align_media"] is True, name
 
 
 @pytest.mark.parametrize(
@@ -643,7 +704,7 @@ def test_the_capability_offers_alignment_beside_restoration() -> None:
 
 
 def test_a_request_belongs_to_the_next_cycle_only() -> None:
-    pending = PendingAlignment(recorded=None, seek_timeout_s=2.0, end_lead_s=0.5)
+    pending = PendingAlignment(recorded=None)
     assert pending.bind(4) and pending.due(4)
     assert not pending.bind(5) and not pending.due(5)
     assert pending.take().detail == "no capture ran after the alignment was requested"
@@ -652,20 +713,31 @@ def test_a_request_belongs_to_the_next_cycle_only() -> None:
 async def test_the_capability_keeps_a_request_for_one_observation() -> None:
     cap = BrowserCapability()
     recorded = observation(state(element()))
-    await cap.align_next_observation(recorded, media_seek_timeout_s=1.5, media_end_lead_s=0.5)
+    await cap.align_next_observation(recorded)
     await cap.begin_observation(1)
     pending = cap._media_alignment
-    assert pending is not None and pending.cycle == 1 and pending.seek_timeout_s == 1.5
+    assert pending is not None and pending.cycle == 1
     assert pending.recorded == state(element())
     # Never taken by a check: a later observation drops it.
     await cap.begin_observation(2)
     assert cap._media_alignment is None
 
 
+async def test_align_media_false_requests_nothing() -> None:
+    """The control arm: the media is still compared, and the evidence says nothing was asked."""
+    cap = BrowserCapability(align_media=False)
+    recorded = observation(state(element()))
+    await cap.align_next_observation(recorded)
+    assert cap._media_alignment is None
+    evidence = await cap.verify_restoration(recorded, observation(state(element())))
+    assert evidence.media is not None and evidence.media.alignment is None
+    assert evidence.media.comparisons is not None
+
+
 async def test_the_check_takes_the_request_whether_or_not_a_capture_used_it() -> None:
     cap = BrowserCapability()
     recorded = observation(state(element()))
-    await cap.align_next_observation(recorded, media_seek_timeout_s=2.0, media_end_lead_s=0.5)
+    await cap.align_next_observation(recorded)
     evidence = await cap.verify_restoration(recorded, observation(state(element())))
     assert evidence.media is not None and evidence.media.alignment == []
     assert evidence.media.alignment_detail == "no capture ran after the alignment was requested"
@@ -732,7 +804,7 @@ async def _align(cdp: _AlignCDP, recorded: MediaState) -> list[MediaAlignment]:
 async def test_a_paused_source_is_paused_and_seeked() -> None:
     cdp = _AlignCDP(raw(reading={"current_time": 10.0, "paused": False}), [_answer(41.0, True)])
     (record,) = await _align(cdp, state(element(time=41.0, paused=True)))
-    assert (record.outcome, record.action, record.target_time) == (
+    assert (record.outcome, record.operation, record.target_time) == (
         "aligned",
         "pause_and_seek",
         41.0,
@@ -744,7 +816,7 @@ async def test_a_paused_source_is_paused_and_seeked() -> None:
 async def test_a_playing_source_is_seeked_then_played() -> None:
     cdp = _AlignCDP(raw(), [_answer(72.0, False, played=True)])
     (record,) = await _align(cdp, state(element(time=72.0, paused=False)))
-    assert (record.outcome, record.action) == ("aligned", "seek_and_play")
+    assert (record.outcome, record.operation) == ("aligned", "seek_and_play")
     assert "controls" in record.detail
     assert cdp.calls == ['"main", 0, 72.0, true, false, 2000)']
 
@@ -785,7 +857,7 @@ async def test_an_ended_source_is_played_through_to_its_end() -> None:
     ended["reached"]["ended"] = True
     cdp = _AlignCDP(raw(reading={"current_time": 10.0, "paused": False}), [ended])
     (record,) = await _align(cdp, state(_ended()))
-    assert (record.outcome, record.action) == ("aligned", "seek_and_play_to_end")
+    assert (record.outcome, record.operation) == ("aligned", "seek_and_play_to_end")
     assert record.target_time == 31.04 and record.reached_time == 31.04
     assert record.detail == "seeked to 30.54 s and played through to its natural end"
     # Seek half a second (the lead) before the recorded end, play, and play to the end.
@@ -809,7 +881,7 @@ async def test_an_element_already_at_the_end_but_not_ended_is_aligned_again() ->
     at_end.answers.append({**_answer(31.04, True, played=True, landed=30.54)})
     at_end.answers[0]["reached"]["ended"] = True
     (record,) = await _align(at_end, state(_ended()))
-    assert record.action == "seek_and_play_to_end" and record.outcome == "aligned"
+    assert record.operation == "seek_and_play_to_end" and record.outcome == "aligned"
     really = _AlignCDP(raw(reading={"current_time": 31.04, "paused": True, "ended": True}), [])
     (same,) = await _align(really, state(_ended()))
     assert same.outcome == "already_aligned" and really.calls == []
@@ -933,7 +1005,7 @@ def _report(*records: MediaAlignment) -> Any:
 
 def test_only_an_element_left_playing_at_its_target_asks_for_the_screenshot_first() -> None:
     playing = MediaAlignment(
-        element="main#0 video", outcome="aligned", action="seek_and_play", target_paused=False
+        element="main#0 video", outcome="aligned", operation="seek_and_play", target_paused=False
     )
     assert _report(playing).left_playing
     assert _report(playing.model_copy(update={"outcome": "already_aligned"})).left_playing
@@ -982,30 +1054,33 @@ async def test_a_capture_that_left_a_video_playing_takes_the_screenshot_first(
     record = MediaAlignment(
         element="main#0 video",
         outcome="aligned",
-        action=alignment or "none",
+        operation=alignment or "none",
         target_time=6.0,
         target_paused=alignment != "seek_and_play",
     )
 
-    async def aligned(*_args: Any, **_kwargs: Any) -> Any:
+    bounds: list[tuple[float, float]] = []
+
+    async def aligned(*_args: Any, **kwargs: Any) -> Any:
+        bounds.append((kwargs["seek_timeout_s"], kwargs["end_lead_s"]))
         return _report(record)
 
     monkeypatch.setattr("spectragent.core.capabilities.browser.capability.align_media", aligned)
     browser = FakeBrowser()
-    cap = BrowserCapability()
+    cap = BrowserCapability(media_seek_timeout_s=1.5, media_end_lead_s=0.25)
     cap.backend = OwnedBrowser()  # type: ignore[assignment]
     cap._inject_cdp_factory(browser.client)
     await cap.setup()
     cap.apply_negotiation({"browser.dom", "browser.screenshot"})
     try:
         if alignment is not None:
-            await cap.align_next_observation(
-                observation(state(element())), media_seek_timeout_s=2.0, media_end_lead_s=0.5
-            )
+            await cap.align_next_observation(observation(state(element())))
         since = len(browser.control.sent)
         await cap.begin_observation(1)
         await cap.resolve_fragment("browser.screenshot")
         assert _capture_order(browser, since) == expected
+        # The capture aligns within the capability's own bounds.
+        assert bounds == ([(1.5, 0.25)] if alignment is not None else [])
         # The next capture is not aligned: back to the connection order.
         await cap.verify_restoration(observation(state(element())), observation(None))
         since = len(browser.control.sent)

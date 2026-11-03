@@ -1,6 +1,7 @@
 """History/replay inspection uses committed evidence and recorded image presentation."""
 
 from io import BytesIO
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,9 +14,22 @@ from spectragent.core.trace.models import TraceConfig, TraceStatus
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
 from spectragent.inspection import open_repository
-from spectragent.inspection.restoration import restoration_gap, restoration_results
+from spectragent.inspection.restoration import (
+    restoration_gap,
+    restoration_results,
+    unmeasured_everywhere,
+)
 from spectragent.schemas.step_record import StepRecord
 from spectragent.viewer import create_app
+from tests._helpers.browser_evidence import browser_evidence
+
+
+def _record(data: dict[str, Any]) -> StepRecord:
+    """A step record whose evidence is the browser's own type, as the trace reader rebuilds it."""
+    check = data.get("restoration")
+    if check is not None:
+        check["evidence"] = [browser_evidence(**item) for item in check.get("evidence", [])]
+    return StepRecord.model_validate(data)
 
 
 def shot(cursor):
@@ -112,7 +126,7 @@ def make_pair(root, history_source="source"):
     )
     branch.commit_step(
         0,
-        StepRecord.model_validate(
+        _record(
             {
                 "step": 0,
                 "origin": "restored",
@@ -155,7 +169,7 @@ def make_pair(root, history_source="source"):
     )
     branch.commit_step(
         1,
-        StepRecord.model_validate(
+        _record(
             {
                 "step": 1,
                 "restoration": {
@@ -223,11 +237,46 @@ def test_source_unavailable_does_not_hide_actual_replay(tmp_path):
     assert broken["has_screenshot"]
 
 
+def test_another_capabilitys_evidence_is_named_never_read_as_the_browsers():
+    """Its own checks decided the step: no browser measure is missing from it, and the
+    view claims neither a difference nor its absence (§4.9)."""
+    android = {"capability_id": "android", "app_match": False, "screenshot_distance": 0}
+    diverged = {
+        "step": 0,
+        "origin": "restored",
+        "restoration": {
+            "step": 0,
+            "verdict": "diverged",
+            "reasons": ["app_mismatch"],
+            "evidence": [android],
+        },
+    }
+    assert restoration_gap(diverged) == {
+        "status": "not_shown",
+        "differences": [],
+        "unmeasured": [],
+        "not_shown": ["android: not shown in this view"],
+        "verdict": "diverged",
+    }
+    assert unmeasured_everywhere([diverged, diverged]) == {"facts": [], "checked_steps": 2}
+    browser = {"capability_id": "browser", "url_match": False}
+    both = {
+        "step": 1,
+        "restoration": {"verdict": "warn", "evidence": [browser, android]},
+    }
+    gap = restoration_gap(both)
+    assert gap is not None and gap["status"] == "changed"
+    assert gap["differences"] == ["browser: URL changed"]
+    assert gap["not_shown"] == ["android: not shown in this view"]
+    assert not [line for line in gap["unmeasured"] if line.startswith("android")]
+
+
 def test_missing_measurements_and_exceptions_are_not_successful_matches():
     assert restoration_gap({"origin": "restored"}) == {
         "status": "unmeasured",
         "differences": [],
         "unmeasured": ["Restoration check not recorded"],
+        "not_shown": [],
         "verdict": None,
     }
     gap = restoration_gap(

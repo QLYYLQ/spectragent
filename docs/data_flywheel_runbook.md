@@ -186,8 +186,8 @@ macOS 上 `--lang`/`LANG` 不一定改变所有 frame 看到的浏览器默认�
 | `capture_state_timeout_s` | 默认、实际 1 | `1.0` | 保持现有预算。超时事实是 unknown，不能当没有失败图片或画面稳定。 |
 | `media_state_timeout_s` | 默认、实际 1 | `1.0` | 截图前后各读一次；加 capture_state 共 3 秒，小于当前 4 秒探针预算，没有调参证据。 |
 | `retarget_tolerance_px` | 默认、实际 2 | `2.0` | 沿用元素/媒体位置对应容差，没有调参。提高它可能把不同对象误对应。 |
-| `restorer.screenshot_max_distance` | 均为 5 | `5` | 不为提高通过率而放宽。dHash 对局部视频变化可能不敏感，必须同时保留媒体事实与真实图片。 |
-| `restorer.media` | `align` 或对照 `none` | `align` | 实跑采用；fixture 和一个真实 31 秒菜谱视频有对照，两次重复得到相同结果。修复 ended 状态对齐后 27 个视频步骤过 26 个，none 过 10 个；这不是所有视频站的成功保证。 |
+| `screenshot_max_distance`（browser 块） | 均为 5 | `5` | 不为提高通过率而放宽。dHash 对局部视频变化可能不敏感，必须同时保留媒体事实与真实图片。 |
+| `align_media`（browser 块，原先是恢复器的 `media: align / none`） | `true` 或对照 `false` | `true` | 实跑采用；fixture 和一个真实 31 秒菜谱视频有对照，两次重复得到相同结果。修复 ended 状态对齐后 27 个视频步骤过 26 个，none 过 10 个；这不是所有视频站的成功保证。 |
 | `media_time_tolerance_s` | 默认、实际 1 | `1.0` | 固定已有媒体判定；没有阈值扫描。 |
 | `media_seek_timeout_s` | 默认、实际 2 | `2.0` | 同上。必须真正 seek 完、位置落到目标并可呈现画面；只设置 currentTime 不算完成。 |
 | `media_end_lead_s` | 默认、实际 0.5 | `0.5` | 自结尾前播放到自然结束，避免只 seek 到结尾留下旧帧；必须小于 seek timeout。真实菜谱视频验证过此修复，仍保留一次 seek 未落到目标的失败。 |
@@ -234,7 +234,7 @@ macOS 上 `--lang`/`LANG` 不一定改变所有 frame 看到的浏览器默认�
 `media_areas` 保留现有十条声明：腾讯视频播放/搜索、爱奇艺播放/搜索、IGN review/search/home/wiki、B 站 video/search。它们不是所有视频站的统一放行，也没有覆盖所有已知视频站的所有页面。
 
 1. **录制不阻断、不暂停前台视频。** 原始截图、动作前帧和模型图片保持真实；`mute_audio` 只静音，`reduced_motion` 只是偏好，`freeze` 只作用于被离开的后台标签页。
-2. **恢复先尝试媒体对齐。** `media: align` 仍执行。加密失败、没录到的分片、直播和错误对应不能靠 seek 补齐。既有嵌套请求规则虽让腾讯 player info、爱奇艺 stream 请求命中，但那次同源对照的检查点仍是腾讯 0/23、爱奇艺 0/6；请求命中率不是视频可播放证明。
+2. **恢复先尝试媒体对齐。** `align_media: true` 仍执行。加密失败、没录到的分片、直播和错误对应不能靠 seek 补齐。既有嵌套请求规则虽让腾讯 player info、爱奇艺 stream 请求命中，但那次同源对照的检查点仍是腾讯 0/23、爱奇艺 0/6；请求命中率不是视频可播放证明。
 3. **只在源和恢复页面 URL 都符合声明时改变比较。** 媒体状态仍测量、仍写证据，但不再据它判 `media_mismatch`。两张用于计算距离的图片副本遮掉双方测得的 video/audio 框与不可读 frame 框的并集；原图没有涂黑。URL、动作结果、文档 miss、框外像素仍检查。
 4. **超过 75% 时不遮，退回完整图片比较。** 75% 是实现常量，不是待添加的 YAML 参数；恰好 75% 仍可遮。退回整图时，声明页的媒体状态仍不参与判失败，不会自动恢复全部媒体严格校验。这个保护来自腾讯首页 100% 和频道页 87% 不可读 frame：大面积涂黑可能把明显失败变成通过。现有声明没有把这两类腾讯页扩大纳入。
 5. **通过率上升属于校验范围重新分类。** 334 个既有分叉换比较规则重算，腾讯检查点从 0/70 到 52/70；14 个分叉做同配置有/无规则的重放，腾讯检查点从 0/3 到 3/3。IGN 新增首页/wiki 后既有检查点从 42/64 到 53/64，12 个失败检查点再跑有 6 个恢复。这些是明确局部证据，不能写成视频播放保真提高或所有任务都可忽略视频内容。字幕、剧情、时刻等若与任务有关，人工审阅仍要看原图和媒体事实。
@@ -568,19 +568,27 @@ agent_loop:
   restorer:
     restorer_id: prefix_replay
     verify: strict                 # warn：记下不通过的检查，继续
-    screenshot_max_distance: 5     # 两张截图 64 位 dHash 的汉明距离上限
     pace: none                     # recorded_llm_latency：执行动作前等源 run 当时等模型的时长；recorded_timeline：按源 run 的时间线走
-    media: align                   # none：不对齐媒体（对照组），媒体状态照样比较
-    media_time_tolerance_s: 1.0    # 媒体播放位置与录下的差多少秒以内算通过
-    media_seek_timeout_s: 2.0      # 一次对齐跳转（及随后的播放）必须完成的上限
-    media_end_lead_s: 0.5          # 录下时已播完的视频从结尾前这么多秒播到结束；必须短于上一项
+```
+
+浏览器量什么、用什么上限判、对齐什么，都是浏览器自己的设置，写在 browser 块里（[architecture_design.md](architecture_design.md) §4.9 "恢复证据按 capability 分型"；普通 run 不读它们）：
+
+```yaml
+# environment[0].capabilities[0]
+- capability_id: browser
+  retarget_tolerance_px: 2.0     # 录下的元素在恢复出的页面里偏移多少 CSS px 还能被认出
+  screenshot_max_distance: 5     # 两张截图 64 位 dHash 的汉明距离上限，随每份证据记下
+  align_media: true              # false：不对齐媒体（对照组），媒体状态照样比较
+  media_time_tolerance_s: 1.0    # 媒体播放位置与录下的差多少秒以内算通过，随每份证据记下
+  media_seek_timeout_s: 2.0      # 一次对齐跳转（及随后的播放）必须完成的上限
+  media_end_lead_s: 0.5          # 录下时已播完的视频从结尾前这么多秒播到结束；必须短于上一项
 ```
 
 `pace` 决定恢复步之间等多久。源 run 每一步都等过模型（几秒到几十秒），页面自己的计时器（轮播、自动播放、倒计时、懒加载、延时弹窗）在这段时间里接着走；恢复步一个接一个执行，采集恢复观测时页面就落后于录制。`none` 不等；`recorded_llm_latency` 在执行第 k 步动作之前等源 run 第 k 步等模型的时长，观测、动作与记录本身的耗时不补，越往后漂得越远；`recorded_timeline` 从第 0 步的观测起复现源 run 的时间线：以两边第 0 步观测的采集时刻（这一步 env fragment 里最早的 `captured_at`）为锚点，每个恢复观测（含检查点）提前"本次恢复上一次观测的耗时"开始，好让它在源的采集时刻采集，每一步的第一个动作在源这一步第一个动作开始的时刻执行（`StepRecord.action_spans`），同一步后面的动作紧接着执行。已经落后就立刻做，从不追。起始页加载多久是网速，不复现。源 run 要执行动作的步没量过动作起点（`action_spans` 为 `null`，例如录制时 `recording.metrics` 关着）时，分叉在任何 setup 之前以 `IncompatibleCheckpointError` 点名这些步，不会悄悄换成别的 pace。等待不写进 trace。
 
 `branch` loop 默认 `terminal_observation: true`。capability 的 `retarget_tolerance_px`（默认 2.0 CSS px）决定录下的元素在恢复出的页面里偏移多少还能被认出。
 
-每张观测截图都带 `media` 元数据：截图前后各读一次页面上每个 `<video>` / `<audio>` 的精确播放位置、是否暂停、总时长、所在 frame、文档顺序与位置（读数上限是 capability 的 `media_state_timeout_s`，默认 1 s；读不到记为 unknown，从不让截图失败，录制时不改动页面）。视频在源 run 里按真实时间播放，模型思考时也在播；原路径回放不等模型，同一步的画面会停在别的位置，截图距离却可能在阈值之内。所以恢复校验比较媒体状态，`media: align`（默认，发布的两份分叉配置显式写出）在每一个被恢复的观测（含检查点）的采集里、页面落定之后、截图之前，把对应上的元素对齐到录下的状态：录下暂停的暂停并跳到精确位置；录下在播的跳转、播放，随即截图（这次采集的截图排在 DOM 之前，否则视频在 DOM 采集的几秒里接着播）；录下已播完的跳到结尾前 `media_end_lead_s` 再播到自然结束。跳转要在 `media_seek_timeout_s` 之内完成（`seeked`、不再 seeking、有可显示的帧）并停在目标上，否则跳回对齐之前的位置与播放状态、判这一步 `media_mismatch`。检查点之后的策略步和终止观测不对齐。`pace` 的两种等待都只能近似播放位置，不是媒体恢复的手段。
+每张观测截图都带 `media` 元数据：截图前后各读一次页面上每个 `<video>` / `<audio>` 的精确播放位置、是否暂停、总时长、所在 frame、文档顺序与位置（读数上限是 capability 的 `media_state_timeout_s`，默认 1 s；读不到记为 unknown，从不让截图失败，录制时不改动页面）。视频在源 run 里按真实时间播放，模型思考时也在播；原路径回放不等模型，同一步的画面会停在别的位置，截图距离却可能在阈值之内。所以恢复校验比较媒体状态，browser 块的 `align_media: true`（默认，发布的两份分叉配置显式写出）在每一个被恢复的观测（含检查点）的采集里、页面落定之后、截图之前，把对应上的元素对齐到录下的状态：录下暂停的暂停并跳到精确位置；录下在播的跳转、播放，随即截图（这次采集的截图排在 DOM 之前，否则视频在 DOM 采集的几秒里接着播）；录下已播完的跳到结尾前 `media_end_lead_s` 再播到自然结束。跳转要在 `media_seek_timeout_s` 之内完成（`seeked`、不再 seeking、有可显示的帧）并停在目标上，否则跳回对齐之前的位置与播放状态、判这一步 `media_mismatch`。检查点之后的策略步和终止观测不对齐。`pace` 的两种等待都只能近似播放位置，不是媒体恢复的手段。
 
 一个分叉 run 按这个顺序执行：
 
@@ -906,15 +914,15 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 - `ArchiveOpenError: replay archive ... is not a directory`：`--replay-archive` 要指向源 run 目录，也就是含 `manifest.json` 的那个。`ReplayArchiveError` 说明源 run 的索引行读不回来，或者指向的 WARC 记录对不上，消息点名文件和记录 id；源归档已损坏，重新录制。
 - 回放里有 miss：用 `diverged_steps` 找出有主 frame 文档 miss 的步，再看这些步的 `replay.jsonl.gz`。`no_match` 而 `candidates` 里有同 host、同 path、只差查询参数的记录，说明参数是每次访问都会变的值（时间戳、会话 id），给这个站点写 `ignore_query` 规则；文档 URL 本身带每次访问不同的值时，回放必然在那一步发散。`too_large`：body 超过 `max_fulfill_body_bytes`，或录制时就是 `too_large`。`body_unavailable`：录下的记录没有正文，`source_outcome` 说源里这个请求怎么结束；规则写了 `serve_identical` 却没有代答，说明序列里没有可用记录、可用记录的正文或状态不一致，或者源里就是网络失败；带 `repeated: true` 的是用尽之后的重复，不是新的缺口。`range_uncovered`：录制没覆盖请求的字节区间，`requested_range` 是页面要的区间；视频跳到录下字节之外时，播放器会以每秒十几次的速度重试同一个起点，按 `requested_range` 归并就分得出是一个缺口还是很多个。`fulfil_failed`：看 `fulfil_error`；`Invalid http status code or phrase` 以前出现在没有标准原因短语的状态码上（携程 h2 上的 432），回放现在给每个应答都配一个 Chrome 收的短语，再出现说明有新的形状，`record_id` 指向那条记录。`websocket` 和 `unservable` 见"已知限制"。报告的 `decision_inputs.site_rule_candidates` 按站点与端点汇总了所有回放 run 的近邻 miss，**数的是回放 run，不是请求**（每秒都发的遥测在一个 run 里只算一次；`requests` 是请求数，只作参考）：每个端点在几个 run 里出现（`runs`）、每个查询参数与 body 字段在几个 run 里不同、body 只剩摘要说不出字段的 run 数（`opaque_body`：只在规范化本身把 body 换成摘要时出现，超过 4096 字符或解析不了；回放日志原样保存 body 键，所以更早的 512 字符截短不再造成它），以及每一种一起变化的字段组合（`field_sets`，run 多的在前）。不喂页面的请求不进排名，按原因单独计数（`not_feeding_page`）：规则已经对它合成 204、Chrome 把它标成 `Ping`（beacon）或 `Image`、录下的应答是 204 或正文为空，都是按录制判断，不按域名。站点内的次序看它与恢复失败的关联：`failed_check_steps` / `passed_check_steps` 是带这个近邻 miss、且自己的恢复校验没过 / 过了的步数（每个 run 的每一步只算一次），`failure_association` 是失败占比的 95% Wilson 下界，高的在前；每一步都发的请求在恢复通过的步上也 miss，排在只在恢复失败的步上 miss 的请求之后。`failed_restoration_runs` 是恢复没过、在第一个没过的步或之前就有这个近邻 miss 的 run 数，只作次序：恢复多半在第 0、1 步就因截图距离或媒体状态没过，只看它会把落地页的遥测排在最前。判断（`decisions.site_rules`）只列每个站点前 3 个（`SITE_RULE_MAX_PROPOSALS_PER_SITE`），`n/m` 是失败的校验步 / 有近邻 miss 的校验步；全部排名在 `report.json` 里，`report.md` 只列建议。一个站点的恢复校验几乎都没过时（比如每步都是媒体状态不符），关联分不出谁，次序实际上就是失败校验步的多少。两边都按回放自己用的规则规范化，规则已经忽略的字段不会再列出来。它只是提示：写规则之前看这个端点的应答，确认这些字段不选内容（关键词、页码、排序、id、筛选都选内容）。不按链跑的回放也能这样汇总：建一个目录，`traces/record` 指向录制目录，`traces/branch` 里放各个分叉 run（符号链接即可），再 `spectragent flywheel report --root <目录> --evidence live --out <输出目录>`。候选只差一个回调参数（`callback`、`cb`、`jsonp` 这类，值是页面起的函数名）时，忽略它是安全的：回放会把应答里的函数名换成这次请求的。
 - 回放日志里是命中，页面上却少了 JSONP 取来的内容（热门搜索、广告、搜索结果是空的）：看这个请求的日志条目有没有 `callback_rewrite`。没有而回调名与录下的不同，说明应答的包装不在能改写的形状里（回调名在路径里、`window.NAME(` 这类写法），或者命中的是同一接口不带回调参数的记录；这种请求只能照录下的字节送。报告的 `sections.sites.by_site.<站点>.callback_rewrites` 是每个站点改写的应答数。
-- 恢复发散：`strict` 下 run 以 `RestorationDivergedError` 结束，`warn` 下那一步的 `restoration.verdict` 是 `warn`。`reasons` 列出这一步所有不通过的检查，按下面的顺序排列，第一个同时记在 `reason`：
+- 恢复发散：`strict` 下 run 以 `RestorationDivergedError` 结束，`warn` 下那一步的 `restoration.verdict` 是 `warn`。`reasons` 列出这一步所有不通过的检查，按下面的顺序排列（先是浏览器证据自己的检查，再是恢复器从动作得出的三个），第一个同时记在 `reason`：
   - `document_miss`：自上一次校验以来回放日志里有主 frame 文档 miss，处理同上一条。
   - `url_mismatch`：恢复出的 URL 与录下的不逐字相同，只在录了 `browser.browser_meta` 的 run 上比较。回放规则集的页面地址规则（`page_urls` 一节，发布的在 `configs/replay_rules/page_urls.yaml`）声明的查询参数不比：页面载入之后自己写进地址、没有请求带它、也不选内容的参数（哔哩哔哩搜索页的 `vt`、同花顺选股结果页的 `sign`）；比较时去掉了哪些参数、是哪条规则去掉的，记在 `restoration.evidence[*].url_ignored_query` / `url_rule_ids`。两个 URL 只差一个这样的参数时，先在源 run 的网络归档里确认没有请求带它（文档请求里有它就是导航地址，不是页面写的），再给这个页面写一条页面地址规则；关键词、页码、排序、id 与筛选从不写。
+  - `signature_mismatch`：两边可交互元素的签名多重集不同。
+  - `media_mismatch`：媒体状态对不上，看 `restoration.evidence[*].media`。`comparisons` 是逐元素的对应（`matched` / `missing` / `extra` / `ambiguous`，元素记作 `<frame>#<顺序> <标签>`）和比较用的那次读数里两边的位置与暂停状态；位置差超过 `media_time_tolerance_s`、暂停状态不同、元素缺失或多出（隐藏的、视口外的也算）、对应有歧义、直播，都不通过。`recorded_unreachable_frames` / `restored_unreachable_frames` 是两次读数都没有应答的子 frame（其中有没有媒体不知道），比较成立时有一个就不通过。`alignment` 是这次观测之前做的每一个对齐动作：`aligned`、`already_aligned`、`failed`（跳转或播放没在上限内完成，或停在了目标之外；`rolled_back` 说回滚是否完成）、`not_restorable`（直播、对应有歧义或缺失）、`unknown`（录下的位置不知道，不参与判定）；browser 块的 `align_media: false` 时为 `null`。`comparisons` 为 `null`（`detail` 说为什么）是没比成：在截图带媒体元数据之前录的源永远不做媒体校验，只靠截图距离。对齐 `failed` 而回放日志里同一个媒体 URL 有 `range_uncovered`，是跳到了录下字节之外，录制时视频没播到那里，回放救不回来。视频站的播放状态往往做不到一致（流的密钥加密、自动播放的预览、离线加载不出来的播放器、叠放的 `<video>`）：回放规则集的媒体区域规则（`media_areas` 一节，发布的在 `configs/replay_rules/media_areas.yaml`）声明的页面上不判媒体，截图比较遮掉两边媒体事实测到的框（媒体元素与读不到的 frame），证据里多一个 `restoration.evidence[*].media_areas`（规则、遮掉的框、遮掉的占比、整图与遮掉之后的距离、`mask_applied`）。遮掉的超过 75% 时不遮，用整图距离。给一个页面写声明之前，先确认它的检查失败在媒体状态、或截图差别集中在播放器的框里（遮掉之后距离回到阈值之内）；非视频站从不声明。
+  - `screenshot_distance`：恢复出的截图与源 run 同一步录下的截图，dHash 距离超过 `screenshot_max_distance`（实测值在 `restoration.evidence[*].screenshot_distance`；媒体区域规则声明的页面上是遮掉媒体框之后的距离，整图距离在 `media_areas.unmasked_distance`）。常见于动画和依赖时钟的内容。观测之前的落定等待（见"前提与限制"）在录制和回放里都等异步加载，比较的就是两边 agent 看到的观测；仍然不同时，看这一步观测 fragment 的 `settle` 记录：有一边 `capped`，说明那边的页面一直没静下来，被上限截断时还在变。还可以试 `pace: recorded_timeline`（按源 run 的时间线恢复，页面的计时器走到与录制相同的位置）或 `pace: recorded_llm_latency`。
   - `retarget_not_found`：在 `retarget_tolerance_px` 之内找不到标签、标识属性和文本签名都相同的元素；源 run 当时用的 index 不在录下的 selector map 里（模型编出来的 index）也归这一类。
   - `retarget_ambiguous`：候选不止一个，常见于嵌套的相同元素。
   - `action_failed`：动作的成败与录制不同，或者执行时抛错。
-  - `signature_mismatch`：两边可交互元素的签名多重集不同。
-  - `media_mismatch`：媒体状态对不上，看 `restoration.evidence[*].media`。`comparisons` 是逐元素的对应（`matched` / `missing` / `extra` / `ambiguous`，元素记作 `<frame>#<顺序> <标签>`）和比较用的那次读数里两边的位置与暂停状态；位置差超过 `media_time_tolerance_s`、暂停状态不同、元素缺失或多出（隐藏的、视口外的也算）、对应有歧义、直播，都不通过。`recorded_unreachable_frames` / `restored_unreachable_frames` 是两次读数都没有应答的子 frame（其中有没有媒体不知道），比较成立时有一个就不通过。`alignment` 是这次观测之前做的每一个对齐动作：`aligned`、`already_aligned`、`failed`（跳转或播放没在上限内完成，或停在了目标之外；`rolled_back` 说回滚是否完成）、`not_restorable`（直播、对应有歧义或缺失）、`unknown`（录下的位置不知道，不参与判定）；`media: none` 时为 `null`。`comparisons` 为 `null`（`detail` 说为什么）是没比成：在截图带媒体元数据之前录的源永远不做媒体校验，只靠截图距离。对齐 `failed` 而回放日志里同一个媒体 URL 有 `range_uncovered`，是跳到了录下字节之外，录制时视频没播到那里，回放救不回来。视频站的播放状态往往做不到一致（流的密钥加密、自动播放的预览、离线加载不出来的播放器、叠放的 `<video>`）：回放规则集的媒体区域规则（`media_areas` 一节，发布的在 `configs/replay_rules/media_areas.yaml`）声明的页面上不判媒体，截图比较遮掉两边媒体事实测到的框（媒体元素与读不到的 frame），证据里多一个 `restoration.evidence[*].media_areas`（规则、遮掉的框、遮掉的占比、整图与遮掉之后的距离、`mask_applied`）。遮掉的超过 75% 时不遮，用整图距离。给一个页面写声明之前，先确认它的检查失败在媒体状态、或截图差别集中在播放器的框里（遮掉之后距离回到阈值之内）；非视频站从不声明。
-  - `screenshot_distance`：恢复出的截图与源 run 同一步录下的截图，dHash 距离超过 `screenshot_max_distance`（实测值在 `restoration.evidence[*].screenshot_distance`；媒体区域规则声明的页面上是遮掉媒体框之后的距离，整图距离在 `media_areas.unmasked_distance`）。常见于动画和依赖时钟的内容。观测之前的落定等待（见"前提与限制"）在录制和回放里都等异步加载，比较的就是两边 agent 看到的观测；仍然不同时，看这一步观测 fragment 的 `settle` 记录：有一边 `capped`，说明那边的页面一直没静下来，被上限截断时还在变。还可以试 `pace: recorded_timeline`（按源 run 的时间线恢复，页面的计时器走到与录制相同的位置）或 `pace: recorded_llm_latency`。
 
   每一步的 `restoration.evidence` 记着各项的测量值，`restoration.actions` 记着每个录下动作的重定位方式和结果。值为 `null` 的项不参与判定，所以 UI-TARS 这类纯视觉 run 主要靠截图距离、文档 miss 和动作成败来判。
 - `IncompatibleCheckpointError`：分叉配置与源 run 不匹配，在任何 setup 之前报，点名两边：源 trace 从没关闭，或检查点超出它完整到的那一步（`past the step its trace is complete through`），另一个 agent，不同的 `prompt_template`、`coordinate_space` 等旋钮或数字旋钮（如 memory 的 `max_messages`），不同的 memory 或协商结果，不同的 `max_actions_per_step`（`agent_loop.max_actions_per_step`），源 loop 不是 `react`，源 run 本身是分叉 run，`pace: recorded_timeline` 而源 run 有要执行动作的步没量过动作起点（`action_spans`，消息点名这些步）；开跑之后、任何动作之前还会查种子 prompt 与源 run 是否相同、录下的回复在这个 agent 上能否复现。分叉配置的 agent 块照抄录制配置（llm 一块可以不同）。

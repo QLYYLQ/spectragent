@@ -34,16 +34,15 @@ from spectragent.schemas.eval_summary import (
 )
 from spectragent.schemas.prompt import PromptRef, PromptSnapshot, TemplatePrompt, TextPrompt
 from spectragent.schemas.restoration import (
-    REASON_ORDER,
+    ACTION_REASONS,
+    ActionReason,
     BranchProvenance,
     BranchTaskVariant,
     Checkpoint,
     RestorationCheck,
     RestorationEvidence,
-    RestorationReason,
     RestoredAction,
     Retarget,
-    RetargetMethod,
 )
 from spectragent.schemas.step_record import ActionSpan, StepRecord, TokenUsage
 from spectragent.schemas.task import (
@@ -72,16 +71,15 @@ __all__ = [
     "StepRecord",
     "TokenUsage",
     # Restoration (branch runs)
-    "REASON_ORDER",
+    "ACTION_REASONS",
+    "ActionReason",
     "BranchProvenance",
     "BranchTaskVariant",
     "Checkpoint",
     "RestorationCheck",
     "RestorationEvidence",
-    "RestorationReason",
     "RestoredAction",
     "Retarget",
-    "RetargetMethod",
     # Login
     "BrowserStorageState",
     # Task

@@ -219,6 +219,16 @@ class RestorationSupport(Protocol):
     document misses: the capability keeps the total it last reported). Such
     a measure makes the call order-dependent, not idempotent: a restorer
     calls it exactly once per restored observation, in order.
+
+    The evidence is the capability's own type: a class implementing this
+    names a subclass of
+    :class:`~spectragent.schemas.restoration.RestorationEvidence` as its
+    ``RestorationEvidence`` class attribute — the facts it measures, the
+    limits its checks apply (from its own configuration) and the checks
+    themselves (``failed_checks``). The trace reader finds that attribute
+    through the capability registry by the evidence's ``capability_id``, as
+    it finds an action's ``Effect`` (``docs/architecture_design.md`` §4.5,
+    §4.9).
     """
 
     async def retarget(self, action: Action, recorded: Any, restored: Any) -> Retarget:
@@ -227,17 +237,21 @@ class RestorationSupport(Protocol):
         Computes, never acts: the restorer executes the returned action
         through ``guarded_act``. A ``Retarget`` with a ``failure`` says no
         single target was found (``not_found`` / ``ambiguous``); what that
-        costs is the restorer's policy.
+        costs is the restorer's policy. ``method`` is ``"identity"`` for an
+        action run as recorded, else this capability's own name for its way.
         """
         ...
 
     async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationEvidence:
-        """How far the *restored* observation is from the *recorded* one.
+        """How far the *restored* observation is from the *recorded* one, as this capability's evidence.
 
-        Measures, never judges: thresholds and ``strict | warn`` are the
-        restorer's. A measure this capability does not take, or could not
-        take this time, is ``None``. A count since the previous call (see
-        the class docstring) is reported once: called again, it reads 0.
+        Returns an instance of this class's ``RestorationEvidence`` carrying
+        this capability's ``capability_id``. A measure this capability does
+        not take, or could not take this time, is ``None`` and decides
+        nothing. Its checks are the evidence's own
+        (``RestorationEvidence.failed_checks``); ``strict | warn`` is the
+        restorer's. A count since the previous call (see the class
+        docstring) is reported once: called again, it reads 0.
         """
         ...
 
@@ -247,14 +261,17 @@ class RestorationAlignment(Protocol):
     """Optional: put the next restored observation's state where the recording had it.
 
     Some environment state moves on its own clock rather than with the
-    agent's actions — a video keeps playing while the model thinks — so
-    re-executing a recorded prefix reaches the right page with the player at
-    another position (``docs/architecture_design.md`` §4.14 "恢复：重定位与校验").
-    A capability that can put such state back implements this: the restorer
-    (``media: align``) calls it before each restored observation, and the
-    capability aligns inside that observation's own capture — after its
-    settle wait, right before its screenshot — and reports what it did with
-    the next ``RestorationSupport.verify_restoration``.
+    agent's actions — a video keeps playing while the model thinks, a
+    device clock runs on — so re-executing a recorded prefix reaches the
+    right screen with that state somewhere else (``docs/architecture_design.md``
+    §4.14 "恢复：重定位与校验"). A capability that can put such state back
+    implements this: the restorer calls it before each restored observation,
+    and the capability aligns inside that observation's own capture (the
+    browser: after its settle wait, right before its screenshot) and reports
+    what it did with the next ``RestorationSupport.verify_restoration``.
+    Whether it aligns at all, and every bound the alignment keeps, is the
+    capability's own configuration (the browser's ``align_media``,
+    ``media_seek_timeout_s``, ``media_end_lead_s``).
 
     The request belongs to the next observation only, never a later one, and
     this method changes nothing by itself. Separate from
@@ -264,17 +281,8 @@ class RestorationAlignment(Protocol):
     capability without it.
     """
 
-    async def align_next_observation(
-        self, recorded: Any, *, media_seek_timeout_s: float, media_end_lead_s: float
-    ) -> None:
-        """Align the next observation's media to *recorded* (a whole observation of this run).
-
-        ``media_seek_timeout_s`` bounds each seek (and the play after it) the
-        alignment makes; one that does not complete in time is undone and
-        reported as failed. ``media_end_lead_s`` is how far before its end a
-        recorded element that had ended is sought, to be played through to
-        its natural end.
-        """
+    async def align_next_observation(self, recorded: Any) -> None:
+        """Align the next observation to *recorded* (a whole observation of this run)."""
         ...
 
 

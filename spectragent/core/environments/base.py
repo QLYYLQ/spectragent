@@ -207,21 +207,21 @@ class Environment(Protocol):
     async def verify_restoration(self, recorded: Any, restored: Any) -> list[RestorationEvidence]:
         """What each ``RestorationSupport`` capability measured, in capability order.
 
-        *recorded* and *restored* are whole observations of this run. Empty
-        when no capability implements the protocol: there is nothing to
-        check. Measures only; the restorer judges.
+        *recorded* and *restored* are whole observations of this run. Each
+        entry is its capability's own evidence type, carrying its checks.
+        Empty when no capability implements the protocol: there is nothing
+        to check. ``strict | warn`` is the restorer's.
         """
         ...
 
-    async def align_next_observation(
-        self, recorded: Any, *, media_seek_timeout_s: float, media_end_lead_s: float
-    ) -> None:
+    async def align_next_observation(self, recorded: Any) -> None:
         """Ask every ``RestorationAlignment`` capability to align the next observation to *recorded*.
 
         Fans out in capability order; nothing happens without an implementer.
-        The alignment runs inside the next observation's capture and is
-        reported by the ``verify_restoration`` after it; the request never
-        reaches a later observation.
+        What to align is each capability's own configuration. The alignment
+        runs inside the next observation's capture and is reported by the
+        ``verify_restoration`` after it; the request never reaches a later
+        observation.
         """
         ...
 

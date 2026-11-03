@@ -29,12 +29,7 @@ agent:
     restorer:
       restorer_id: prefix_replay
       verify: warn
-      screenshot_max_distance: 5
       pace: recorded_timeline
-      media: align
-      media_time_tolerance_s: 1.0
-      media_seek_timeout_s: 2.0
-      media_end_lead_s: 0.5
     terminal_observation: true
   llm:
     model_type: openai
@@ -95,6 +90,11 @@ environment:
     dom_serializer:
       serializer_type: text
     retarget_tolerance_px: 2.0
+    screenshot_max_distance: 5
+    align_media: true
+    media_time_tolerance_s: 1.0
+    media_seek_timeout_s: 2.0
+    media_end_lead_s: 0.5
     backend:
       provider_id: local_chrome
       headless: true

@@ -44,6 +44,9 @@ from tests._helpers.branch_fakes import (
 )
 from tests._helpers.trace_builder import as_chat
 
+#: The fake capability's restoration evidence reads back through the capability registry.
+pytestmark = pytest.mark.usefixtures("branch_fake_registered")
+
 #: A four-step source: three clicks, then done.
 SOURCE_REPLIES = ["click 100", "click 101", "click 102", "done ok"]
 
@@ -181,7 +184,8 @@ class TestRecords:
         assert record.restoration is not None
         assert record.restoration.step == 2
         assert record.restoration.actions == []
-        assert [e.url_match for e in record.restoration.evidence] == [True]
+        assert [e.failed_checks() for e in record.restoration.evidence] == [[]]
+        assert [e.capability_id for e in record.restoration.evidence] == ["branchfake"]
 
     async def test_step_info_is_pinned_to_the_source(self, tmp_path: Path, source: Path) -> None:
         """The source ran ``max_steps=10`` on 2001-02-03; the branch loop says neither."""

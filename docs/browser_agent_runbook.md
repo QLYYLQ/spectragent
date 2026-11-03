@@ -359,7 +359,7 @@ trace.screenshot(0)          # 第 0 步截图的字节
 
 录制和分叉统一 learned（同一导出、seed 0）、显示指针、`Asia/Shanghai`、`zh-CN`、1280×720 窗口及视口，恢复采用 `warn` 与 `recorded_timeline`。learned 需要 `learned-mouse` extra 和指定的 `generator.npz` / `meta.json`。每项为何采用实跑值、原 runbook 值或用户新选择，以及输出预算、时间成本、旧源兼容和未验证范围，都在采用表中说明。新组合尚未整轮实跑；健康报告先复核为 `reviewed-exclusions.json` 再供所有下游使用。
 
-视频采集保留原始播放画面。分叉用 `media: align` 尝试对齐，`site_rules` 中的 `media_areas` 只调整声明页面的恢复比较，不修改原图；超过 75% 的像素遮罩不应用。`freeze`、共享时钟、落定等待与“主文档没加载完”的筛选各有作用，不能靠放宽截图阈值互相替代，详见数据飞轮手册“视频和动态页面”。
+视频采集保留原始播放画面。分叉用 browser 块的 `align_media: true` 尝试对齐，`site_rules` 中的 `media_areas` 只调整声明页面的恢复比较，不修改原图；超过 75% 的像素遮罩不应用。`freeze`、共享时钟、落定等待与“主文档没加载完”的筛选各有作用，不能靠放宽截图阈值互相替代，详见数据飞轮手册“视频和动态页面”。
 
 本轮采集与通用示例的入口分开选择：
 

@@ -34,7 +34,8 @@ class RestorationContext:
 
     Attributes:
         env: The woven environment: ``observe`` / ``retarget`` /
-            ``verify_restoration`` (guards and recorders see these calls).
+            ``verify_restoration`` / ``align_next_observation`` (guards and
+            recorders see these calls).
         act_fn: ``guarded_act`` — the only way a restored action executes.
         negotiated_obs: This run's observation negotiation result.
         source: Typed, read-only access to the source run's committed steps.

@@ -4,12 +4,13 @@
 ``RestorationSupport``: ``retarget`` goes to the capability owning the
 action's prefix when it implements the protocol and is the identity
 otherwise; ``verify_restoration`` fans out, in capability order, to every
-capability implementing it, and is empty when none does.
+capability implementing it — each answering with its own evidence type — and
+is empty when none does.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.capabilities.base import RestorationAlignment, RestorationSupport
@@ -31,6 +32,17 @@ class _Plain(CapabilityBase):
         raise AssertionError("retarget and verify must never execute an action")
 
 
+class _RouteEvidence(RestorationEvidence):
+    """The routing capabilities' evidence: one measure, one check on it."""
+
+    REASONS: ClassVar[tuple[str, ...]] = ("url_mismatch",)
+
+    url_match: bool
+
+    def failed_checks(self) -> list[str]:
+        return [] if self.url_match else ["url_mismatch"]
+
+
 class _Restoring(CapabilityBase):
     """Remaps ``index`` by an offset and reports a fixed measurement.
 
@@ -39,6 +51,7 @@ class _Restoring(CapabilityBase):
     """
 
     __registry_key__ = "restore_route_cap"
+    RestorationEvidence = _RouteEvidence
 
     offset: int
     url_match: bool
@@ -61,9 +74,9 @@ class _Restoring(CapabilityBase):
             detail="offset",
         )
 
-    async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationEvidence:
+    async def verify_restoration(self, recorded: Any, restored: Any) -> _RouteEvidence:
         self.verifies.append((recorded, restored))
-        return RestorationEvidence(capability_id=self.capability_id, url_match=self.url_match)
+        return _RouteEvidence(capability_id=self.capability_id, url_match=self.url_match)
 
 
 class _Second(_Restoring):
@@ -134,10 +147,11 @@ class TestVerifyRestoration:
         )
         recorded, restored = object(), object()
         evidence = await env.verify_restoration(recorded, restored)
-        assert [(e.capability_id, e.url_match) for e in evidence] == [
-            ("restore_route_second", False),
-            ("restore_route_cap", True),
+        assert [(e.capability_id, e.failed_checks()) for e in evidence] == [
+            ("restore_route_second", ["url_mismatch"]),
+            ("restore_route_cap", []),
         ]
+        assert all(isinstance(e, _RouteEvidence) for e in evidence), "each its own type"
         assert first.verifies == [(recorded, restored)]
         assert second.verifies == [(recorded, restored)]
 
@@ -151,7 +165,7 @@ class _Aligning(CapabilityBase):
 
     __registry_key__ = "restore_route_aligning"
 
-    requests: list[tuple[Any, float, float]]
+    requests: list[Any]
 
     def get_action_descriptors(self, **ctx: Any) -> list[ActionDescriptor]:
         return []
@@ -159,10 +173,8 @@ class _Aligning(CapabilityBase):
     async def execute_action(self, action: Action, **kw: Any) -> ActionResult:
         raise AssertionError("an alignment request must never execute an action")
 
-    async def align_next_observation(
-        self, recorded: Any, *, media_seek_timeout_s: float, media_end_lead_s: float
-    ) -> None:
-        self.requests.append((recorded, media_seek_timeout_s, media_end_lead_s))
+    async def align_next_observation(self, recorded: Any) -> None:
+        self.requests.append(recorded)
 
 
 class _SecondAligning(_Aligning):
@@ -186,10 +198,10 @@ class TestAlignNextObservation:
             {"a": first, "plain": _Plain(), "restore_route_cap": _restoring(), "b": second},
         )
         recorded = object()
-        await env.align_next_observation(recorded, media_seek_timeout_s=1.5, media_end_lead_s=0.4)
-        assert first.requests == [(recorded, 1.5, 0.4)]
-        assert second.requests == [(recorded, 1.5, 0.4)]
+        await env.align_next_observation(recorded)
+        assert first.requests == [recorded]
+        assert second.requests == [recorded]
 
     async def test_nothing_happens_without_an_implementer(self) -> None:
         env = make_env(EnvironmentBase, {"plain": _Plain()})
-        await env.align_next_observation(object(), media_seek_timeout_s=2.0, media_end_lead_s=0.5)
+        await env.align_next_observation(object())

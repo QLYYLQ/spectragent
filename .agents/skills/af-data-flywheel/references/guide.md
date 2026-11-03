@@ -406,16 +406,18 @@ agent:
       restorer:
         restorer_id: prefix_replay
         verify: strict                 # warn: record failed checks and go on
-        screenshot_max_distance: 5     # 0-64, Hamming distance of 64-bit dHashes
         pace: none                     # recorded_llm_latency: wait as the source waited;
                                        # recorded_timeline: keep to the source's timeline
-        media: align                   # none: compare media state, align nothing (control arm)
-        media_time_tolerance_s: 1.0    # seconds a media position may differ and still pass
-        media_seek_timeout_s: 2.0      # each alignment seek, and the play after it
-        media_end_lead_s: 0.5          # an ended source is played into its end from here; < seek timeout
     llm: { ..., temperature: 0.8 }     # the teacher; model and sampling may differ (shipped: 0.8)
-# the browser block is the replay block plus retarget_tolerance_px (2.0 CSS px), and
-# trace_writer.archive is the replay's: browser.replay_log, browser.storage, browser.dom_raw
+# the browser block is the replay block plus the browser's restoration knobs (architecture
+# §4.9: each capability judges and aligns its own state; an ordinary run never reads them):
+#   retarget_tolerance_px: 2.0       # CSS px a recorded element may move and still be re-found
+#   screenshot_max_distance: 5       # 0-64, Hamming distance of 64-bit dHashes
+#   align_media: true                # false: compare media state, align nothing (control arm)
+#   media_time_tolerance_s: 1.0      # seconds a media position may differ and still pass
+#   media_seek_timeout_s: 2.0        # each alignment seek, and the play after it
+#   media_end_lead_s: 0.5            # an ended source is played into its end from here; < seek timeout
+# and trace_writer.archive is the replay's: browser.replay_log, browser.storage, browser.dom_raw
 task_loader:
   - benchmark_name: trace_branches
     data_dir: traces/recorded          # the sources root (null: traces)
@@ -534,15 +536,16 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
   observation screenshot carries `media`: each `<video>` / `<audio>` element's exact
   position, paused state, duration, frame, order and box, read just before and just after
   the pixels within the capability's `media_state_timeout_s` (1 s; a read that runs out is
-  unknown, never a failed screenshot). The restorer compares it (`media_mismatch`, judged
-  before the screenshot distance) and, under `media: align`, has each restored observation
+  unknown, never a failed screenshot). The browser's evidence compares it (`media_mismatch`,
+  judged before the screenshot distance) and, under the browser's `align_media: true`,
+  has each restored observation
   (the checkpoint's included) aligned inside its capture, after the settle wait and before
   the screenshot: a paused source is paused and sought; a playing one sought and played, and
   that capture takes its screenshot before the DOM (otherwise the video plays on through the
   DOM capture); an ended one sought `media_end_lead_s` before its end and played into it. A seek that does
   not complete within `media_seek_timeout_s`, or lands off target, is rolled back and fails
-  the step. `media_end_lead_s` not shorter than `media_seek_timeout_s` is refused at
-  construction. Nothing is aligned after the checkpoint; `pace` only approximates a position.
+  the step. `media_end_lead_s` not shorter than `media_seek_timeout_s` is refused when
+  the capability is constructed. Nothing is aligned after the checkpoint; `pace` only approximates a position.
 - `pace` (architecture §4.1 "恢复节奏"). `recorded_llm_latency` sleeps a step's recorded
   `llm_latency_ms` before its actions, so observation, action and recording time still drift.
   `recorded_timeline` keeps to the source's timeline from its step-0 observation on, read
@@ -1032,11 +1035,12 @@ already collected; regenerate all the same.
   capability may report a count as the increase since its previous call, and the media
   alignment it did since then.
 - To have state that moves on its own clock (media playback) put back, call
-  `env.align_next_observation(recorded, media_seek_timeout_s=..., media_end_lead_s=...)`
-  right before the observation it is for. It only books the alignment; a capability
-  implementing `RestorationAlignment` acts inside that one capture and reports it with the
-  next `verify_restoration`, which clears the booking. Never book one after the checkpoint. Judge with
-  `restore/checks.py::judge`, whose reason order is fixed (architecture §5.3,
+  `env.align_next_observation(recorded)` right before the observation it is for. It only
+  books the alignment; a capability implementing `RestorationAlignment` decides by its own
+  knobs what to align, acts inside that one capture and reports it with the next
+  `verify_restoration`, which clears the booking. Never book one after the checkpoint.
+  Judge with `restore/checks.py::judge`: each evidence's own checks
+  (`failed_checks()`, in evidence order), then the action reasons (architecture §5.3,
   `RestorationCheck`).
 - Under `strict`, raise `RestorationDivergedError(check, observation)` at the first failed
   check, before any further action. Let `RunAbort` propagate;
@@ -1372,7 +1376,7 @@ value on an existing one.
 | A main-frame document miss (`diverged`) | The page asked for a document the recording never fetched, such as a time-stamped URL. A restored step shows `document_miss` |
 | `IncompatibleCheckpointError` | The branch's agent, closed-set or numeric knobs, memory, `max_actions_per_step`, negotiation, seed messages or replayed calls differ from the source's; the error names both values. Fix the branch YAML |
 | `RestorationDivergedError` | `verify: strict` met a failed check; read `StepRecord.restoration.reasons`. `verify: warn` records every step's check for diagnosis |
-| A restored step fails `media_mismatch` | Read `restoration.evidence[*].media`: `comparisons` (per element `matched` / `missing` / `extra` / `ambiguous`, the two positions and paused states at the reading both sides took), `recorded_unreachable_frames` / `restored_unreachable_frames` (a frame neither read reached: its media is unknown, so the step cannot be restored), `alignment` (`aligned`, `already_aligned`, `failed` with `rolled_back`, `not_restorable`, `unknown`; `null` under `media: none`). A `failed` seek beside `range_uncovered` misses for the same media URL means the recording never fetched those bytes. `comparisons: null` with a `detail` means no comparison was made (a source recorded before the field). On a video site whose playback cannot be made the same offline, confirm the failures sit in media state or in the player's boxes (re-verify with the mask), then declare the video or search page in `configs/replay_rules/media_areas.yaml` with an evidence comment; never a non-video site |
+| A restored step fails `media_mismatch` | Read `restoration.evidence[*].media`: `comparisons` (per element `matched` / `missing` / `extra` / `ambiguous`, the two positions and paused states at the reading both sides took), `recorded_unreachable_frames` / `restored_unreachable_frames` (a frame neither read reached: its media is unknown, so the step cannot be restored), `alignment` (`aligned`, `already_aligned`, `failed` with `rolled_back`, `not_restorable`, `unknown`; `null` under the browser's `align_media: false`). A `failed` seek beside `range_uncovered` misses for the same media URL means the recording never fetched those bytes. `comparisons: null` with a `detail` means no comparison was made (a source recorded before the field). On a video site whose playback cannot be made the same offline, confirm the failures sit in media state or in the player's boxes (re-verify with the mask), then declare the video or search page in `configs/replay_rules/media_areas.yaml` with an evidence comment; never a non-video site |
 | A restored step shows `url_mismatch` where the two URLs differ only in one query parameter whose value changes on every replay | The page writes it into its own address (`history.replaceState`, client routing). Confirm in the source run's network archive that no request carries it (a document request that does makes it part of the navigation) and that it selects no content, then add a page-URL rule to `configs/replay_rules/page_urls.yaml` (`page_urls: [{id, scope: {host, path}, ignore_query}]`, architecture §4.14). The check's `restoration.evidence[*].url_ignored_query` / `url_rule_ids` then name what the comparison left out. Never list keyword, page, order, id or filter parameters |
 | A restored step right after a click shows `url_mismatch` against a URL from another tab | Compare the step's `focus_moved` in the source and the branch (any browser fragment of that step's observation): the branch's `new_tabs` differs from the recording's, or the tab opened later than the observation captured in one of the runs. Record, replay and branch keep one `new_tabs` |
 | An agent keeps clicking a link that opens a new tab and sees no change | The run has `new_tabs: stay`, or the tab never finished its first navigation within 10 s (a WARNING `the focus cannot move to tab ...`), or Chrome reported it opened without the user's activation (the tab is listed in `browser_meta.tabs`, the trace has no `focus_moved`) |

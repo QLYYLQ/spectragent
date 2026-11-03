@@ -538,7 +538,7 @@ class TestSamePathFidelity:
 
     def test_media_coverage_mismatches_and_alignment_by_site(self, chain: ChainRuns) -> None:
         """Media is counted only where a comparison was actually made; alignment by outcome."""
-        from spectragent.schemas.restoration import (
+        from spectragent.core.capabilities.browser.restoration_evidence import (
             MediaAlignment,
             MediaComparison,
             MediaEvidence,
@@ -588,7 +588,7 @@ class TestSamePathFidelity:
 
     def test_steps_under_media_area_rules_are_counted_by_site(self, chain: ChainRuns) -> None:
         """A verdict that rests on a media-area declaration is visible, not just a higher rate."""
-        from spectragent.schemas.restoration import MediaAreaEvidence
+        from spectragent.core.capabilities.browser.restoration_evidence import MediaAreaEvidence
 
         assert same_path_fidelity(chain).overall.media_area_steps == 0
         measured = open_chain(chain.layout)

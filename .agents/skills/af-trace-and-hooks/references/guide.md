@@ -213,18 +213,28 @@ came in an earlier step.
   `TraceSchemaError` naming the file; an effect is never left as a dict, and
   `ActionResult` itself refuses a bare mapping. A missing `effect` and "this action
   reports none" are the same fact, so the trace format did not change.
-- **Restoration evidence.** A restored step's `restoration.evidence[*]` is one
-  `RestorationEvidence` per capability. Besides URL, signature, screenshot distance and
-  document misses, the browser's carries `media` (`MediaEvidence`): `comparisons`
-  (each media element matched / missing / extra / ambiguous, live or not, and the two
-  sides' position and paused state from the reading both took; `None` when either side
-  had no media state, with `detail`), `recorded_unreachable_frames` /
-  `restored_unreachable_frames` (frames neither read reached), and `alignment` (what
-  `media: align` did before the capture, one `MediaAlignment` per recorded element;
-  `None` when no alignment was requested). The screenshot sidecar's own `media` is `None`
-  — and absent from its JSON — for evidence from before the field. Unknown never decides:
-  a `None` value, a comparison not made or an alignment outcome `unknown` takes no part in
-  a verdict; the restorer applies its tolerances (`checks.py::media_failed`).
+- **Restoration evidence.** A restored step's `restoration.evidence[*]` is one evidence per
+  restoring capability, each its capability's own subclass of
+  `schemas/restoration.py::RestorationEvidence`, written whole. It reads back the way an
+  effect does (`core/trace/effects.py::restore_restoration_evidence`): the reader looks the
+  evidence's `capability_id` up in the existing `CapabilityRegistrar` and validates the
+  payload with the `RestorationEvidence` that capability class names; an unregistered
+  key, a capability without one, or a payload it refuses is a `TraceSchemaError`, and
+  `RestorationCheck` refuses a bare mapping. Each evidence carries its checks
+  (`REASONS`, `failed_checks()`, from its own fields and the limits it recorded); the
+  check's `reasons` are those checks, in evidence order, then the restorer's action
+  reasons. The browser's (`BrowserRestorationEvidence`, `restoration_evidence.py`)
+  carries URL, signature, screenshot distance, document misses, the limits
+  `screenshot_max_distance` / `media_time_tolerance_s`, and `media` (`MediaEvidence`):
+  `comparisons` (each media element matched / missing / extra / ambiguous, live or not,
+  and the two sides' position and paused state from the reading both took; `None` when
+  either side had no media state, with `detail`), `recorded_unreachable_frames` /
+  `restored_unreachable_frames` (frames neither read reached), and `alignment` (what the
+  browser's `align_media: true` did before the capture, one `MediaAlignment` per
+  recorded element; `None` when no alignment was requested). The screenshot sidecar's own
+  `media` is `None` — and absent from its JSON — for evidence from before the field.
+  Unknown never decides: a `None` value, a comparison not made or an alignment outcome
+  `unknown` takes no part in a verdict (`restoration_evidence.py::media_failed`).
 
 ## 5. Configuration and negotiation reach the trace
 

@@ -13,7 +13,9 @@ the real registrars:
 - ``history_source`` reaches the loop independently of environment verification;
 - prompt contributions configure an existing Hook and an independent wired helper;
 - a mistyped ``restorer_id`` / ``loop_id``, an unknown knob and a value outside
-  a closed set are refused by validation.
+  a closed set are refused by validation, and so is a capability's restoration
+  knob written on the restorer (the screenshot limit and the media knobs are the
+  browser's, ``docs/architecture_design.md`` §4.9).
 """
 
 from __future__ import annotations
@@ -69,7 +71,6 @@ class TestNestedUnions:
                 restorer={
                     "restorer_id": "prefix_replay",
                     "verify": "warn",
-                    "screenshot_max_distance": 12,
                     "pace": "recorded_llm_latency",
                 },
             ),
@@ -77,11 +78,7 @@ class TestNestedUnions:
         assert isinstance(loop, BranchLoop)
         assert (loop.continue_steps, loop.max_steps, loop.terminal_observation) == (2, 7, True)
         assert isinstance(loop.restorer, PrefixReplayRestorer)
-        assert (
-            loop.restorer.verify,
-            loop.restorer.screenshot_max_distance,
-            loop.restorer.pace,
-        ) == ("warn", 12, "recorded_llm_latency")
+        assert (loop.restorer.verify, loop.restorer.pace) == ("warn", "recorded_llm_latency")
 
     @pytest.mark.parametrize("pace", ["none", "recorded_llm_latency", "recorded_timeline"])
     def test_every_pace_reaches_the_restorer_and_is_recorded(
@@ -102,66 +99,25 @@ class TestNestedUnions:
             digests.add(config.configuration_digest(resolved=resolved))
         assert len(digests) == 3
 
-    def test_the_media_knobs_reach_the_restorer(self, composer: ConfigComposer) -> None:
-        loop = _loop(
-            composer,
-            _branch(
-                restorer={
-                    "restorer_id": "prefix_replay",
-                    "media": "none",
-                    "media_time_tolerance_s": 2.5,
-                    "media_seek_timeout_s": 4.0,
-                    "media_end_lead_s": 1.5,
-                }
-            ),
-        )
-        restorer = loop.restorer
-        assert (restorer.media, restorer.media_time_tolerance_s, restorer.media_seek_timeout_s) == (
-            "none",
-            2.5,
-            4.0,
-        )
-        assert restorer.media_end_lead_s == 1.5
-        defaulted = _loop(composer, _branch(restorer={"restorer_id": "prefix_replay"})).restorer
-        assert (defaulted.media, defaulted.media_time_tolerance_s) == ("align", 1.0)
-        assert defaulted.media_seek_timeout_s == 2.0
-        assert defaulted.media_end_lead_s == 0.5
-
-    def test_an_end_lead_that_cannot_finish_in_time_is_refused(
-        self, composer: ConfigComposer
-    ) -> None:
-        raw = _branch(
-            restorer={
-                "restorer_id": "prefix_replay",
-                "media_seek_timeout_s": 1.0,
-                "media_end_lead_s": 1.0,
-            }
-        )
-        with pytest.raises(Exception, match="media_end_lead_s"):
-            composer.compose(raw)
-
     @pytest.mark.parametrize(
         "knob",
         [
-            {"media": "aligned"},
-            {"media_time_tolerance_s": -1},
-            {"media_seek_timeout_s": 0},
-            {"media_end_lead_s": 0},
+            {"screenshot_max_distance": 5},
+            {"media": "align"},
+            {"media_time_tolerance_s": 1.0},
+            {"media_seek_timeout_s": 2.0},
+            {"media_end_lead_s": 0.5},
         ],
-        ids=["media-value", "tolerance-range", "seek-timeout-range", "end-lead-range"],
+        ids=["screenshot-limit", "media", "media-tolerance", "seek-timeout", "end-lead"],
     )
-    def test_a_media_knob_outside_its_range_is_refused(
+    def test_a_capability_restoration_knob_is_not_the_restorers(
         self, composer: ConfigComposer, knob: dict[str, Any]
     ) -> None:
+        """The browser's checks and alignment are configured on the browser block (§4.9)."""
         with pytest.raises(ValidationError):
             composer.top_level_type.model_validate(
                 _branch(restorer={"restorer_id": "prefix_replay", **knob})
             )
-
-    def test_the_shipped_restoring_configs_write_media_align(self) -> None:
-        for path in (SHIPPED_BRANCH, CONFIG.parent / "flywheel" / "same_path_ui_tars_archive.yaml"):
-            raw = yaml.safe_load(path.read_text("utf-8"))
-            assert raw["agent"][0]["agent_loop"]["restorer"]["media"] == "align", path.name
 
     def test_a_hand_built_loop_gets_the_default_restorer(self) -> None:
         loop = BranchLoop()
@@ -177,7 +133,7 @@ class TestNestedUnions:
 
     def test_the_restorer_block_defaults_its_knobs(self, composer: ConfigComposer) -> None:
         loop = _loop(composer, _branch(restorer={"restorer_id": "prefix_replay"}))
-        assert (loop.restorer.verify, loop.restorer.screenshot_max_distance) == ("strict", 5)
+        assert (loop.restorer.verify, loop.restorer.pace) == ("strict", "none")
         assert loop.continue_steps == 0
         assert loop.history_source == "source"
 
@@ -267,10 +223,6 @@ class TestTyposRejected:
             pytest.param(
                 {"restorer": {"restorer_id": "prefix_replay", "verify": "loose"}},
                 id="verify-value",
-            ),
-            pytest.param(
-                {"restorer": {"restorer_id": "prefix_replay", "screenshot_max_distance": 65}},
-                id="distance-range",
             ),
             pytest.param(
                 {"restorer": {"restorer_id": "prefix_replay", "pace": "recorded_timelines"}},

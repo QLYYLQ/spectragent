@@ -41,6 +41,9 @@ file to an image judge.
 ``Effect`` of the action its ``effect_id`` names, found in the action
 registry (``effects.py``) — never a dict. A key no action answers to, or a
 payload its ``Effect`` refuses, is a :class:`TraceSchemaError` naming the file.
+So is every restoration evidence of a restoration check: rebuilt as the
+``RestorationEvidence`` of the capability its ``capability_id`` names, found
+in the capability registry.
 
 **A recorded prompt comes back whole.** A call record holds a reference
 where each image its prompt sent inline stood; the image is stored once per
@@ -64,7 +67,12 @@ from typing import Any, Literal, TypeVar
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from spectragent.core.registries import discover_implementations
-from spectragent.core.trace.effects import registered_effect, restore_effects
+from spectragent.core.trace.effects import (
+    registered_effect,
+    registered_restoration_evidence,
+    restore_effects,
+    restore_restoration_evidence,
+)
 from spectragent.core.trace.encoding import (
     ARCHIVE_META_KEY,
     CONFIG_FILE,
@@ -97,7 +105,6 @@ from spectragent.core.trace.models import (
     TraceConfig,
     TraceManifest,
 )
-from spectragent.schemas.action import ActionEffect
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.eval_result import EvalResult
 from spectragent.schemas.observation._registrar import (
@@ -120,7 +127,9 @@ T = TypeVar("T")
 #: Where fragment classes live. A reader in an evaluation process may never
 #: have imported the module that registers one — browser fragments register
 #: when their watchdog's module is imported. Action classes, whose ``Effect``
-#: reads a recorded action effect back, live under the capabilities too.
+#: reads a recorded action effect back, and capability classes, whose
+#: ``RestorationEvidence`` reads a recorded restoration evidence back, live
+#: under the capabilities too.
 _FRAGMENT_PACKAGES = ("spectragent.schemas", "spectragent.core.capabilities")
 
 #: The local name every capability's screenshot fragment carries
@@ -300,7 +309,7 @@ class RunTrace:
         payload = _read_json_object(path)
         artifact = self._read_artifact(files.artifact) if files.artifact is not None else None
         try:
-            payload = restore_effects(cls, payload, self._effect_class)
+            payload = self._restore_types(cls, payload)
             return decode_fragment(key, cls, payload, artifact)
         except (ValueError, RecursionError) as exc:
             # ``RecursionError``: JSON nested deeper than a decoder can walk —
@@ -922,7 +931,7 @@ class RunTrace:
         path = self._listed(entry.step_file)
         value = _load_json(path, _read_bytes(path), "a StepRecord")
         try:
-            value = restore_effects(StepRecord, value, self._effect_class)
+            value = self._restore_types(StepRecord, value)
         except ValueError as exc:
             raise TraceSchemaError(
                 f"{path} does not parse as a StepRecord: {exc}", path=path
@@ -1061,37 +1070,44 @@ class RunTrace:
             )
         return entry.fragments[keys[0]]
 
-    def _effect_class(self, effect_id: str) -> type[ActionEffect]:
-        """The ``Effect`` of the action *effect_id* names, importing the action packages once on a miss.
-
-        Raises:
-            ValueError: no action is registered under the key even after the
-                import, or it declares no ``Effect`` (the caller names the file).
-        """
-        try:
-            return registered_effect(effect_id)
-        except ValueError:
-            if self._discovered:
-                raise
-        self._discovered = True
-        discover_implementations(*_FRAGMENT_PACKAGES)
-        return registered_effect(effect_id)
+    def _restore_types(self, model: type[BaseModel], data: Any) -> Any:
+        """*data* with its recorded action effects and restoration evidence rebuilt as their types."""
+        data = restore_effects(model, data, lambda key: self._resolved(registered_effect, key))
+        return restore_restoration_evidence(
+            model, data, lambda key: self._resolved(registered_restoration_evidence, key)
+        )
 
     def _fragment_class(self, key: str) -> type[FragmentBase]:
-        """The class registered under *key*, importing the fragment packages once on a miss."""
-        cls = _registered(key)
-        if cls is None and not self._discovered:
-            self._discovered = True
-            discover_implementations(*_FRAGMENT_PACKAGES)
-            cls = _registered(key)
-        if cls is None:
+        """The class registered under *key*."""
+        try:
+            return self._resolved(_registered_fragment, key)
+        except ValueError:
             raise TraceSchemaError(
                 f"{self._trace_dir} records fragment {key!r}, and no class is registered under "
                 f"that key, even after importing {list(_FRAGMENT_PACKAGES)}. The module that "
                 f"defines it must be importable by the reader.",
                 path=self._manifest_path,
-            )
-        return cls
+            ) from None
+
+    def _resolved(self, resolve: Callable[[str], T], key: str) -> T:
+        """*resolve(key)*, importing :data:`_FRAGMENT_PACKAGES` once on the reader's first miss.
+
+        Fragment, action and capability classes register when their modules
+        are imported, and a reader in another process may not have imported
+        them yet. After that one import a miss is final.
+
+        Raises:
+            ValueError: *resolve* finds nothing even after the import (the
+                caller names the file).
+        """
+        try:
+            return resolve(key)
+        except ValueError:
+            if self._discovered:
+                raise
+        self._discovered = True
+        discover_implementations(*_FRAGMENT_PACKAGES)
+        return resolve(key)
 
 
 def _run_version(record: ArchiveRecord) -> int:
@@ -1099,12 +1115,15 @@ def _run_version(record: ArchiveRecord) -> int:
     return record.run_version if record.run_version is not None else -1
 
 
-def _registered(key: str) -> type[FragmentBase] | None:
+def _registered_fragment(key: str) -> type[FragmentBase]:
+    """The fragment class registered under *key* (``ValueError`` when there is none)."""
     try:
         cls = ObservationRegistrar.get(key)
     except KeyError:
-        return None
-    return cls if isinstance(cls, type) and issubclass(cls, FragmentBase) else None
+        cls = None
+    if not (isinstance(cls, type) and issubclass(cls, FragmentBase)):
+        raise ValueError(f"no fragment class is registered under {key!r}")
+    return cls
 
 
 def _read_bytes(path: Path) -> bytes:

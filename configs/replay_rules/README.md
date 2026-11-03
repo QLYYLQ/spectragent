@@ -533,12 +533,12 @@ moment, a player does not load offline, and stacked `<video>` elements trade pla
 Restoration verification then fails with `media_mismatch` and with a screenshot distance
 that sits in the player, although the rest of the page is the same. A `media_areas` rule
 declares such a page. Recording is unchanged (videos keep playing, so the data stays
-realistic), and so is media alignment (`media: align`). When a branch or same-path replay
+realistic), and so is media alignment (the browser's `align_media: true`). When a branch or same-path replay
 verifies a restored observation of a declared page:
 
 1. the media playback state is still measured and kept in `restoration.evidence[*].media`,
-   but the restorer does not judge it: no `media_mismatch` from comparisons, unreachable
-   frames or alignment outcomes;
+   but the browser's media check does not judge it: no `media_mismatch` from comparisons,
+   unreachable frames or alignment outcomes;
 2. the boxes both screenshots' media facts measured are masked out of both images before
    the screenshot distance: every `<video>` / `<audio>` element and every embedded frame
    whose own media read did not answer (what it plays is unknown; Tencent Video's player is

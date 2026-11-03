@@ -199,16 +199,28 @@ CDP `targetId`), or if you can tell whether a restored world looks like the reco
 implement the optional protocol `RestorationSupport` (`core/capabilities/base.py`, §4.9):
 
 ```python
+RestorationEvidence = MyRestorationEvidence   # class attribute: your evidence type
 async def retarget(self, action: Action, recorded: Any, restored: Any) -> Retarget: ...
-async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationEvidence: ...
+async def verify_restoration(self, recorded: Any, restored: Any) -> MyRestorationEvidence: ...
 ```
 
 - **Computes, never acts.** `retarget` returns the action to execute (or a `failure`,
   `not_found` / `ambiguous`, with a `detail`); the restorer executes it through
-  `guarded_act`. `verify_restoration` *measures* (`url_match`, `signature_*`,
-  `screenshot_distance`, `document_misses`, `media`; each `None` when not measured);
-  thresholds and `strict | warn` are the restorer's (`core/loops/restore/checks.py::judge`),
-  and a `None` never decides a verdict.
+  `guarded_act`. `method` is `identity` (the framework's word for "as recorded") or your
+  own word for how you re-found the target (the browser: `geometry_signature`,
+  `tab_order_url`).
+- **Your evidence is your own type** (§4.9 "恢复证据按 capability 分型"). Subclass
+  `schemas/restoration.py::RestorationEvidence` in your package: the facts you measure
+  (each `None` when not measured), the limits your checks apply (your own `Annotated`
+  knobs, recorded on every evidence), a class-level `REASONS` (your check names, in the
+  order they are reported) and `failed_checks()` (the judgement, derived from the fields
+  alone; a `None` never decides). Name it on the capability class
+  (`RestorationEvidence = ...`): the trace reader finds it through the capability registry
+  by the evidence's `capability_id`, as it finds an action's `Effect`. The restorer adds
+  only the action reasons (`retarget_*`, `action_failed`) and `strict | warn`
+  (`core/loops/restore/checks.py::judge`). The browser's is
+  `core/capabilities/browser/restoration_evidence.py::BrowserRestorationEvidence`
+  (`screenshot_max_distance`, `media_time_tolerance_s` are BrowserCapability knobs).
 - **Reads the two observations handed to it**, whole `NegotiatedObservation`s. Read
   your own fragments by local name and check their type (a failed capture is a
   `FragmentFailure`, a fragment this run did not negotiate is absent). No step numbers, no
@@ -229,8 +241,11 @@ async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationE
 - **Tests it owes**: an `isinstance(capability, RestorationSupport)` check; every retarget
   family and both failures, with the recorded side read back through the trace encoding
   (the browser: `test_browser_restoration.py`, where a decoded selector-map entry must sign
-  like its live node); one fixture per measured reason, judged by `judge`; and, if you
-  can run the real thing, a live branch (`test_browser_branch_live.py`).
+  like its live node); one case per check of your evidence's `failed_checks()` and its
+  limits (`test_browser_restoration_evidence.py`); and, if you can run the real thing, a
+  live branch (`test_browser_branch_live.py`). A test fake that verifies under its own
+  `capability_id` must be registered for the test so its trace reads back
+  (`tests/_helpers/branch_fakes.py::register_branch_fake`).
 
 ### If some of your state moves on its own clock — `RestorationAlignment` (optional)
 
@@ -242,15 +257,16 @@ If you can put such state back, implement the second optional protocol
 because a capability that retargets and verifies need not have anything to align:
 
 ```python
-async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: float,
-                                 media_end_lead_s: float) -> None: ...
+async def align_next_observation(self, recorded: Any) -> None: ...
 ```
 
 - **A request, not an act.** It only records that the *next* observation is to be aligned
-  to `recorded`; it touches nothing. The restorer (`prefix_replay` with `media: align`)
-  calls it before every restored observation, the checkpoint's included, through
+  to `recorded`; it touches nothing. The restorer (`prefix_replay`) calls it before every
+  restored observation, the checkpoint's included, through
   `EnvironmentBase.align_next_observation`, which fans out to implementers in capability
-  order (none: nothing happens).
+  order (none: nothing happens). Whether you align and every bound you keep are your own
+  knobs (the browser: `align_media: true | false`, `media_seek_timeout_s`,
+  `media_end_lead_s`); the restorer has no switch for it.
 - **Aligned inside that observation's own capture**, after the settle wait and right
   before the capture fires (the browser: `_capture_once` → `_align_media`, once per cycle,
   on the first attempt). Earlier, a playing video drifts during the settle; in the Loop,
@@ -265,18 +281,17 @@ async def align_next_observation(self, recorded: Any, *, media_seek_timeout_s: f
   the report whether or not a capture acted on it. So nothing is ever aligned after the
   checkpoint: policy steps and the terminal observation run in real time.
 - **Reported, never silent.** What was done comes back as evidence from the next
-  `verify_restoration` (browser: `RestorationEvidence.media.alignment`, one
+  `verify_restoration` (browser: `BrowserRestorationEvidence.media.alignment`, one
   `MediaAlignment` per recorded element: `aligned` / `already_aligned` / `failed` /
   `not_restorable` / `unknown`, with target, start, reached state and timing). An
   operation that does not complete within its budget is undone (`rolled_back`) and fails
   the step (`media_mismatch`); an unknown target is recorded as `unknown` and decides
-  nothing. Every budget is a restorer YAML field (`media_seek_timeout_s`,
-  `media_end_lead_s`, `media_time_tolerance_s`) or a capability one
-  (`media_state_timeout_s`), and success is judged on the element's own state, not on
-  side signals.
+  nothing. Every budget is a capability knob (`media_seek_timeout_s`, `media_end_lead_s`,
+  `media_time_tolerance_s`, `media_state_timeout_s`), and success is judged on the
+  element's own state, not on side signals.
 - **Tests it owes**: an `isinstance(capability, RestorationAlignment)` check; a request
   that reaches only the next cycle; success, failure with roll-back, and an unknown
-  target judged by `judge`; and a live case (`test_browser_media_live.py`,
+  target judged by your evidence's `failed_checks()`; and a live case (`test_browser_media_live.py`,
   `test_browser_media_branch_live.py`).
 
 ---

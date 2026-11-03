@@ -37,6 +37,9 @@ from spectragent.core.capabilities.browser.effects import (
     TextInputEffect,
     ViewportPoint,
 )
+from spectragent.core.capabilities.browser.restoration_evidence import (
+    BrowserRestorationEvidence,
+)
 from spectragent.schemas.action import Action, ActionEffect, ActionResult
 from spectragent.schemas.restoration import RestorationCheck
 from spectragent.schemas.step_record import StepRecord
@@ -130,7 +133,9 @@ def action_rows(actions: list[Action], results: list[ActionResult]) -> list[Acti
 def restoration_summary(check: RestorationCheck | None) -> RestorationSummary | None:
     if check is None:
         return None
-    evidence = check.evidence[0] if check.evidence else None
+    evidence = next(
+        (item for item in check.evidence if isinstance(item, BrowserRestorationEvidence)), None
+    )
     return RestorationSummary(
         verdict=check.verdict,
         reason=check.reason,

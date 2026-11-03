@@ -1,18 +1,22 @@
 """Restoration contracts: StepRecord origins, checks, checkpoints, provenance, TaskContext.
 
 ``docs/architecture_design.md`` §5.3 ("步的来源与恢复校验", ``TraceConfig.branch``)
-and §4.10 (``TaskContext``).
+and §4.10 (``TaskContext``). The framework holds the generic shapes only: each
+capability's evidence is its own subclass with its own checks (a test type
+here; the browser's in ``test_browser_restoration_evidence.py``), and the
+framework's own reasons are the action ones.
 """
 
 from __future__ import annotations
 
 import json
+from typing import ClassVar
 
 import pytest
 from pydantic import ValidationError
 
 from spectragent.schemas import (
-    REASON_ORDER,
+    ACTION_REASONS,
     Action,
     BranchProvenance,
     Checkpoint,
@@ -23,7 +27,24 @@ from spectragent.schemas import (
     StepRecord,
     TaskContext,
 )
-from spectragent.schemas.restoration import MaskedArea, MediaAreaEvidence
+from spectragent.schemas.restoration import IDENTITY, ordered_reasons
+
+
+class _PageEvidence(RestorationEvidence):
+    """A capability's evidence with two checks, failing the ones ``failing`` names."""
+
+    REASONS: ClassVar[tuple[str, ...]] = ("url_mismatch", "screenshot_distance")
+
+    failing: tuple[str, ...] = ()
+
+    def failed_checks(self) -> list[str]:
+        return [reason for reason in self.REASONS if reason in self.failing]
+
+
+class _OtherEvidence(_PageEvidence):
+    """A second capability's evidence, sharing one check name with the first."""
+
+    REASONS: ClassVar[tuple[str, ...]] = ("app_mismatch", "screenshot_distance")
 
 
 def _check(**overrides: object) -> RestorationCheck:
@@ -33,15 +54,7 @@ def _check(**overrides: object) -> RestorationCheck:
         "reason": "url_mismatch",
         "reasons": ["url_mismatch", "screenshot_distance"],
         "evidence": [
-            RestorationEvidence(
-                capability_id="browser",
-                url_match=False,
-                recorded_url="https://a.test/",
-                restored_url="https://a.test/other",
-                signature_match=True,
-                screenshot_distance=9,
-                document_misses=0,
-            )
+            _PageEvidence(capability_id="page", failing=("url_mismatch", "screenshot_distance"))
         ],
         "actions": [
             RestoredAction(
@@ -74,8 +87,17 @@ class TestStepRecordOrigin:
         assert record.restoration is None
 
     def test_restored_step_round_trips(self) -> None:
+        """Through its JSON and the typed evidence restore the trace reader runs."""
+        from spectragent.core.trace.effects import restore_restoration_evidence
+
         record = StepRecord(step=2, origin="restored", restoration=_check())
-        back = StepRecord.model_validate_json(record.model_dump_json())
+        written = json.loads(record.model_dump_json())
+        assert written["restoration"]["evidence"][0]["failing"] == [
+            "url_mismatch",
+            "screenshot_distance",
+        ], "the evidence is written whole, as its own type"
+        data = restore_restoration_evidence(StepRecord, written, lambda _key: _PageEvidence)
+        back = StepRecord.model_validate(data)
         assert back == record
         assert back.restoration is not None
         assert back.restoration.actions[0].executed == Action(
@@ -88,17 +110,8 @@ class TestStepRecordOrigin:
 
 
 class TestRestorationCheck:
-    def test_reason_order_is_the_literal_order(self) -> None:
-        assert REASON_ORDER == (
-            "document_miss",
-            "url_mismatch",
-            "retarget_not_found",
-            "retarget_ambiguous",
-            "action_failed",
-            "signature_mismatch",
-            "media_mismatch",
-            "screenshot_distance",
-        )
+    def test_the_frameworks_own_reasons_are_the_action_ones(self) -> None:
+        assert ACTION_REASONS == ("retarget_not_found", "retarget_ambiguous", "action_failed")
 
     def test_ok_has_no_reasons(self) -> None:
         check = RestorationCheck(step=0, verdict="ok")
@@ -114,6 +127,14 @@ class TestRestorationCheck:
                 {"reasons": ["screenshot_distance", "url_mismatch"]}, id="reasons-out-of-order"
             ),
             pytest.param({"reasons": ["url_mismatch", "url_mismatch"]}, id="reasons-repeated"),
+            pytest.param(
+                {"reason": "app_mismatch", "reasons": ["app_mismatch"]},
+                id="a-check-no-evidence-here-declares",
+            ),
+            pytest.param(
+                {"reason": "action_failed", "reasons": ["action_failed", "url_mismatch"]},
+                id="an-action-reason-before-the-observations",
+            ),
         ],
     )
     def test_inconsistent_checks_are_refused(self, overrides: dict[str, object]) -> None:
@@ -124,101 +145,42 @@ class TestRestorationCheck:
         with pytest.raises(ValidationError):
             RestorationCheck(step=0, verdict="warn")
 
-    def test_evidence_measures_default_to_unmeasured(self) -> None:
-        evidence = RestorationEvidence(capability_id="browser")
-        assert evidence.url_match is None
-        assert evidence.signature_match is None
-        assert evidence.screenshot_distance is None
-        assert evidence.document_misses is None
-        assert (evidence.signature_missing, evidence.signature_extra) == (0, 0)
-        assert (evidence.url_ignored_query, evidence.url_rule_ids) == ([], [])
+    def test_the_observations_checks_come_first_in_evidence_order_then_the_actions(self) -> None:
+        evidence = [_OtherEvidence(capability_id="other"), _PageEvidence(capability_id="page")]
+        failed = {"action_failed", "url_mismatch", "screenshot_distance", "app_mismatch"}
+        assert ordered_reasons(failed, evidence) == [
+            "app_mismatch",
+            "screenshot_distance",
+            "url_mismatch",
+            "action_failed",
+        ]
+        with pytest.raises(ValueError, match="no_such_check"):
+            ordered_reasons({"no_such_check"}, evidence)
 
-    def test_the_url_parameters_left_out_round_trip_and_older_evidence_has_none(self) -> None:
-        evidence = RestorationEvidence(
-            capability_id="browser",
-            url_match=True,
-            recorded_url="https://a.test/all?vt=1",
-            restored_url="https://a.test/all?vt=2",
-            url_ignored_query=["vt"],
-            url_rule_ids=["a-vt"],
-        )
-        assert RestorationEvidence.model_validate_json(evidence.model_dump_json()) == evidence
-        older = RestorationEvidence.model_validate({"capability_id": "browser", "url_match": False})
-        assert (older.url_ignored_query, older.url_rule_ids) == ([], [])
+    def test_evidence_is_its_capabilitys_own_type(self) -> None:
+        with pytest.raises(ValidationError, match="RestorationEvidence instances"):
+            _check(evidence=[{"capability_id": "page", "failing": ["url_mismatch"]}])
+        with pytest.raises(ValidationError, match="surprise"):
+            _PageEvidence.model_validate({"capability_id": "page", "surprise": 1})
 
-    def test_the_media_areas_set_aside_round_trip_and_older_evidence_has_none(self) -> None:
-        evidence = RestorationEvidence(
-            capability_id="browser",
-            screenshot_distance=0,
-            media_areas=MediaAreaEvidence(
-                rule_ids=["play-media"],
-                areas=[
-                    MaskedArea(
-                        side="recorded",
-                        kind="unreachable_frame",
-                        element="main/unplaced-0",
-                        x=60,
-                        y=84,
-                        width=778,
-                        height=438,
-                    )
-                ],
-                masked_share=0.3698,
-                unmasked_distance=23,
-                masked_distance=0,
-                mask_applied=True,
-            ),
-        )
-        assert RestorationEvidence.model_validate_json(evidence.model_dump_json()) == evidence
-        older = RestorationEvidence.model_validate({"capability_id": "browser"})
-        assert older.media_areas is None
-
-    @pytest.mark.parametrize(
-        "bad",
-        [
-            {"rule_ids": []},
-            {"rule_ids": ["a"], "masked_share": 1.5},
-            {
-                "rule_ids": ["a"],
-                "areas": [
-                    {
-                        "side": "recorded",
-                        "kind": "canvas",
-                        "element": "x",
-                        "x": 0,
-                        "y": 0,
-                        "width": 1,
-                        "height": 1,
-                    }
-                ],
-            },
-            {
-                "rule_ids": ["a"],
-                "areas": [
-                    {
-                        "side": "recorded",
-                        "kind": "media_element",
-                        "element": "x",
-                        "x": 0,
-                        "y": 0,
-                        "width": 0,
-                        "height": 1,
-                    }
-                ],
-            },
-        ],
-    )
-    def test_media_area_evidence_names_a_rule_and_only_real_boxes(
-        self, bad: dict[str, object]
-    ) -> None:
-        with pytest.raises(ValidationError):
-            MediaAreaEvidence.model_validate(bad)
+    def test_the_base_names_no_check(self) -> None:
+        evidence = RestorationEvidence(capability_id="page")
+        assert RestorationEvidence.REASONS == ()
+        with pytest.raises(NotImplementedError):
+            evidence.failed_checks()
 
 
 class TestRetarget:
     def test_an_action_without_failure(self) -> None:
-        retarget = Retarget(action=Action(name="browser.click"), method="identity")
+        retarget = Retarget(action=Action(name="browser.click"), method=IDENTITY)
         assert retarget.failure is None
+
+    def test_the_method_is_the_capabilitys_own_word(self) -> None:
+        """Only ``identity`` is the framework's; a capability names its own ways."""
+        retarget = Retarget(action=Action(name="android.tap"), method="ui_tree_attributes")
+        assert retarget.method == "ui_tree_attributes"
+        with pytest.raises(ValidationError):
+            Retarget(action=Action(name="android.tap"), method="")
 
     def test_a_failure_without_action(self) -> None:
         retarget = Retarget(action=None, method="geometry_signature", failure="ambiguous")

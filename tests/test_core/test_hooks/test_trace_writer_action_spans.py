@@ -42,6 +42,9 @@ from tests._helpers.branch_fakes import (
 )
 from tests._helpers.trace_builder import persisted
 
+#: The fake capability's restoration evidence reads back through the capability registry.
+pytestmark = pytest.mark.usefixtures("branch_fake_registered")
+
 
 def _loop(**settings: Any) -> ReactLoop:
     return ReactLoop(max_steps=10, max_actions_per_step=2, today_override="2001-02-03", **settings)

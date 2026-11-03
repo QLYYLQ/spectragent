@@ -65,9 +65,9 @@ from spectragent.schemas.observation.capture_state import FailedVisibleResources
 from spectragent.schemas.restoration import (
     BranchProvenance,
     RestorationCheck,
-    RestorationEvidence,
 )
 from spectragent.schemas.step_record import ActionSpan, StepRecord
+from tests._helpers.browser_evidence import browser_evidence
 
 SIZE = (128, 96)
 
@@ -366,9 +366,7 @@ def ok_check(step: int) -> RestorationCheck:
     return RestorationCheck(
         step=step,
         verdict="ok",
-        evidence=[
-            RestorationEvidence(capability_id="browser", screenshot_distance=1, url_match=True)
-        ],
+        evidence=[browser_evidence(screenshot_distance=1, url_match=True)],
     )
 
 

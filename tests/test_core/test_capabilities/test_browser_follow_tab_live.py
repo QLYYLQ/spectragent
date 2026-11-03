@@ -37,6 +37,9 @@ from spectragent.core.benchmark_runner import TaskOutcome
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import BrowserMetaObs, ScreenshotObs
+from spectragent.core.capabilities.browser.restoration_evidence import (
+    BrowserRestorationEvidence,
+)
 from spectragent.core.capabilities.browser.tabs import FocusMove
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action, ActionResult
@@ -338,6 +341,7 @@ def test_a_branch_restores_the_focus_move(flow: Flow) -> None:
         check = record.restoration
         assert check is not None and check.verdict == "ok", (record.step, check)
         (evidence,) = check.evidence
+        assert isinstance(evidence, BrowserRestorationEvidence)
         assert evidence.url_match is True and evidence.signature_match is True
         assert evidence.screenshot_distance is not None and evidence.screenshot_distance <= 5
         assert evidence.document_misses == 0
