@@ -595,6 +595,30 @@ def test_the_launcher_counts_a_look_whose_pull_lost_a_file_as_no_table_yet() -> 
         ).clear_once_the_table_is_there()
 
 
+def test_the_launcher_clears_once_more_when_androidworlds_own_pull_lost_a_file() -> None:
+    """Its pulls come before it changes anything on the device; it runs once more, and only once."""
+    tables = _Tables(looks=[True], clears=[RuntimeError(_PULL_LOST_A_FILE)])
+
+    tables.clear_once_the_table_is_there()
+
+    assert tables.cleared == [(*_TABLE, tables.env, "osmand", None)] * 2
+    assert tables.launched == [] and "clearing again" in tables.notes[0]
+    twice = _Tables(looks=[True], clears=[RuntimeError(_PULL_LOST_A_FILE)] * 2)
+    with pytest.raises(RuntimeError, match="failed to stat remote object"):
+        twice.clear_once_the_table_is_there()
+    assert len(twice.cleared) == 2
+
+
+def test_the_launcher_raises_the_rm_emptying_the_directory_without_clearing_again() -> None:
+    """The same words from ``rm -r`` come after it deleted files, so the device has changed."""
+    tables = _Tables(looks=[True], clears=[RuntimeError(_RM_LOST_A_FILE)])
+
+    with pytest.raises(RuntimeError, match="shell rm -r"):
+        tables.clear_once_the_table_is_there()
+
+    assert len(tables.cleared) == 1
+
+
 def test_the_launcher_counts_only_a_pull_as_one_that_lost_a_file() -> None:
     assert _launcher().pull_lost_a_file(RuntimeError(_PULL_LOST_A_FILE))
     assert not _launcher().pull_lost_a_file(RuntimeError(_RM_LOST_A_FILE))

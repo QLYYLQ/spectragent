@@ -102,7 +102,15 @@ def wait_for_the_table(
     a listed file gone counts as "not there yet" (:func:`pull_lost_a_file`).
     Then it hands the same arguments to *clear*, which finds the table and
     skips its own launch and sleep. If *wait_s* passed first, *clear* launches,
-    sleeps and fails as it always did. *warn* hears how each wait ended.
+    sleeps and fails as it always did.
+
+    *clear* pulls the directory twice itself, and a pull of either can lose a
+    file the app is still replacing. Both pulls come before it changes anything
+    on the device, so after such a failure the function looks until the table
+    is there again and runs *clear* once more. Any other failure of *clear* is
+    raised. That includes the ``rm -r`` emptying the directory before the push,
+    which can print the same words after it has deleted files. *warn* hears how
+    each wait ended and each second run.
     """
 
     def look(table_name: str, remote_db_file_path: str, env: object) -> bool:
@@ -120,17 +128,28 @@ def wait_for_the_table(
         app_name: str,
         timeout_sec: float | None = None,
     ) -> None:
-        if not look(table_name, remote_db_file_path, env):
+        def there() -> bool:
+            return look(table_name, remote_db_file_path, env)
+
+        if not there():
             launched = time.monotonic()
             launch(app_name, env)
-            made = _look_until(
-                lambda: look(table_name, remote_db_file_path, env), launched + wait_s, poll_s
-            )
+            made = _look_until(there, launched + wait_s, poll_s)
             warn(
                 f"{app_name} {'made' if made else 'had made no'} table {table_name} "
                 f"{time.monotonic() - launched:.1f} s after its launch"
             )
-        clear(table_name, remote_db_file_path, env, app_name, timeout_sec)
+        try:
+            clear(table_name, remote_db_file_path, env, app_name, timeout_sec)
+        except Exception as error:
+            if not pull_lost_a_file(error):
+                raise
+            warn(
+                f"{app_name} replaced a file while AndroidWorld read it to clear {table_name}; "
+                "clearing again once the table is there"
+            )
+            _look_until(there, time.monotonic() + wait_s, poll_s)
+            clear(table_name, remote_db_file_path, env, app_name, timeout_sec)
 
     return clear_once_the_table_is_there
 
