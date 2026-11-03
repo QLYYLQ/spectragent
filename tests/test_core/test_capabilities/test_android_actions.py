@@ -879,6 +879,43 @@ async def test_a_device_error_that_may_have_entered_text_leaves_no_effect(
     assert result.error is not None and "set_text: internal:" in result.error
 
 
+@dataclass
+class _InputMethodReportFailsAfterTheTap(ScriptedPhone):
+    """A phone whose input method report fails once a stroke arrived, as when its system
+    service is gone."""
+
+    tapped: bool = False
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.on_tap = self._tap
+
+    def _tap(self) -> None:
+        self.tapped = True
+
+    async def __call__(self, command: str) -> ShellResult:
+        if command == "dumpsys input_method" and self.tapped:
+            return ShellResult(stderr=b"Can't find service: input_method\n", exit_code=1)
+        return await super().__call__(command)
+
+
+async def test_a_failure_to_read_focus_after_the_tap_fails_the_action_keeping_the_tap() -> None:
+    phone = _InputMethodReportFailsAfterTheTap(text_field=True)
+    async with phone_server(phone) as adb, android_capability(adb) as capability:
+        result = await act(
+            capability, "type_coordinate", coordinate_x=540, coordinate_y=160, text="hi"
+        )
+
+    assert (result.success, result.error) == (
+        False,
+        "BridgeError: dumpsys input_method failed (exit 1): Can't find service: input_method",
+    )
+    effect = result.effect
+    assert isinstance(effect, AndroidTextEffect) and not effect.text_entered
+    assert effect.tap is not None and effect.tap.start == ScreenPoint(x=540, y=160)
+    assert not any("set_text" in sent for sent in phone.inputs), "nothing was entered"
+
+
 async def test_a_tap_that_gives_no_text_field_focus_types_nothing(
     capability: AndroidCapability, phone: ScriptedPhone
 ) -> None:

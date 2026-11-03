@@ -465,7 +465,9 @@ class _FocusedTyping:
     the action with its own reason (``RemoteError: set_text: no_focused_field:
     ...``), and the effect reports the tap with no text entered, as a refusal
     does; any other device error leaves the action with no effect, since some
-    of the text may have gone in.
+    of the text may have gone in. A failure to read where focus is, after the
+    tap and before any text is entered, fails the action with its error and
+    reports the tap with no text entered as well.
     """
 
     clear_by_default: Annotated[
@@ -515,7 +517,14 @@ class _FocusedTyping:
             before = await device.focused_field(field_bounds=True, at=point)
             tapped = await touch(capability, "tap", point, point, TAP_MS)
             no_field = f"No text field took focus at {target}"
-        where = await self._no_field_at(capability, point, before, target)
+        try:
+            where = await self._no_field_at(capability, point, before, target)
+        except Exception as exc:  # nothing went in, and the tap happened
+            return ActionResult(
+                success=False,
+                error=f"{type(exc).__name__}: {exc}",
+                effect=AndroidTextEffect(effect_id=effect_id, tap=tapped, text_entered=False),
+            )
         if where is not None:
             return ActionResult(
                 success=False,
