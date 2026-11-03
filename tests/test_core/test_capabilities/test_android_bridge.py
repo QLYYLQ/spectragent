@@ -261,6 +261,50 @@ async def test_only_a_package_name_reaches_a_command_line(name: str) -> None:
     assert adb.requests == []
 
 
+@pytest.mark.parametrize("activity", [".Main; reboot", "$(reboot)", "gui/Main", ""])
+async def test_only_an_activity_name_reaches_a_command_line(activity: str) -> None:
+    async with FakeAdbServer({SERIAL: ScriptedPhone()}) as adb:
+        queries = AdbQueries(AdbClient(adb.host, adb.port), SERIAL)
+        with pytest.raises(ValueError, match="not an Android activity name"):
+            await queries.launch("com.android.settings", activity)
+
+    assert adb.requests == []
+
+
+async def test_a_component_reaches_am_quoted_so_its_dollar_stays_a_dollar() -> None:
+    async with FakeAdbServer({SERIAL: ScriptedPhone()}) as adb:
+        await AdbQueries(AdbClient(adb.host, adb.port), SERIAL).launch(
+            "com.discord", "com.discord.app.AppActivity$Main"
+        )
+
+    assert adb.requests[-1].service == (
+        "shell,v2:am start -W -n 'com.discord/com.discord.app.AppActivity$Main'"
+    )
+
+
+async def test_an_activity_started_without_root_that_is_not_exported_fails_saying_so() -> None:
+    """``am`` writes a header before the exception that says why; the error carries the reason."""
+    started = "am start -W -n org.videolan.vlc/.gui.MainActivity"
+    refused = ShellResult(
+        stdout=b"Starting: Intent { cmp=org.videolan.vlc/.gui.MainActivity }\n",
+        stderr=(
+            b"\nException occurred while executing 'start':\n"
+            b"java.lang.SecurityException: Permission Denial: starting Intent { flg=0x10000000 "
+            b"cmp=org.videolan.vlc/.gui.MainActivity } from null (pid=6164, uid=2000) not "
+            b"exported from uid 10191\n"
+            b"\tat com.android.server.wm.ActivityTaskSupervisor.checkStartAnyActivityPermission"
+            b"(ActivityTaskSupervisor.java:1116)\n"
+        ),
+        exit_code=255,
+    )
+    async with FakeAdbServer({SERIAL: scripted({started: refused})}) as adb:
+        queries = AdbQueries(AdbClient(adb.host, adb.port), SERIAL)
+        with pytest.raises(
+            BridgeError, match=r"exit 255\): java\.lang\.SecurityException: .*not exported"
+        ):
+            await queries.launch("org.videolan.vlc", ".gui.MainActivity")
+
+
 async def test_a_failed_command_says_which_and_why() -> None:
     async with FakeAdbServer({SERIAL: scripted({})}) as adb:
         with pytest.raises(BridgeError, match="wm size failed .exit 127.: /system/bin/sh: wm"):

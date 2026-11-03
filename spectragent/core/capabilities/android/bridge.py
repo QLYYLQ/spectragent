@@ -56,8 +56,14 @@ from spectragent.core.capabilities.android.input._registrar import (
     AndroidTypingBackend,
 )
 
-#: A package name as Android writes it; nothing else reaches a command line.
-_PACKAGE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+")
+#: A package name as Android writes it, and an activity as a component names it
+#: after the package's ``/``: its class name, or ``.`` and its name within the
+#: package (``.gui.MainActivity``), ``$`` joining a nested class. Nothing else
+#: reaches a command line.
+PACKAGE_PATTERN = r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+"
+ACTIVITY_PATTERN = r"\.?[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*"
+_PACKAGE = re.compile(PACKAGE_PATTERN)
+_ACTIVITY = re.compile(ACTIVITY_PATTERN)
 _KEYCODE = re.compile(r"KEYCODE_[A-Z0-9_]+")
 #: ``mFocusedApp=ActivityRecord{6dbdd1 u0 com.android.settings/.Settings t9}``.
 _FOCUSED_APP = re.compile(r"mFocusedApp=ActivityRecord\{\S+ u\d+ (?P<component>[^\s}]+)")
@@ -192,8 +198,8 @@ class AppLauncher(Protocol):
 
     async def is_installed(self, package: str) -> bool: ...
 
-    async def launch(self, package: str) -> None:
-        """Start *package*'s launcher activity and wait until it is shown."""
+    async def launch(self, package: str, activity: str | None = None) -> None:
+        """Start *activity* of *package* (its launcher activity when ``None``); wait until it is shown."""
         ...
 
 
@@ -302,18 +308,22 @@ class AdbQueries:
             f"pm path {package} failed (exit {result.exit_code}): {_first_line(result)}"
         )
 
-    async def launch(self, package: str) -> None:
-        resolved = await self._check(
-            "cmd package resolve-activity --brief -a android.intent.action.MAIN "
-            f"-c android.intent.category.LAUNCHER {_package(package)}"
-        )
-        components = [line.strip() for line in resolved.decode().splitlines() if "/" in line]
-        if not components:
-            raise BridgeError(f"{package} has no launcher activity")
-        started = (await self._check(f"am start -W -n {shlex.quote(components[-1])}")).decode()
+    async def launch(self, package: str, activity: str | None = None) -> None:
+        if activity is None:
+            resolved = await self._check(
+                "cmd package resolve-activity --brief -a android.intent.action.MAIN "
+                f"-c android.intent.category.LAUNCHER {_package(package)}"
+            )
+            components = [line.strip() for line in resolved.decode().splitlines() if "/" in line]
+            if not components:
+                raise BridgeError(f"{package} has no launcher activity")
+            component = components[-1]
+        else:
+            component = f"{_package(package)}/{_activity(activity)}"
+        started = (await self._check(f"am start -W -n {shlex.quote(component)}")).decode()
         refused = any(line.startswith("Error") for line in started.splitlines())
         if refused or "Status: ok" not in started:
-            raise BridgeError(f"am start of {components[-1]} did not succeed: {started.strip()}")
+            raise BridgeError(f"am start of {component} did not succeed: {started.strip()}")
 
     async def screen_size(self) -> tuple[int, int]:
         report = (await self._check("wm size")).decode()
@@ -403,10 +413,21 @@ def _package(package: str) -> str:
     return package
 
 
+def _activity(activity: str) -> str:
+    if not _ACTIVITY.fullmatch(activity):
+        raise ValueError(f"not an Android activity name: {activity!r}")
+    return activity
+
+
 def _first_line(result: ShellResult) -> str:
-    """The first non-empty line the command wrote, stderr first, for an error message."""
+    """The first non-empty line the command wrote, stderr first, for an error message.
+
+    A system service's command that threw (``am``, ``pm``, ``cmd``) first writes
+    ``Exception occurred while executing '<command>':``, which says only that;
+    the exception's own line after it says why, so the header is skipped.
+    """
     for stream in (result.stderr, result.stdout):
-        for line in stream.decode(errors="replace").splitlines():
-            if line.strip():
-                return line.strip()
+        for line in map(str.strip, stream.decode(errors="replace").splitlines()):
+            if line and not line.startswith("Exception occurred while executing"):
+                return line
     return "no output"
