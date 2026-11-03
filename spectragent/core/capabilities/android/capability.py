@@ -69,7 +69,10 @@ selects no benchmark) prepares, scores and ends a benchmark's task on the
 device. The capability hands the provider what the oracle needs of the device
 (``device_needs``), passes it the task's ``oracle_task`` unread, starts it once
 the device is up, stops it first at teardown, and implements ``TaskOracle`` and
-``SetupCheck`` by asking it (§11.2 "任务裁判与 ``AndroidSetup``").
+``SetupCheck`` by asking it (§11.2 "任务裁判与 ``AndroidSetup``"). It implements
+``TaskTextFromSetup`` and ``EpisodeEnd`` by asking it too: the goal an oracle
+makes on the device completes the run's task text, and an oracle whose
+benchmark ends episodes says when (§11.2 "MiniWoB++").
 
 **Archivers** (``archive/``, the archive axis of §4.5) are bound before setup
 and chosen only by the trace hook's ``archive`` list. Setup assembles the
@@ -724,6 +727,18 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     async def read_score(self, *, answer: str | None) -> OracleReading | None:
         """The task oracle's score, given the run's *answer*; ``None`` with ``none`` (``TaskOracle``)."""
         return await self.task_oracle.read_score(answer=answer)
+
+    def sets_task_text(self, context: Mapping[str, Any]) -> bool:
+        """Whether the task oracle makes this task's goal on the device (``TaskTextFromSetup``)."""
+        return self.task_oracle.makes_goal(context.get("oracle_task"))
+
+    async def task_text_from_setup(self) -> str | None:
+        """The goal the task oracle made on the device; ``None`` when the task's goal is the listed one."""
+        return self.task_oracle.made_goal()
+
+    async def episode_over(self) -> bool:
+        """Whether the task oracle says the task's episode is over (``EpisodeEnd``)."""
+        return await self.task_oracle.episode_over()
 
     @property
     def is_alive(self) -> bool:

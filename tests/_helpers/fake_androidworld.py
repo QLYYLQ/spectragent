@@ -10,8 +10,9 @@ whitelisted environment, its process group.
 
 Run as a program, this file is the service: it answers the endpoints the oracle
 calls (``/health``, ``/suite/reinitialize``, ``/task/goal``,
-``/task/initialize``, ``/reset``, ``/execute_action``, ``/task/score``,
-``/task/tear_down``) as the real one does, and, like it, listens only once its
+``/task/initialize``, ``/reset``, ``/execute_action``, ``/task/episode_over``,
+``/task/score``, ``/task/tear_down``) as the real one does (the launcher adds
+``/task/episode_over`` to it), and, like it, listens only once its
 startup is over. What it
 does is read from ``<root>/behaviour.json``, again for every request, so a test
 can change an endpoint's answer while the service runs: per path, ``{"status": 500}``
@@ -54,6 +55,7 @@ DEFAULT_ANSWERS: dict[str, dict[str, JsonValue]] = {
     "/task/initialize": {"status": "success", "message": "Task initialized."},
     "/reset": {"status": "success", "message": "Environment reset."},
     "/execute_action": {"status": "success", "message": "Action executed."},
+    "/task/episode_over": {"over": False},
     "/task/score": {"score": 1.0},
     "/task/tear_down": {"status": "success", "message": "Task torn down."},
 }

@@ -60,6 +60,7 @@ from spectragent.core.capabilities.android.session import CaptureError
 from spectragent.core.capabilities.android.ui_tree.cleaning import AndroidWorldCleaner
 from spectragent.core.capabilities.android.ui_tree.serializers import M3ASerializer, T3ASerializer
 from spectragent.core.capabilities.android.ui_tree.source import AccessibilityServiceTreeSource
+from spectragent.core.capabilities.base import EpisodeEnd, TaskTextFromSetup
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.loops import ReactLoop
@@ -67,6 +68,7 @@ from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action
 from spectragent.schemas.observation.geometry import ScreenshotGeometry
 from spectragent.schemas.oracle_score import OracleReading
+from spectragent.schemas.task import SetupTaskText
 from tests._helpers.android_device import (
     APK_BYTES,
     FINGERPRINT,
@@ -495,6 +497,10 @@ class _RecordingOracle:
 
     needs: DeviceNeeds = field(default_factory=lambda: DeviceNeeds(root=True, guest_wifi=True))
     fail_start: bool = False
+    #: The goal it says it made on the device; ``None``: the task's goal is the listed one.
+    goal: str | None = None
+    #: Whether it says the task's episode is over.
+    over: bool = False
     calls: list[str] = field(default_factory=list)
     tasks: list[OracleTask | None] = field(default_factory=list)
 
@@ -516,6 +522,19 @@ class _RecordingOracle:
         self.tasks.append(task)
         if self.fail_start:
             raise RuntimeError("the oracle could not start")
+
+    def makes_goal(self, task: OracleTask | None) -> bool:
+        self.calls.append("makes_goal")
+        self.tasks.append(task)
+        return self.goal is not None
+
+    def made_goal(self) -> str | None:
+        self.calls.append("made_goal")
+        return self.goal
+
+    async def episode_over(self) -> bool:
+        self.calls.append("episode_over")
+        return self.over
 
     async def read_score(self, *, answer: str | None) -> OracleReading | None:
         self.calls.append(f"read_score {answer}")
@@ -612,6 +631,30 @@ def test_prepare_routes_the_task_to_the_oracle_and_refuses_what_it_refuses(
     with pytest.raises(ValueError, match="refused by the oracle"):
         env.check_setup({"oracle_task": {"refuse": True}})
     assert oracle.calls == ["check_setup"], "only a check: nothing started"
+
+
+async def test_the_oracle_completes_the_task_text_and_says_when_the_episode_is_over(
+    tmp_path: Path,
+) -> None:
+    capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+    assert isinstance(capability, TaskTextFromSetup) and isinstance(capability, EpisodeEnd)
+    env = make_env(AndroidEnvironment, {"android#0": capability})
+
+    # ``none``: no goal is made on the device, and no episode ends.
+    assert env.task_text_setter({}) is None
+    assert await env.task_text_from_setup() is None
+    assert await env.episode_over() is False
+
+    goal = "Follow the instructions shown on the top of the screen: Click on the Submit button."
+    oracle = _RecordingOracle(goal=goal, over=True)
+    capability.task_oracle = oracle
+    task: dict[str, JsonValue] = {"opaque": ["to", "the", "capability"]}
+
+    assert env.task_text_setter({"oracle_task": task}) == "android"
+    assert oracle.tasks == [task] and oracle.tasks[0] is task, "handed over as it came"
+    assert await env.task_text_from_setup() == SetupTaskText(capability_id="android", text=goal)
+    assert await env.episode_over() is True
+    assert oracle.calls == ["makes_goal", "made_goal", "episode_over"]
 
 
 def test_prepare_refuses_a_device_the_provider_cannot_give_naming_oracle_needs_and_provider(

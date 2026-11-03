@@ -39,6 +39,15 @@ class NoTaskOracle(AndroidTaskOracleBase):
     async def start(self, device: AndroidProviderSession, task: OracleTask | None) -> None:
         return None
 
+    def makes_goal(self, task: OracleTask | None) -> bool:
+        return False
+
+    def made_goal(self) -> str | None:
+        return None
+
+    async def episode_over(self) -> bool:
+        return False
+
     async def read_score(self, *, answer: str | None) -> OracleReading | None:
         return None
 

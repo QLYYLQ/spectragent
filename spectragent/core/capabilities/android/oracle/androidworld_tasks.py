@@ -31,6 +31,9 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 TASK_LIST_FORMAT = "androidworld-tasks-1"
 #: The family whose tasks are scored on the agent's answer.
 INFORMATION_RETRIEVAL = "information_retrieval"
+#: The family whose episodes the page ends: AndroidWorld's runner asks a MiniWoB++
+#: page after every step whether it reported a reward.
+MINIWOB = "miniwob"
 #: Tasks of the pinned commit that the service cannot build again from their
 #: address, so it never builds the listed one: task key → why. The loader
 #: leaves them out and the oracle refuses them, both with these words.

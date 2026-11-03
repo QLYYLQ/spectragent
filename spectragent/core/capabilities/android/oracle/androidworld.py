@@ -16,15 +16,21 @@ Spectragent's own bridge. One task is one run:
    the host's ffmpeg (:meth:`Installation.ffmpeg`), and the wait for ``/health``
    is bounded. Then the task: the suite its seed makes, a check that the
    service built the task the list records, ``/task/initialize`` and
-   ``/reset``.
-2. **read_score**, at the Runtime's scoring point, within the run's
+   ``/reset``. A task whose goal is made at initialize (MiniWoB++) then reads
+   its goal from ``/task/goal``, refused when it says nothing past the fixed
+   part the list records (:func:`whole_goal`); that goal completes the run's
+   task text (:meth:`AndroidWorldOracle.made_goal`).
+2. **episode_over**, after each of the agent's steps: a MiniWoB++ task asks
+   ``GET /task/episode_over``, the endpoint the launcher adds, whether the page
+   ended its episode; every other task answers ``False`` without a call.
+3. **read_score**, at the Runtime's scoring point, within the run's
    ``oracle_timeout``: for an information-retrieval task, scored on the agent's
    answer, the run's answer goes to the service first as an ``answer`` action
    (``/execute_action``), as AndroidWorld's own runner hands it over, unless the
    run ended without one; then ``/task/score``. HTTP 500, a broken reply or a
    dead service raise :class:`AndroidWorldError`, so the environment records
    "not scored".
-3. **stop**, at teardown: ``/task/tear_down`` (best effort, since the device's
+4. **stop**, at teardown: ``/task/tear_down`` (best effort, since the device's
    changes are thrown away with the run; a failure is logged), then the
    service's process group: SIGTERM, then SIGKILL for the whole group, its
    ``adb logcat`` child included.
@@ -76,6 +82,7 @@ from spectragent.core.capabilities.android.oracle._registrar import (
 )
 from spectragent.core.capabilities.android.oracle.androidworld_tasks import (
     INFORMATION_RETRIEVAL,
+    MINIWOB,
     UNREPRODUCIBLE,
     AndroidWorldTask,
 )
@@ -216,6 +223,37 @@ def params_digest(params: dict[str, JsonValue]) -> str:
     """The sha256 of the task's parameters as canonical JSON."""
     canonical = json.dumps(params, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def whole_goal(task: AndroidWorldTask, goal: object) -> str:
+    """*goal*, the goal AndroidWorld made on the device for *task*, when it says more than its fixed part.
+
+    The task list records only the fixed part of a goal made at initialize:
+    the template before its placeholder, ending in a full stop ("Follow the
+    instructions shown on the top of the screen."). The device's goal goes on
+    with the instruction the page made (": Click on the Submit button."). The
+    page gets 1 s to load before AndroidWorld reads the instruction, and a page
+    that had not shown it yet leaves an empty one (an empty string, which
+    AndroidWorld does not ask again for), so the goal is the fixed part alone
+    (``docs/architecture_design.md`` §11.2).
+
+    Raises:
+        AndroidWorldError: *goal* is not a string, does not start with the
+            fixed part, or says nothing after it.
+    """
+    fixed = task.goal.removesuffix(".")
+    what = f"AndroidWorld made {task.task} #{task.index} (suite seed {task.suite_seed}) the goal"
+    if not isinstance(goal, str) or not goal.startswith(fixed):
+        raise AndroidWorldError(
+            f"{what} {goal!r}, which does not start with the fixed part the task list records "
+            f"({task.goal!r})"
+        )
+    if not goal[len(fixed) :].strip(" \t\n:."):
+        raise AndroidWorldError(
+            f"{what} {goal!r}, which says nothing after its fixed part: the page had not shown "
+            f"its instruction when AndroidWorld read it (it gives the page 1 s to load)"
+        )
+    return goal
 
 
 @dataclass
@@ -447,9 +485,10 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
             gt=0,
             description=(
                 "Seconds each call that prepares or ends the task may take (the suite, the "
-                "goal, initialize, reset, tear-down); initialize took up to 8 s and reset up "
-                "to 27 s when AndroidWorld reinstalled its accessibility forwarder. The score "
-                "is limited by the run's oracle_timeout instead."
+                "goal, initialize, reset, tear-down), and each question after a step whether "
+                "a MiniWoB++ episode is over; initialize took up to 8 s and reset up to 27 s "
+                "when AndroidWorld reinstalled its accessibility forwarder. The score is "
+                "limited by the run's oracle_timeout instead."
             ),
         ),
     ] = 60.0
@@ -533,7 +572,41 @@ class AndroidWorldOracle(AndroidTaskOracleBase):
             goal = (
                 await service.call("GET", "/task/goal", address, timeout_s=self.call_timeout_s)
             ).get("goal")
-            self._device_goal = goal if isinstance(goal, str) else None
+            self._device_goal = whole_goal(task, goal)
+
+    def makes_goal(self, task: OracleTask | None) -> bool:
+        return self._parse(task).goal_made_at_initialize
+
+    def made_goal(self) -> str | None:
+        return self._device_goal
+
+    async def episode_over(self) -> bool:
+        """Whether the page ended a MiniWoB++ task's episode; ``False`` for every other task, with no call.
+
+        AndroidWorld's runner ends only a MiniWoB++ episode itself, when the
+        page has reported a reward. The service answers through the endpoint
+        the launcher adds (``GET /task/episode_over``), within ``call_timeout_s``.
+
+        Raises:
+            AndroidWorldError: No task was initialized, or the service failed or
+                answered no ``over``.
+            TimeoutError: The service gave no answer in time.
+        """
+        service, task = self._service, self._task
+        if service is None or task is None or not self._initialized:
+            raise AndroidWorldError("no AndroidWorld task was initialized on this device")
+        if task.family != MINIWOB:
+            return False
+        reply = await service.call(
+            "GET",
+            "/task/episode_over",
+            {"task_type": task.task, "task_idx": task.index},
+            timeout_s=self.call_timeout_s,
+        )
+        over = reply.get("over")
+        if not isinstance(over, bool):
+            raise AndroidWorldError(f"GET /task/episode_over answered no over: {reply!r}")
+        return over
 
     async def read_score(self, *, answer: str | None) -> OracleReading | None:
         service, task = self._service, self._task
