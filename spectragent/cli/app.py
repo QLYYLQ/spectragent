@@ -318,6 +318,7 @@ def create_app() -> typer.Typer:
         env_id: str | None,
         start_url: str | None,
         replay_archive: str | None,
+        benchmark: str | None,
         task_id: str | None,
         json_output: bool,
         detailed: bool,
@@ -331,6 +332,7 @@ def create_app() -> typer.Typer:
                 env_id=env_id,
                 start_url=start_url,
                 replay_archive=replay_archive,
+                benchmark=benchmark,
                 task_id=task_id,
             )
             if not detailed:
@@ -348,6 +350,12 @@ def create_app() -> typer.Typer:
 
         _checked(_output(ctx, json_output), inspect)
 
+    benchmark_help = (
+        "A benchmark (shipped alias or benchmark YAML path) whose task --task-id selects; "
+        "composed with the configuration as a run composes it."
+    )
+    task_id_help = "Prepare with this task of --benchmark: its environment and loop inputs."
+
     @config_app.command("check")
     def config_check(
         ctx: typer.Context,
@@ -356,14 +364,22 @@ def create_app() -> typer.Typer:
         env_id: str | None = typer.Option(None),
         start_url: str | None = typer.Option(None),
         replay_archive: str | None = typer.Option(None),
-        task_id: str | None = typer.Option(
-            None, help="Use this configured loader task's environment and loop inputs."
-        ),
+        benchmark: str | None = typer.Option(None, help=benchmark_help),
+        task_id: str | None = typer.Option(None, help=task_id_help),
         json_output: bool = typer.Option(False, "--json"),
     ) -> None:
         """Validate YAML and prepare an agent, without launching a browser or model."""
         config_operation(
-            ctx, config, agent_id, env_id, start_url, replay_archive, task_id, json_output, False
+            ctx,
+            config,
+            agent_id,
+            env_id,
+            start_url,
+            replay_archive,
+            benchmark,
+            task_id,
+            json_output,
+            False,
         )
 
     @config_app.command("explain")
@@ -374,12 +390,22 @@ def create_app() -> typer.Typer:
         env_id: str | None = typer.Option(None),
         start_url: str | None = typer.Option(None),
         replay_archive: str | None = typer.Option(None),
-        task_id: str | None = typer.Option(None),
+        benchmark: str | None = typer.Option(None, help=benchmark_help),
+        task_id: str | None = typer.Option(None, help=task_id_help),
         json_output: bool = typer.Option(False, "--json"),
     ) -> None:
         """Explain inputs, declaration/MRO origins, injection, negotiations and fingerprints."""
         config_operation(
-            ctx, config, agent_id, env_id, start_url, replay_archive, task_id, json_output, True
+            ctx,
+            config,
+            agent_id,
+            env_id,
+            start_url,
+            replay_archive,
+            benchmark,
+            task_id,
+            json_output,
+            True,
         )
 
     @config_app.command("generate")

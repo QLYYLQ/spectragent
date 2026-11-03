@@ -15,7 +15,13 @@ from spectragent.flywheel.cli import TOKEN_LIMIT_EXIT_CODE, main
 from spectragent.flywheel.metrics import ChainLayout
 from spectragent.flywheel.report import NO_SPEC_LIMIT
 from tests._helpers.flywheel_traces import KnownChain
-from tests.test_flywheel.test_chain import BRANCH_YAML, RUN_YAML, Recorder, Sweep, commit_one_run
+from tests.test_flywheel.test_chain import (
+    BRANCHES_YAML,
+    RUN_YAML,
+    Recorder,
+    Sweep,
+    commit_one_run,
+)
 
 
 def test_report_from_a_root(
@@ -59,6 +65,7 @@ def test_report_from_a_spec_reads_its_root_evidence_and_planted(
                 "name": "known",
                 "root": str(layout.root),
                 "evidence": "rehearsal",
+                "tasks": {"benchmark": "online_mind2web"},
                 "record": {"config": "unused.yaml"},
                 "token_limit": 1_000_000,
                 "report": {"planted": [{"label": "teacher api key", "env": "FLYWHEEL_CLI_UNSET"}]},
@@ -116,6 +123,7 @@ def test_run_and_a_failing_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
                 "name": "c",
                 "root": str(tmp_path / "root"),
                 "evidence": "rehearsal",
+                "tasks": {"benchmark": "online_mind2web"},
                 "record": {"config": str(config)},
             }
         )
@@ -159,7 +167,11 @@ def test_run_exits_4_at_the_token_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     configs = {}
-    for stage, raw in (("record", RUN_YAML), ("same_path", BRANCH_YAML)):
+    for stage, raw in (
+        ("record", RUN_YAML),
+        ("same_path", RUN_YAML),
+        ("same_path_branches", BRANCHES_YAML),
+    ):
         configs[stage] = tmp_path / f"{stage}.yaml"
         configs[stage].write_text(yaml.safe_dump(raw))
     spec = tmp_path / "chain.yaml"
@@ -170,8 +182,12 @@ def test_run_exits_4_at_the_token_limit(
                 "root": str(tmp_path / "root"),
                 "evidence": "rehearsal",
                 "token_limit": 5,
+                "tasks": {"benchmark": "online_mind2web"},
                 "record": {"config": str(configs["record"])},
-                "same_path": {"config": str(configs["same_path"])},
+                "same_path": {
+                    "config": str(configs["same_path"]),
+                    "benchmark": str(configs["same_path_branches"]),
+                },
             }
         )
     )

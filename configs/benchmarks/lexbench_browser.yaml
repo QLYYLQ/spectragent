@@ -1,0 +1,10 @@
+# LexBench's browser tasks. Select it with --benchmark lexbench_browser
+# (docs/architecture_design.md §4.10.1); for one split, copy this file, set its
+# subset and pass the copy's path.
+benchmark:
+  - benchmark_id: lexbench_browser
+    task_loader:
+      benchmark_name: lexbench_browser
+      subset: All
+      data_dir: null             # null: $SPECTRAGENT_BENCHMARK_DATA/browser/lexbench_browser
+    # eval_loader left out: the registered lexbench_browser eval loader for the task loader's subset.

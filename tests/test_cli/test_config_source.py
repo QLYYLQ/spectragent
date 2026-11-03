@@ -46,29 +46,31 @@ async def test_single_run_passes_the_source_version_it_parsed(tmp_path, monkeypa
         SimpleNamespace(for_config=lambda raw: SimpleNamespace(compose=compose)),
     )
     monkeypatch.setattr(run_cli.AgentRuntime, "for_agent", lambda *args: Runtime())
-    assert (
-        await run_cli._run(config_path=path, task="read", start_url=None, timeout=1, dry_run=False)
-        == 0
-    )
+    assert await run_cli._run(config_path=path, task="read", timeout=1, dry_run=False) == 0
     assert captured["config_source"] == ConfigSource.from_path(path, data=original)
 
 
 def _stub_composer(monkeypatch, path, *, change_source=False):
+    """A composer that builds one benchmark whose task loader has no task; returns its YAML."""
     from spectragent.core import benchmark_runner
+
+    block = {"benchmark_id": "fixture"}
 
     def compose(raw):
         if change_source:
-            assert raw == {"version": "consumed"}
+            assert raw == {"version": "consumed", "benchmark": [block]}
             path.write_bytes(b"version: changed\n")
-        return ComposedRun(by_layer={})
+        loader = SimpleNamespace(benchmark_name="fixture", subset="all", task_ids=lambda: [])
+        return ComposedRun(by_layer={"benchmark": {"fixture": SimpleNamespace(task_loader=loader)}})
 
-    loader = SimpleNamespace(benchmark_name="fixture", subset="all", task_ids=lambda: [])
     monkeypatch.setattr(
         benchmark_runner,
         "ConfigComposer",
         SimpleNamespace(for_config=lambda raw: SimpleNamespace(compose=compose)),
     )
-    monkeypatch.setattr(benchmark_runner, "_resolve_loader", lambda *args: loader)
+    benchmark = path.parent / "benchmark.yaml"
+    benchmark.write_text("benchmark:\n  - benchmark_id: fixture\n")
+    return benchmark
 
 
 def test_batch_session_uses_the_same_source_version_as_the_parsed_configuration(
@@ -79,11 +81,18 @@ def test_batch_session_uses_the_same_source_version_as_the_parsed_configuration(
     path = tmp_path / "batch.yaml"
     consumed = b"version: consumed\n"
     path.write_bytes(consumed)
-    _stub_composer(monkeypatch, path, change_source=True)
+    benchmark = _stub_composer(monkeypatch, path, change_source=True)
     output = {}
     assert (
         main(
-            ["--config", str(path), "--session-dir", str(tmp_path / ".sessions")],
+            [
+                "--config",
+                str(path),
+                "--benchmark",
+                str(benchmark),
+                "--session-dir",
+                str(tmp_path / ".sessions"),
+            ],
             report=output.update,
         )
         == 0
@@ -102,12 +111,14 @@ def test_generated_config_uses_captured_original_source_without_rereading_it(tmp
     generated.write_bytes(b"{}\n")
     missing_original = tmp_path / "original.yaml"
     source = ConfigSource.from_path(missing_original, data=b"version: original\n")
-    _stub_composer(monkeypatch, generated)
+    benchmark = _stub_composer(monkeypatch, generated)
     assert (
         main(
             [
                 "--config",
                 str(generated),
+                "--benchmark",
+                str(benchmark),
                 "--session-dir",
                 str(tmp_path / ".sessions"),
                 "--config-source",
@@ -130,5 +141,5 @@ def test_original_source_flags_are_a_required_pair(args):
     from spectragent.core.benchmark_runner import main
 
     with pytest.raises(SystemExit) as caught:
-        main(["--config", "/not-read.yaml", *args])
+        main(["--config", "/not-read.yaml", "--benchmark", "online_mind2web", *args])
     assert caught.value.code == 2

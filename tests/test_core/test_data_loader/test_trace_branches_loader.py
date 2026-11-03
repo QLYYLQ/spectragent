@@ -36,9 +36,18 @@ from tests._helpers.branch_sources import (
 from tests._helpers.trace_builder import eval_result
 
 
-def _compose(raw: dict[str, Any]) -> ComposedRun:
-    """*raw* composed as a run composes it."""
-    return ConfigComposer.for_config(raw).compose(raw)
+def _composed_loader(**block: Any) -> Any:
+    """The ``trace_branches`` loader of a branches YAML holding *block*, composed as a run composes it."""
+    raw = {
+        "benchmark": [
+            {
+                "benchmark_id": "trace_branches",
+                "task_loader": {"benchmark_name": "trace_branches", **block},
+            }
+        ]
+    }
+    run: ComposedRun = ConfigComposer.for_config(raw).compose(raw)
+    return run.single("benchmark").task_loader
 
 
 def loader(root: Path, **knobs: Any) -> TraceBranchesTaskLoader:
@@ -183,18 +192,9 @@ class TestLaziness:
             original(self)
 
         monkeypatch.setattr(TraceBranchesTaskLoader, "_scan_once", counting)
-        run = _compose(
-            {
-                "task_loader": [
-                    {
-                        "benchmark_name": "trace_branches",
-                        "data_dir": str(tmp_path),
-                        "step_selector": {"selector_id": "explicit", "steps": [1]},
-                    }
-                ]
-            }
+        built = _composed_loader(
+            data_dir=str(tmp_path), step_selector={"selector_id": "explicit", "steps": [1]}
         )
-        built = run.optional_single("task_loader")
         assert isinstance(built, TraceBranchesTaskLoader) and scans == []
         assert built.task_ids() == ["run-a/s1/b0"], "the configured selector arrived"
 
@@ -992,18 +992,11 @@ class TestTaskVariants:
 
         write_source(tmp_path / "src", "run-a", steps=2)
         path = variants_file(tmp_path, variant(step=0))
-        built = _compose(
-            {
-                "task_loader": [
-                    {
-                        "benchmark_name": "trace_branches",
-                        "data_dir": str(tmp_path / "src"),
-                        "step_selector": {"selector_id": "all"},
-                        "task_variants": str(path),
-                    }
-                ]
-            }
-        ).optional_single("task_loader")
+        built = _composed_loader(
+            data_dir=str(tmp_path / "src"),
+            step_selector={"selector_id": "all"},
+            task_variants=str(path),
+        )
         assert isinstance(built, TraceBranchesTaskLoader)
         assert built.task_ids() == ["run-a/s0/vv1/b0"]
 
@@ -1155,18 +1148,11 @@ class TestExcludeRuns:
         write_source(tmp_path / "src", "run-a", steps=1)
         write_source(tmp_path / "src", "run-b", steps=1)
         path = exclusions_file(tmp_path, excluded("run-b"))
-        built = _compose(
-            {
-                "task_loader": [
-                    {
-                        "benchmark_name": "trace_branches",
-                        "data_dir": str(tmp_path / "src"),
-                        "step_selector": {"selector_id": "all"},
-                        "exclude_runs": str(path),
-                    }
-                ]
-            }
-        ).optional_single("task_loader")
+        built = _composed_loader(
+            data_dir=str(tmp_path / "src"),
+            step_selector={"selector_id": "all"},
+            exclude_runs=str(path),
+        )
         assert isinstance(built, TraceBranchesTaskLoader)
         assert built.task_ids() == ["run-a/s0/b0"]
 

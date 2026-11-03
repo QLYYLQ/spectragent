@@ -42,14 +42,17 @@ RUN_YAML: dict[str, Any] = {
         {"hook_id": "trace_writer", "trace_dir": "traces", "archive": []},
     ],
 }
-BRANCH_YAML: dict[str, Any] = {
-    **RUN_YAML,
-    "task_loader": [
+#: A branch stage's branches YAML: its trace_branches task source (arch §4.10.1).
+BRANCHES_YAML: dict[str, Any] = {
+    "benchmark": [
         {
-            "benchmark_name": "trace_branches",
-            "data_dir": "traces/recorded",
-            "step_selector": {"selector_id": "last"},
-            "branches_per_step": 2,
+            "benchmark_id": "trace_branches",
+            "task_loader": {
+                "benchmark_name": "trace_branches",
+                "data_dir": "traces/recorded",
+                "step_selector": {"selector_id": "last"},
+                "branches_per_step": 2,
+            },
         }
     ],
 }
@@ -77,11 +80,17 @@ def _spec(tmp_path: Path, **overrides: Any) -> ChainSpec:
         "name": "test-chain",
         "root": tmp_path / "root",
         "evidence": "rehearsal",
-        "tasks": {"benchmark": "online_mind2web", "subset": "All", "task_ids": ["a", "b"]},
+        "tasks": {"benchmark": "online_mind2web", "task_ids": ["a", "b"]},
         "record": {"config": _write(tmp_path / "record.yaml", RUN_YAML), "timeout": 60},
         "control": {"config": _write(tmp_path / "control.yaml", RUN_YAML)},
-        "same_path": {"config": _write(tmp_path / "same_path.yaml", BRANCH_YAML)},
-        "branch": {"config": _write(tmp_path / "branch.yaml", BRANCH_YAML)},
+        "same_path": {
+            "config": _write(tmp_path / "same_path.yaml", RUN_YAML),
+            "benchmark": _write(tmp_path / "same_path_branches.yaml", BRANCHES_YAML),
+        },
+        "branch": {
+            "config": _write(tmp_path / "branch.yaml", RUN_YAML),
+            "benchmark": _write(tmp_path / "branch_branches.yaml", BRANCHES_YAML),
+        },
         "export": {"config": _write(tmp_path / "export.yaml", EXPORT_YAML), "repeat": 2},
         "report": {"planted": [{"label": "site password", "value": "pw-1"}]},
     }
@@ -124,17 +133,16 @@ class TestThePaths:
         result = run_chain(spec, bench=bench, export=export)
         root = result.layout.root
         assert root == (tmp_path / "root").resolve()
-        for stage, source in (("record", RUN_YAML), ("control", RUN_YAML)):
+        for stage in ("record", "control", "same_path", "branch"):
             effective = yaml.safe_load((root / "configs" / f"{stage}.yaml").read_text())
-            expected = copy.deepcopy(source)
+            expected = copy.deepcopy(RUN_YAML)
             expected["hook"][0]["trace_dir"] = str(root / "traces" / stage)
             assert effective == expected, stage
         for stage in ("same_path", "branch"):
-            effective = yaml.safe_load((root / "configs" / f"{stage}.yaml").read_text())
-            expected = copy.deepcopy(BRANCH_YAML)
-            expected["hook"][0]["trace_dir"] = str(root / "traces" / stage)
-            expected["task_loader"][0]["data_dir"] = str(root / "traces" / "record")
-            assert effective == expected, stage
+            branches = root / "configs" / f"{stage}_branches.yaml"
+            expected = copy.deepcopy(BRANCHES_YAML)
+            expected["benchmark"][0]["task_loader"]["data_dir"] = str(root / "traces" / "record")
+            assert yaml.safe_load(branches.read_text()) == expected, stage
         for dataset in ("first", "second"):
             effective = yaml.safe_load((root / "configs" / f"export_{dataset}.yaml").read_text())
             expected = copy.deepcopy(EXPORT_YAML)
@@ -169,8 +177,6 @@ class TestThePaths:
             "WARNING",
             "--benchmark",
             "online_mind2web",
-            "--subset",
-            "All",
             "--task-id",
             "a",
             "--task-id",
@@ -178,8 +184,10 @@ class TestThePaths:
             "--no-eval",
         ]
         assert control[-2:] == ["--evals-dir", str(root / "evals" / "control")]
-        for call in (same_path, branch):
-            assert "--no-eval" in call and "--benchmark" not in call and "--task-id" not in call
+        for stage, call in (("same_path", same_path), ("branch", branch)):
+            branches = str(root / "configs" / f"{stage}_branches.yaml")
+            assert call[call.index("--benchmark") + 1] == branches
+            assert "--no-eval" in call and "--task-id" not in call
 
     def test_a_stage_may_set_its_oracle_timeout(self, tmp_path: Path) -> None:
         record = {"config": _write(tmp_path / "record.yaml", RUN_YAML), "oracle_timeout": 90}
@@ -207,7 +215,8 @@ class TestThePaths:
                 assert spec.branch is not None
                 spec.branch.config.write_text("changed: true\n")
             else:
-                assert raw["task_loader"][0]["branches_per_step"] == 2
+                branches = yaml.safe_load(Path(argv[argv.index("--benchmark") + 1]).read_text())
+                assert branches["benchmark"][0]["task_loader"]["branches_per_step"] == 2
             return commit_one_run(raw, argv)
 
         run_chain(spec, stages=["record", "branch"], bench=Recorder(stage))
@@ -227,7 +236,16 @@ class TestThePaths:
                 {**RUN_YAML, "hook": [RUN_YAML["hook"][0], RUN_YAML["hook"][0]]},
                 "2 'hook' block",
             ),
-            ("same_path", RUN_YAML, "'task_loader' block with benchmark_name: trace_branches"),
+            (
+                "same_path_branches",
+                {"benchmark": []},
+                "'benchmark' block with benchmark_id: trace_branches",
+            ),
+            (
+                "same_path_branches",
+                {"benchmark": [{"benchmark_id": "trace_branches"}]},
+                "no task_loader with benchmark_name: trace_branches",
+            ),
             ("export", {"exporter": []}, "0 'exporter' blocks"),
         ],
     )
@@ -236,6 +254,7 @@ class TestThePaths:
     ) -> None:
         spec = _spec(tmp_path)
         _write(tmp_path / f"{stage}.yaml", raw)
+        stage = stage.removesuffix("_branches")
         bench, export = Recorder(commit_one_run), Recorder(publish_dataset)
         with pytest.raises(ChainConfigError, match=f"stage '{stage}'.*{block}"):
             run_chain(spec, bench=bench, export=export)
@@ -377,6 +396,17 @@ class TestTheSpec:
     def test_a_branch_stage_never_evaluates(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="same_path.evaluate"):
             _spec(tmp_path, same_path={"config": tmp_path / "x.yaml", "evaluate": True})
+
+    def test_a_branch_stage_names_its_branches_yaml_and_only_a_branch_stage_does(
+        self, tmp_path: Path
+    ) -> None:
+        """A branch stage's tasks are its own branches YAML; the recordings' are ``tasks``."""
+        with pytest.raises(ValueError, match="branch.benchmark: a branch stage runs"):
+            _spec(tmp_path, branch={"config": tmp_path / "branch.yaml"})
+        with pytest.raises(ValueError, match="record.benchmark: a recording stage runs"):
+            _spec(tmp_path, record={"config": tmp_path / "x.yaml", "benchmark": tmp_path / "b"})
+        with pytest.raises(ValueError, match="tasks"):
+            _spec(tmp_path, tasks={"task_ids": ["a"]})
 
     def test_planted_values_from_the_spec_or_the_environment(self) -> None:
         planted = [

@@ -31,7 +31,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from functools import cached_property
 from types import MappingProxyType
-from typing import Any, Literal, get_origin
+from typing import Any, Literal, NamedTuple, get_origin
 
 from conscribe import NO_IMPLEMENTATION_ERROR_TYPE, Coverage, LayerRegistrar
 from conscribe.introspect import WiringSlot, init_param_names, receptor_slots, wiring_slots
@@ -41,6 +41,7 @@ from pydantic_core import ErrorDetails
 
 from spectragent.agents._registrar import AgentRegistrar
 from spectragent.agents.prompts import agent_family
+from spectragent.benchmarks._registrar import BenchmarkRegistrar
 from spectragent.core.actions._registrar import ActionRegistrar, is_loop_action
 from spectragent.core.capabilities._registrar import CapabilityRegistrar
 from spectragent.core.composition_evidence import (
@@ -56,9 +57,11 @@ from spectragent.core.composition_evidence import (
 from spectragent.core.configuration_catalog import ConfigurationCatalog, build_configuration_catalog
 from spectragent.core.registries import (
     AGENTS_PACKAGE,
+    BENCHMARKS_PACKAGE,
     CAPABILITIES_PACKAGE,
     FRAMEWORK_PACKAGES,
     agent_families,
+    benchmark_ids,
     capability_ids,
     collect_registrars,
     discover_every_implementation,
@@ -253,25 +256,32 @@ class ConfigComposer:
     def for_config(cls, raw: object) -> ConfigComposer:
         """The Composer for one configuration, importing only what *raw* names.
 
-        Each capability block's ``capability_id`` names a capability package
-        and each agent block's ``agent_id`` an agent family
-        (``browser_use.dom``: the ``browser_use`` family). The framework's own
-        packages and those packages are imported; the schema holds the
-        framework axes and the named capabilities' axes, built as conscribe's
-        partial build: a declared key with no implementation here is left out,
-        for negotiation to decide (``docs/architecture_design.md`` §4.2.1).
+        Each capability block's ``capability_id`` names a capability package,
+        each agent block's ``agent_id`` an agent family (``browser_use.dom``:
+        the ``browser_use`` family) and each benchmark block's
+        ``benchmark_id`` a benchmark package. The framework's own packages and
+        those packages are imported; the schema holds the framework axes and
+        the named capabilities' axes, built as conscribe's partial build: a
+        declared key with no implementation here is left out, for negotiation
+        to decide (``docs/architecture_design.md`` §4.2.1).
 
         Raises:
             UnknownPackageError, ComposeError: what :func:`named_packages`
-                refuses, before any capability package or family is imported.
+                refuses, before any capability package, family or benchmark
+                is imported.
         """
-        capabilities, agents = named_packages(raw)
-        families = {agent_family(agent_id) for agent_id in agents}
-        discover_implementations(*FRAMEWORK_PACKAGES, capabilities=capabilities, families=families)
+        named = named_packages(raw)
+        families = {agent_family(agent_id) for agent_id in named.agents}
+        discover_implementations(
+            *FRAMEWORK_PACKAGES,
+            capabilities=named.capabilities,
+            families=families,
+            benchmarks=named.benchmarks,
+        )
         return cls(
-            registrars=collect_registrars(capabilities),
+            registrars=collect_registrars(named.capabilities),
             coverage="partial",
-            unnamed=unnamed_packages(capabilities, families),
+            unnamed=unnamed_packages(named.capabilities, families, named.benchmarks),
         )
 
     @classmethod
@@ -412,7 +422,8 @@ class ConfigComposer:
                     f"the {layer!r} layer takes no top-level section, and nothing this "
                     f"configuration names takes it",
                     True,
-                    "Leave it out, or name the agent family or capability whose block holds it",
+                    "Leave it out, or name the agent family, capability or benchmark whose block "
+                    "holds it",
                 )
             return _Problem(
                 layer,
@@ -881,20 +892,29 @@ class ConfigComposer:
 _ENVIRONMENT_CAPABILITIES = "capabilities"
 
 
-def named_packages(raw: object) -> tuple[dict[str, str], dict[str, str]]:
-    """The capability ids and agent ids *raw* names, each with the first place it is written.
+class NamedPackages(NamedTuple):
+    """The ids a configuration names, each with the first place it is written."""
+
+    capabilities: dict[str, str]
+    agents: dict[str, str]
+    benchmarks: dict[str, str]
+
+
+def named_packages(raw: object) -> NamedPackages:
+    """The capability, agent and benchmark ids *raw* names, each with the first place it is written.
 
     Read before anything is imported, and only where the schema puts those
-    blocks: the entries of the top-level ``capability`` and ``agent``
-    sections and each environment's ``capabilities``. Only those blocks'
-    discriminator fields are read, never a free-form field: an ``agent_id``
-    in a hook's ``parameters`` or a provider's ``extra_body`` names nothing.
-    Its refusals are the configuration's errors, not the schema's: ``config
-    check`` reports them at its validation stage.
+    blocks: the entries of the top-level ``capability``, ``agent`` and
+    ``benchmark`` sections and each environment's ``capabilities``. Only
+    those blocks' discriminator fields are read, never a free-form field: an
+    ``agent_id`` in a hook's ``parameters`` or a provider's ``extra_body``
+    names nothing. Its refusals are the configuration's errors, not the
+    schema's: ``config check`` reports them at its validation stage.
 
     Raises:
-        UnknownPackageError: a capability, or the family of an agent
-            (``browser_use.dom``: ``browser_use``), that has no package.
+        UnknownPackageError: a capability, the family of an agent
+            (``browser_use.dom``: ``browser_use``) or a benchmark that has no
+            package.
         ComposeError: an agent and no capability (issue
             ``agent_without_capability``).
     """
@@ -914,6 +934,9 @@ def named_packages(raw: object) -> tuple[dict[str, str], dict[str, str]]:
         CapabilityRegistrar.discriminator_field,
     )
     agents = _ids(_blocks(sections.get("agent"), "agent"), AgentRegistrar.discriminator_field)
+    benchmarks = _ids(
+        _blocks(sections.get("benchmark"), "benchmark"), BenchmarkRegistrar.discriminator_field
+    )
     families: dict[str, str] = {}
     for agent_id, path in agents.items():
         families.setdefault(agent_family(agent_id), path)
@@ -926,6 +949,7 @@ def named_packages(raw: object) -> tuple[dict[str, str], dict[str, str]]:
             "unknown_capability_package",
         ),
         (families, "agent family", AGENTS_PACKAGE, agent_families(), "unknown_agent_family"),
+        (benchmarks, "benchmark", BENCHMARKS_PACKAGE, benchmark_ids(), "unknown_benchmark_package"),
     ):
         for name, path in named.items():
             if name not in known:
@@ -955,7 +979,7 @@ def named_packages(raw: object) -> tuple[dict[str, str], dict[str, str]]:
                 f"Add an environment block holding a capability ({known}).",
             ),
         )
-    return capabilities, agents
+    return NamedPackages(capabilities, agents, benchmarks)
 
 
 def _inside(module: str, packages: Collection[str]) -> bool:
@@ -1013,7 +1037,7 @@ def _held(
 def _unimplemented(layer: object, name: object) -> str:
     return (
         f"no package this configuration names provides any {layer!r}; leave {name!r} out, "
-        f"or name the capability or agent family that does"
+        f"or name the capability, agent family or benchmark that does"
     )
 
 
@@ -1060,10 +1084,11 @@ def _refusal(problems: list[_Problem]) -> ComposeError:
 
 
 def _known_packages() -> str:
-    """The capability packages and agent families there are, for a refusal to list."""
+    """The capability packages, agent families and benchmarks there are, for a refusal to list."""
     return (
         f"capability packages: {', '.join(capability_ids()) or 'none'}; "
-        f"agent families: {', '.join(agent_families()) or 'none'}"
+        f"agent families: {', '.join(agent_families()) or 'none'}; "
+        f"benchmarks: {', '.join(benchmark_ids()) or 'none'}"
     )
 
 
@@ -1163,5 +1188,6 @@ __all__ = [
     "InstantiationError",
     "UnknownPackageError",
     "UnresolvedWiringError",
+    "NamedPackages",
     "named_packages",
 ]

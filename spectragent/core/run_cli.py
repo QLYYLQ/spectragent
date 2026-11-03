@@ -1,4 +1,14 @@
-"""Run one configured agent task from the command line."""
+"""Run one configured agent task from the command line.
+
+A task comes from one of two places (``docs/architecture_design.md``
+§4.10.1 "单个任务照样简单"):
+
+- a benchmark's task source: ``--benchmark <alias|path.yaml> --task-id <id>``
+  gives the task's text and its three context parts (environment, Loop,
+  branch), exactly as ``spectragent bench`` runs it;
+- the command line: ``--task``, with the browser's ``--start-url`` and
+  ``--replay-archive``.
+"""
 
 from __future__ import annotations
 
@@ -6,19 +16,22 @@ import argparse
 import asyncio
 import logging
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 from dotenv import load_dotenv
 
-from spectragent.core.benchmark_runner import positive_seconds
+from spectragent.benchmarks.selection import read_benchmark, run_root
+from spectragent.core.benchmark_runner import positive_seconds, safe_run_id, task_snapshot
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.experiment import ExperimentScope
 from spectragent.core.runtime import ORACLE_TIMEOUT_S, AgentRuntime
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.config_source import ConfigSource
+from spectragent.schemas.restoration import BranchProvenance
 from spectragent.schemas.task import REPLAY_ARCHIVE_KEY
 
 
@@ -55,6 +68,25 @@ def _trace_summary(path: str | None) -> dict[str, Any]:
         return {"status": "unreadable", "complete_through": None, "reason": str(exc)}
 
 
+@dataclass(frozen=True)
+class _Task:
+    """What one task hands the run: its text, its context parts and the identity it is recorded with.
+
+    The identity defaults are ``AgentRuntime.execute``'s: a task written on the
+    command line belongs to no benchmark.
+    """
+
+    text: str
+    env: Mapping[str, Any] | None = None
+    loop: Mapping[str, Any] | None = None
+    branch: BranchProvenance | None = None
+    task_id: str = "unknown"
+    benchmark: str = ""
+    subset: str = ""
+    run_id: str | None = None
+    config: dict[str, Any] | None = None
+
+
 async def _run(
     **kwargs: Any,
 ) -> int:
@@ -67,25 +99,53 @@ async def _run_in_experiment(
     scope: ExperimentScope,
     config_path: Path,
     task: str,
-    start_url: str | None,
     timeout: float,
     dry_run: bool,
-    oracle_timeout: float = ORACLE_TIMEOUT_S,
+    start_url: str | None = None,
     replay_archive: str | None = None,
+    benchmark: str | None = None,
+    task_id: str | None = None,
+    oracle_timeout: float = ORACLE_TIMEOUT_S,
     progress: Any = None,
     report: Callable[[dict[str, Any]], None] | None = None,
 ) -> int:
     canonical = config_path.expanduser().resolve()
     source_bytes = canonical.read_bytes()
-    raw = yaml.safe_load(source_bytes)
+    raw = run_root(
+        yaml.safe_load(source_bytes), *([read_benchmark(benchmark)] if benchmark else [])
+    )
+    context = task_context(start_url=start_url, replay_archive=replay_archive)
     config_source = ConfigSource.from_path(canonical, data=source_bytes)
     run = scope.bind(ConfigComposer.for_config(raw).compose(raw))
+    if task_id is not None:
+        loader = run.single("benchmark").task_loader
+        definition = loader.get(task_id)
+        if definition is None:
+            raise ValueError(
+                f"--task-id {task_id}: benchmark {benchmark!r} has no such task "
+                f"({len(loader)} tasks; spectragent bench --benchmark {benchmark} --list lists them)"
+            )
+        parts = loader.get_task_context(task_id)
+        selected = _Task(
+            text=definition.task_text,
+            env=parts.env,
+            loop=parts.loop,
+            branch=parts.branch,
+            task_id=task_id,
+            benchmark=loader.benchmark_name,
+            subset=loader.subset,
+            run_id=safe_run_id(task_id),
+            config=task_snapshot(definition, loader.benchmark_name, loader.subset),
+        )
+    else:
+        selected = _Task(text=task, env=context)
+    label = selected.task_id
     if progress is not None:
         from spectragent.monitoring import attach_progress
 
         if not dry_run:
-            progress.set_tasks(["unknown"])
-            progress.start_task("unknown")
+            progress.set_tasks([label])
+            progress.start_task(label)
         attach_progress(run, progress)
     agent_id = run.ids("agent")[0]
     runtime = AgentRuntime.for_agent(run, agent_id)
@@ -103,12 +163,13 @@ async def _run_in_experiment(
         f"capabilities={capabilities or '-'}"
     )
 
-    context = task_context(start_url=start_url, replay_archive=replay_archive)
     if dry_run:
-        # The same assembly a run starts with, setup check included: with
-        # --replay-archive the replay's cooperation rows and its consistency
+        # The same assembly a run starts with, setup check included: with a
+        # replay archive the replay's cooperation rows and its consistency
         # with the source run are checked too. Nothing is launched.
-        runtime.prepare(env_context=context)
+        runtime.prepare(
+            task_id=selected.task_id, env_context=selected.env, loop_inputs=selected.loop
+        )
         print("Configuration and agent/environment negotiation succeeded.")
         if report is not None:
             report({"checked": "configuration_and_prepare", "launched": False})
@@ -118,11 +179,18 @@ async def _run_in_experiment(
 
     try:
         result = await runtime.execute(
-            task=task,
+            task=selected.text,
             timeout=timeout,
             oracle_timeout=oracle_timeout,
-            env_context=context,
+            task_id=selected.task_id,
+            benchmark=selected.benchmark,
+            subset=selected.subset,
+            run_id=selected.run_id,
+            env_context=selected.env,
+            loop_inputs=selected.loop,
+            branch=selected.branch,
             config_source=config_source,
+            config=selected.config,
         )
     except BaseException as exc:
         if progress is not None:
@@ -158,7 +226,7 @@ async def _run_in_experiment(
         if trace_path is not None:
             progress.set_trace(trace_path)
         progress.finish_task(
-            "unknown",
+            label,
             {
                 "agent_done": str(result.agent_done),
                 "env_status": str(result.env_status),
@@ -180,10 +248,15 @@ def main(
 ) -> int:
     parser = argparse.ArgumentParser(
         prog="spectragent run",
-        description="Run one task with a composed agent and environment.",
+        description=(
+            "Run one task with a composed agent and environment: a task of a benchmark "
+            "(--benchmark and --task-id), or one written here (--task, --start-url)."
+        ),
     )
     parser.add_argument("--config", required=True, type=Path, help="YAML run config")
-    parser.add_argument("--task", default="", help="Task text (required unless --dry-run)")
+    parser.add_argument(
+        "--task", default="", help="Task text (required unless --dry-run or --task-id)"
+    )
     parser.add_argument(
         "--start-url",
         help="Browser page to open before the agent starts: one complete http:// or https:// URL",
@@ -192,6 +265,17 @@ def main(
         "--replay-archive",
         help="Recorded run directory to replay the browser's network from "
         "(needs network_source: archive)",
+    )
+    parser.add_argument(
+        "--benchmark",
+        help=(
+            "The benchmark whose task --task-id runs: a shipped alias "
+            "(configs/benchmarks/<alias>.yaml) or the path of a benchmark YAML"
+        ),
+    )
+    parser.add_argument(
+        "--task-id",
+        help="Run this task of --benchmark: its text and where it starts come from the benchmark",
     )
     parser.add_argument(
         "--timeout", type=positive_seconds, default=300.0, help="Run timeout in seconds"
@@ -209,8 +293,25 @@ def main(
     )
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
-    if not args.dry_run and not args.task:
-        parser.error("--task is required unless --dry-run is set")
+    start = [
+        flag
+        for flag, value in (
+            ("--start-url", args.start_url),
+            ("--replay-archive", args.replay_archive),
+        )
+        if value
+    ]
+    if (args.benchmark is None) != (args.task_id is None):
+        parser.error("--benchmark and --task-id go together: they select one task of a benchmark")
+    if args.task_id is not None:
+        given = [*(["--task"] if args.task else []), *start]
+        if given:
+            parser.error(
+                f"{', '.join(given)}: a benchmark task's text and start come from its benchmark; "
+                f"leave them out with --task-id"
+            )
+    elif not args.dry_run and not args.task:
+        parser.error("--task is required unless --dry-run or --task-id is set")
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
@@ -222,10 +323,12 @@ def main(
             config_path=args.config,
             task=args.task,
             start_url=args.start_url,
+            replay_archive=args.replay_archive,
+            benchmark=args.benchmark,
+            task_id=args.task_id,
             timeout=args.timeout,
             oracle_timeout=args.oracle_timeout,
             dry_run=args.dry_run,
-            replay_archive=args.replay_archive,
             progress=progress,
             report=report,
         )

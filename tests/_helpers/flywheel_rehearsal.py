@@ -20,12 +20,15 @@ writes that summary as ``rehearsal.json``). What it does:
   (pinned does not fix it: replay must miss the document), and a page a
   Cloudflare challenge answers;
 - adapts the **shipped** configurations (``configs/flywheel/``: the UI-TARS
-  recording, its same-path replay, its branch sweep, the SFT export) the way
-  the replay, branch and export drivers do — the model's address and key, the fixture's routing
-  switches, the task data directory, absolute paths for the repository's own
-  files — plus a control group (the recording with ``archive: []``); the
-  export reads every run (``require_eval: null``) and decontaminates against
-  nothing (the sources are the benchmark's own tasks);
+  recording, its same-path replay and its branch sweep with their branches
+  YAMLs, the SFT export) the way the replay, branch and export drivers do — the
+  model's address and key, the fixture's routing switches, absolute paths for
+  the repository's own files — plus a control group (the recording with
+  ``archive: []``); the recordings run the shipped ``online_mind2web``
+  benchmark, whose data root is the fixture's for the rehearsal
+  (``$SPECTRAGENT_BENCHMARK_DATA``); the export reads every run
+  (``require_eval: null``) and decontaminates against nothing (the sources are
+  the benchmark's own tasks);
 - writes the chain spec (``evidence: rehearsal``, the planted credentials as
   literals, a token limit — :data:`REHEARSAL_TOKEN_LIMIT`, far above the
   scripted models' 15 tokens a call, so the real bench counts every call
@@ -207,8 +210,12 @@ class Router:
         return task.replies[turn]
 
 
-def write_task_data(directory: Path, site: FixtureSite) -> Path:
-    """The tasks as an ``online_mind2web`` data directory (``data_info.json`` + the ``All`` split)."""
+def write_task_data(data_root: Path, site: FixtureSite) -> Path:
+    """The tasks as the ``online_mind2web`` data under *data_root* (``data_info.json`` + ``All``).
+
+    Where the shipped benchmark reads it when ``$SPECTRAGENT_BENCHMARK_DATA`` is *data_root*.
+    """
+    directory = data_root / "browser" / "online_mind2web"
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "data_info.json").write_text(json.dumps({"split": {"All": "tasks.json"}}))
     records = [
@@ -253,15 +260,15 @@ def _absolute_rules(raw: dict[str, Any]) -> None:
 
 
 def stage_configs(
-    site: FixtureSite, llms: dict[str, ScriptedLLMServer], data_dir: Path
+    site: FixtureSite, llms: dict[str, ScriptedLLMServer]
 ) -> dict[str, dict[str, Any]]:
-    """The shipped configurations, adapted to the fixture (module docstring)."""
+    """The shipped configurations, adapted to the fixture (module docstring).
+
+    ``same_path_branches`` and ``branch_branches`` are the branch stages' branches YAMLs.
+    """
     record = _shipped("record_ui_tars_pinned.yaml")
     _point_llm(record, llms["record"])
     _capability(record)["backend"]["extra_args"] = site.chrome_args(hermetic=True)
-    record["task_loader"] = [
-        {"benchmark_name": "online_mind2web", "subset": "All", "data_dir": str(data_dir)}
-    ]
     control = copy.deepcopy(record)
     _point_llm(control, llms["control"])
     (writer,) = [hook for hook in control["hook"] if hook["hook_id"] == "trace_writer"]
@@ -274,7 +281,8 @@ def stage_configs(
     branch = _shipped("branch_ui_tars_archive.yaml")
     _point_llm(branch, llms["branch"])
     _absolute_rules(branch)
-    (loader,) = branch["task_loader"]
+    branch_branches = _shipped("branches_all_steps.yaml")
+    loader = branch_branches["benchmark"][0]["task_loader"]
     loader["step_selector"] = {"selector_id": "explicit", "steps": [BRANCH_STEP]}
     loader["branches_per_step"] = len(BRANCH_DECISIONS)
 
@@ -283,16 +291,15 @@ def stage_configs(
     exporter["filters"]["require_eval"] = None
     exporter["decontamination"] = {"against": []}
     exporter["student_run_config"] = str(REPO / exporter["student_run_config"])
-    # The leak scan reads the tasks' references through the document's loaders:
-    # the fixture's tasks, not the packaged split.
-    loader = {"benchmark_name": "online_mind2web", "subset": "All", "data_dir": str(data_dir)}
-    export["eval_loader"] = [dict(loader)]
-    export["task_loader"] = [dict(loader)]
+    # The leak scan reads the tasks' references through the registered loader, from the
+    # fixture's data root (``$SPECTRAGENT_BENCHMARK_DATA``), not the packaged split.
     return {
         "record": record,
         "control": control,
         "same_path": same_path,
+        "same_path_branches": _shipped("branches_last_step.yaml"),
         "branch": branch,
+        "branch_branches": branch_branches,
         "export": export,
     }
 
@@ -311,12 +318,20 @@ def chain_spec(out: Path, configs: dict[str, Path]) -> ChainSpec:
             "evidence": "rehearsal",
             "tasks": {
                 "benchmark": "online_mind2web",
-                "subset": "All",
                 "task_ids": [task.task_id for task in TASKS],
             },
             "token_limit": REHEARSAL_TOKEN_LIMIT,
             **{
-                stage: {"config": configs[stage], "timeout": TASK_TIMEOUT_S} for stage in RUN_STAGES
+                stage: {"config": configs[stage], "timeout": TASK_TIMEOUT_S}
+                for stage in ("record", "control")
+            },
+            **{
+                stage: {
+                    "config": configs[stage],
+                    "benchmark": configs[f"{stage}_branches"],
+                    "timeout": TASK_TIMEOUT_S,
+                }
+                for stage in ("same_path", "branch")
             },
             "export": {"config": configs["export"], "repeat": 2},
             "report": {"planted": [{"label": label, "value": value} for label, value in PLANTED]},
@@ -362,6 +377,20 @@ def audit_connections() -> Iterator[Egress]:
     finally:
         socket.socket.connect = original  # type: ignore[method-assign]
         socket.socket.connect_ex = original_ex  # type: ignore[method-assign]
+
+
+@contextlib.contextmanager
+def _benchmark_data_root(root: Path) -> Iterator[None]:
+    """The shipped benchmarks read the fixture's data: ``$SPECTRAGENT_BENCHMARK_DATA`` is *root*."""
+    saved = os.environ.get("SPECTRAGENT_BENCHMARK_DATA")
+    os.environ["SPECTRAGENT_BENCHMARK_DATA"] = str(root)
+    try:
+        yield
+    finally:
+        if saved is None:
+            os.environ.pop("SPECTRAGENT_BENCHMARK_DATA", None)
+        else:
+            os.environ["SPECTRAGENT_BENCHMARK_DATA"] = saved
 
 
 @contextlib.contextmanager
@@ -431,10 +460,11 @@ def run_rehearsal(out: Path) -> Rehearsal:
             )
             for stage in RUN_STAGES
         }
-        data_dir = write_task_data(out / "data" / "online_mind2web", site)
+        write_task_data(out / "data", site)
+        stack.enter_context(_benchmark_data_root(out / "data"))
         configs: dict[str, Path] = {}
         (out / "configs").mkdir(parents=True, exist_ok=True)
-        for stage, raw in stage_configs(site, llms, data_dir).items():
+        for stage, raw in stage_configs(site, llms).items():
             configs[stage] = out / "configs" / f"{stage}.yaml"
             configs[stage].write_text(yaml.safe_dump(raw, sort_keys=False))
         spec = chain_spec(out, configs)

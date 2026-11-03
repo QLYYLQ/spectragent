@@ -363,7 +363,6 @@ async def test_agent_done_and_incomplete_recording_remain_separate(tmp_path, mon
     code = await run_cli._run(
         config_path=path,
         task="task",
-        start_url=None,
         timeout=1,
         dry_run=False,
         report=report.update,

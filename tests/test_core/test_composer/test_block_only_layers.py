@@ -44,6 +44,25 @@ _UI_TARS: Block = {
 _ON_BROWSER: Block = {"capability": [_BROWSER]}
 _ON_ANDROID: Block = {"capability": [_ANDROID]}
 _AGENT: Block = {"capability": [_BROWSER], "agent": [_UI_TARS]}
+_BRANCHES: Block = {
+    "benchmark": [
+        {
+            "benchmark_id": "trace_branches",
+            "task_loader": {
+                "benchmark_name": "trace_branches",
+                "step_selector": {"selector_id": "all"},
+            },
+        }
+    ]
+}
+_ONLINE_MIND2WEB: Block = {
+    "benchmark": [
+        {
+            "benchmark_id": "online_mind2web",
+            "task_loader": {"benchmark_name": "online_mind2web"},
+        }
+    ]
+}
 
 #: Every block-only layer: the sections that name the packages whose blocks
 #: hold it (none for a framework axis held by a framework block) and the block
@@ -68,7 +87,12 @@ BLOCK_ONLY: dict[str, tuple[Block, str]] = {
     "agent_loop": (_AGENT, "agent[ui_tars].agent_loop"),
     "memory": (_AGENT, "agent[ui_tars].memory"),
     "restorer": (_AGENT, "agent[ui_tars].agent_loop[branch].restorer"),
-    "step_selector": ({}, "task_loader[trace_branches].step_selector"),
+    "task_loader": (_BRANCHES, "benchmark[trace_branches].task_loader"),
+    "eval_loader": (_ONLINE_MIND2WEB, "benchmark[online_mind2web].eval_loader"),
+    "step_selector": (
+        _BRANCHES,
+        "benchmark[trace_branches].task_loader[trace_branches].step_selector",
+    ),
     "action_translator": ({}, "exporter[openai_messages].translator"),
 }
 
@@ -103,5 +127,5 @@ def test_a_build_with_no_agent_leaves_the_agents_layers_out(layer: str) -> None:
         f"names takes it."
     )
     assert issue.remedy.startswith(
-        "Leave it out, or name the agent family or capability whose block holds it"
+        "Leave it out, or name the agent family, capability or benchmark whose block holds it"
     )

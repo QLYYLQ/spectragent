@@ -7,12 +7,14 @@
 # (one model call per task) and the run ends with a terminal observation.
 # Two tasks per source: the same input twice, for replay determinism.
 #
-#   spectragent bench --config configs/flywheel/same_path_ui_tars_archive.yaml --no-eval
+#   spectragent bench --config configs/flywheel/same_path_ui_tars_archive.yaml \
+#     --benchmark configs/flywheel/branches_last_step.yaml --no-eval
 #
 # Pair it with the recording config (record_ui_tars_pinned.yaml): the agent,
 # the tier and the browser block are the branch config's
-# (branch_ui_tars_archive.yaml). The metrics chain (spectragent flywheel run)
-# writes task_loader.data_dir (its traces/record) and trace_writer.trace_dir
+# (branch_ui_tars_archive.yaml). The tasks come from the branches YAML
+# (branches_last_step.yaml). The metrics chain (spectragent flywheel run)
+# writes that YAML's data_dir (its traces/record) and trace_writer.trace_dir
 # (its traces/same_path) itself; run it by hand by pointing data_dir at your
 # recordings. There is no eval loader for branch tasks: pass --no-eval.
 agent:
@@ -68,13 +70,3 @@ hook:
       - archiver_id: browser.replay_log  # the replay log of every task
       - archiver_id: browser.storage
       - archiver_id: browser.dom_raw
-
-task_loader:
-  - benchmark_name: trace_branches
-    data_dir: traces/recorded            # placeholder: the directory your recorded runs are in
-    step_selector: { selector_id: last } # each source's last branchable step
-    branches_per_step: 2                 # the same input twice: replay determinism
-    agent_outcome: any                   # a run whose agent ended in error is measured too
-    on_unbranchable: skip                # an unbranchable source is left out, with its reason
-    exclude_unloaded_checkpoints: true   # a last step captured before its page finished loading is not
-                                         # replayed (no earlier step instead), listed in the loader's skipped

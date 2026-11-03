@@ -1,8 +1,9 @@
 """Where an export reads benchmark data (arch §4.15 "基准数据").
 
-The export document's own ``eval_loader:`` / ``task_loader:`` blocks, by
-``benchmark_name`` and in document order; the registry's loader, built with
-its defaults, only for a benchmark the document configures none for.
+The loaders of the benchmarks the export names (``spectragent export
+--benchmark``): each one's task loader and its reference loader, by
+``benchmark_name`` and in the order named; the registry's loader, built with
+its defaults, only for a benchmark no named one configures.
 """
 
 from __future__ import annotations
@@ -16,25 +17,26 @@ from spectragent.export.benchmarks import BenchmarkLoaders
 from tests._helpers.export_runs import write_benchmark
 
 
-def test_the_documents_loaders_by_benchmark_in_document_order(
+def test_the_named_benchmarks_loaders_by_benchmark_in_the_order_named(
     composer: ConfigComposer, tmp_path: Path
 ) -> None:
     directory = write_benchmark(tmp_path, "online_mind2web", [{"task_id": "t"}], subset="Hard")
     write_benchmark(tmp_path, "online_mind2web", [{"task_id": "u"}], subset="All")
     block = {"benchmark_name": "online_mind2web", "data_dir": str(directory)}
-    run = composer.compose(
-        {
-            "eval_loader": [{**block, "subset": "Hard"}, {**block, "subset": "All"}],
-            "task_loader": [{**block, "subset": "All"}],
-        }
-    )
+    hard = {"benchmark_id": "online_mind2web", "task_loader": {**block, "subset": "Hard"}}
+    every = {
+        "benchmark_id": "online_mind2web",
+        "task_loader": {**block, "subset": "All"},
+        "eval_loader": {**block, "subset": "All"},
+    }
+    run = composer.compose({"benchmark": [hard, every]})
     loaders = BenchmarkLoaders.from_run(run)
-    assert [loader.subset for loader in loaders.configured("eval", "online_mind2web")] == [
-        "Hard",
-        "All",
-    ]
+    # Only a written eval_loader block configures one; the first benchmark's
+    # references would come from the registered default, built when needed.
+    assert [loader.subset for loader in loaders.configured("eval", "online_mind2web")] == ["All"]
     assert [loader.task_ids() for loader in loaders.configured("task", "online_mind2web")] == [
-        ["u"]
+        ["t"],
+        ["u"],
     ]
     assert loaders.configured("eval", "browsecomp") == ()
 
@@ -52,5 +54,5 @@ def test_a_registered_default_is_built_once_and_never_beside_a_configured_one(
     assert loaders.registered_default("task", "", None) is None
 
     configured = BenchmarkLoaders(eval_loaders=[built])
-    with pytest.raises(ValueError, match="eval_loader blocks configure 'online_mind2web'"):
+    with pytest.raises(ValueError, match="configures the eval loader of 'online_mind2web'"):
         configured.registered_default("eval", "online_mind2web", "test")

@@ -1,0 +1,21 @@
+# The same-path replay's task source for same_path_ui_tars_archive.yaml (data
+# flywheel): every recorded run restored to its LAST branchable step, twice.
+#
+#   spectragent bench --config configs/flywheel/same_path_ui_tars_archive.yaml \
+#     --benchmark configs/flywheel/branches_last_step.yaml --no-eval
+#
+# The metrics chain (spectragent flywheel run) writes data_dir itself (its
+# traces/record); run it by hand by pointing data_dir at your recordings. Each
+# task belongs to its source run's benchmark (docs/architecture_design.md §4.10.1
+# "分叉 sweep 是一种任务来源"); there is no eval loader for branch tasks: pass --no-eval.
+benchmark:
+  - benchmark_id: trace_branches
+    task_loader:
+      benchmark_name: trace_branches
+      data_dir: traces/recorded            # placeholder: the directory your recorded runs are in
+      step_selector: { selector_id: last } # each source's last branchable step
+      branches_per_step: 2                 # the same input twice: replay determinism
+      agent_outcome: any                   # a run whose agent ended in error is measured too
+      on_unbranchable: skip                # an unbranchable source is left out, with its reason
+      exclude_unloaded_checkpoints: true   # a last step captured before its page finished loading is not
+                                           # replayed (no earlier step instead), listed in the loader's skipped

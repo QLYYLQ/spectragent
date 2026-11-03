@@ -18,7 +18,7 @@ id of its eval loader), ``site_instruction`` (the same start-URL host and
 normalised instruction as a task of its task loader; a task-variant branch
 is checked with its source task's instruction too, since its screens were
 recorded on that task) or ``either``. Benchmark data is read through
-``benchmarks.py`` — the export document's own loaders first; a benchmark
+``benchmarks.py`` — the loaders of the benchmarks the export names first; a benchmark
 whose loaders cannot load fails the export:
 decontamination that silently checked nothing is worse than none.
 """
@@ -137,7 +137,7 @@ class Decontaminator:
         return self._tasks[key]
 
     def _loaders_of(self, kind: LoaderKind, ref: BenchmarkRef) -> tuple[Any, ...]:
-        """The *kind* loaders *ref* is read through: the document's, else the registered default.
+        """The *kind* loaders *ref* is read through: the named benchmarks', else the registered default.
 
         A configured loader is used whatever ``subset`` it was given, unless
         *ref* names another subset — two settings that disagree are an
@@ -154,8 +154,8 @@ class Decontaminator:
                 subsets = sorted({str(getattr(loader, "subset", None)) for loader in configured})
                 raise ExportConfigError(
                     f"decontamination against {ref.benchmark!r} subset {ref.subset!r}: the "
-                    f"export document configures its {kind}_loader for subset(s) "
-                    f"{', '.join(subsets)} only — configure one with subset {ref.subset!r} or "
+                    f"benchmarks the export names configure its {kind}_loader for subset(s) "
+                    f"{', '.join(subsets)} only — name one with subset {ref.subset!r} or "
                     f"drop the subset from the reference"
                 )
             return chosen
@@ -166,7 +166,7 @@ class Decontaminator:
         if loader is None:
             raise ExportConfigError(
                 f"decontamination against {ref.benchmark!r}: no {kind} loader is registered "
-                f"under that key and the export document configures none (set "
+                f"under that key and no benchmark the export names configures one (set "
                 f"decontamination.against to the benchmarks you evaluate on, or [] for none)"
             )
         return (loader,)
@@ -197,9 +197,9 @@ class Decontaminator:
 def _cannot_load(ref: BenchmarkRef, kind: LoaderKind, exc: Exception) -> ExportConfigError:
     return ExportConfigError(
         f"decontamination against {ref.benchmark!r}: its {kind} loader could not load "
-        f"({type(exc).__name__}: {exc}); point it at the data with a {kind}_loader block in "
-        f"the export document (benchmark_name: {ref.benchmark}, data_dir: ...) — "
-        f"decontamination never checks nothing silently"
+        f"({type(exc).__name__}: {exc}); point it at the data with a benchmark YAML whose "
+        f"{ref.benchmark} {kind}_loader sets data_dir, named by spectragent export --benchmark "
+        f"— decontamination never checks nothing silently"
     )
 
 

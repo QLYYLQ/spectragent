@@ -139,6 +139,15 @@ class TestShippedConfigs:
         if "exporter" in root:
             _check_export_config(run)
             return
+        if set(root) == {"benchmark"}:
+            # A branches YAML: the branch sweep's task source, selected with
+            # --benchmark (§4.10.1). ``test_benchmark_selection.py`` runs it
+            # with its run configuration.
+            benchmark = run.single("benchmark")
+            assert benchmark.benchmark_id == "trace_branches"
+            assert benchmark.task_loader.benchmark_name == "trace_branches"
+            assert not run.instances("agent") and not run.instances("environment")
+            return
         if "replay_reviewer" in root:
             from spectragent.core.llm.base import require_inference_protocol
 
@@ -254,7 +263,12 @@ def _check_export_config(run: Any) -> None:
 
 
 def _recorded_run_of(
-    composer: ConfigComposer, root: dict[str, Any], agent_id: str, base: Path
+    composer: ConfigComposer,
+    root: dict[str, Any],
+    agent_id: str,
+    base: Path,
+    *,
+    task: Mapping[str, Any] | None = None,
 ) -> Path:
     """A committed one-step recording of *root*'s configuration, as a recording makes it.
 
@@ -264,8 +278,10 @@ def _recorded_run_of(
     and preparing the react variant of *root* on the live network (how a
     recording runs; a branch compares the agent block and the observation and
     action negotiation, not the network source or the archive) through the
-    same redaction ``TraceWriter`` applies — never a hand-written one. Its
-    environment evidence — one exchange, and the browser fingerprint with
+    same redaction ``TraceWriter`` applies — never a hand-written one. *task*
+    adds the task identity a benchmark run records (``benchmark``, ``task_id``,
+    ``task_setup`` …): the branch sweep's task source reads a source by it.
+    Its environment evidence — one exchange, and the browser fingerprint with
     *root*'s tier, viewport, planned launch flags and this host's browser
     defaults — is committed by
     ``RecordingScript``, the real archiver session and WAL, so the replay's
@@ -307,6 +323,7 @@ def _recorded_run_of(
             runtime.negotiated_actions,
             runtime.negotiated_archive,
         ),
+        **(task or {}),
     )
     (cap,) = composer.compose(copy.deepcopy(root)).instances("capability")
     script = RecordingScript(
@@ -327,6 +344,108 @@ def _recorded_run_of(
 
     asyncio.run(_record())
     return script.finish(TraceStatus.COMPLETE).resolve()
+
+
+#: The shipped run configurations that run a benchmark's tasks as they are
+#: (``--benchmark online_mind2web``): no branch loop, no replayed network.
+_BENCHMARK_RUN_CONFIGS = [
+    *sorted(CONFIG_DIR.glob("*.yaml")),
+    CONFIG_DIR / "flywheel" / "record_ui_tars_pinned.yaml",
+]
+#: Each shipped branch run configuration and the branches YAML that is its task source.
+_BRANCH_SWEEPS = [
+    ("branch_ui_tars_archive.yaml", "branches_all_steps.yaml", 3),
+    ("same_path_ui_tars_archive.yaml", "branches_last_step.yaml", 2),
+]
+
+
+class TestShippedConfigsRunThroughTheirBenchmarks:
+    """The shipped configurations run their tasks through ``--benchmark`` (§4.10.1).
+
+    A run configuration holds no task loader; the benchmark YAML it is paired
+    with does. Each pair composes into one run root and passes ``spectragent
+    bench``'s pre-flight for its first task: the task's own context, from its
+    benchmark's task source, through ``prepare()``.
+    """
+
+    def test_no_run_configuration_holds_a_task_source(self) -> None:
+        for path in [*SHIPPED_CONFIGS, *sorted(CONFIG_DIR.glob("lookahead/*.yaml"))]:
+            root = yaml.safe_load(path.read_text())
+            assert not {"task_loader", "eval_loader"} & set(root), path.name
+            if set(root) != {"benchmark"}:
+                assert "benchmark" not in root, path.name
+
+    @pytest.mark.parametrize("config_path", _BENCHMARK_RUN_CONFIGS, ids=lambda p: p.name)
+    def test_a_run_configuration_runs_a_benchmark_task(
+        self, config_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from spectragent.benchmarks.selection import read_benchmark, run_root
+        from spectragent.core.benchmark_runner import BenchmarkRunner
+
+        data = tmp_path / "browser" / "online_mind2web"
+        data.mkdir(parents=True)
+        (data / "data_info.json").write_text(json.dumps({"split": {"All": "tasks.json"}}))
+        task = {"task_id": "t1", "task_text": "find the kettle", "start_url": "https://shop.test/"}
+        (data / "tasks.json").write_text(json.dumps([task]))
+        monkeypatch.setenv("SPECTRAGENT_BENCHMARK_DATA", str(tmp_path))
+
+        raw = run_root(yaml.safe_load(config_path.read_text()), read_benchmark("online_mind2web"))
+        composer = ConfigComposer.for_config(raw)
+        loader = composer.compose(copy.deepcopy(raw)).single("benchmark").task_loader
+        runner = BenchmarkRunner(loader=loader, compose=lambda: composer.compose(raw))
+        run = runner.preflight("t1")
+        assert run.single("benchmark").benchmark_id == "online_mind2web"
+        assert redact_config(run.top_level_cfg)["benchmark"][0]["task_loader"]["subset"] == "All"
+
+    @pytest.mark.parametrize(("config_name", "branches_name", "branches"), _BRANCH_SWEEPS)
+    def test_a_branch_configuration_runs_its_branches_yaml(
+        self, config_name: str, branches_name: str, branches: int, tmp_path: Path
+    ) -> None:
+        from spectragent.benchmarks.selection import read_benchmark, run_root
+        from spectragent.core.archive.privacy import RedactionLedger
+        from spectragent.core.benchmark_runner import BenchmarkRunner
+        from spectragent.core.trace.models import TaskSetupRecord
+
+        root = yaml.safe_load((CONFIG_DIR / "flywheel" / config_name).read_text())
+        composer = ConfigComposer.for_config(root)
+        agent_id = composer.compose(copy.deepcopy(root)).ids("agent")[0]
+        recordings = tmp_path / "recorded"
+        _recorded_run_of(
+            composer,
+            root,
+            agent_id,
+            recordings,
+            task={
+                "benchmark": "online_mind2web",
+                "subset": "All",
+                "task_id": "t1",
+                "task": "find the kettle",
+                "task_setup": TaskSetupRecord(
+                    context={"start_url": "http://shop.test/"}, redactions=RedactionLedger()
+                ),
+            },
+        )
+        # The recording bound the network archive, as a recording for branching does.
+        config_file = recordings / "recorded-source" / "config.json"
+        recorded = json.loads(config_file.read_text())
+        recorded["negotiation"]["active_archivers"] = ["browser.network"]
+        recorded["negotiation"]["archive_bindings"] = {"browser.network": "browser"}
+        config_file.write_text(json.dumps(recorded))
+
+        block = read_benchmark(str(CONFIG_DIR / "flywheel" / branches_name))
+        block["task_loader"]["data_dir"] = str(recordings)
+        raw = run_root(root, block)
+        sweep = ConfigComposer.for_config(raw)
+        loader = sweep.compose(copy.deepcopy(raw)).single("benchmark").task_loader
+        assert loader.task_ids() == [f"recorded-source/s0/b{i}" for i in range(branches)]
+        context = loader.get_task_context("recorded-source/s0/b0")
+        assert context.env == {
+            "start_url": "http://shop.test/",
+            "replay_archive": str((recordings / "recorded-source").resolve()),
+        }
+        assert context.branch is not None and context.branch.source_benchmark == "online_mind2web"
+        runner = BenchmarkRunner(loader=loader, compose=lambda: sweep.compose(raw))
+        runner.preflight("recorded-source/s0/b0")
 
 
 class TestProviderSubConfig:
@@ -1022,6 +1141,9 @@ _UNPROVABLE_SCALARS: dict[str, frozenset[str]] = {
             "environment[0].capabilities[0].profile",
         }
     ),
+    # The branch sweeps' task sources (§4.10.1): every knob is observable.
+    "branches_all_steps.yaml": frozenset(),
+    "branches_last_step.yaml": frozenset(),
     # The one-member Literals (the only v1 value), the split salt and the null
     # that spells out a documented default (no verdict filter).
     "export_sft.yaml": frozenset(
@@ -1277,21 +1399,31 @@ def _tracked_blocks(root: dict[str, Any]) -> list[_Block]:
                         )
                     )
 
-    # The task loader (``trace_branches``) and its step selector receptor.
-    for t, loader_entry in enumerate(root.get("task_loader", [])):
+    # A benchmark (§4.10.1): its task loader, with the ``trace_branches``
+    # loader's step selector receptor, and its eval loader.
+    for b, benchmark_entry in enumerate(root.get("benchmark", [])):
         blocks.append(
             _Block(
-                f"task_loader[{t}]",
-                lambda r, t=t: r["task_loader"][t],
-                lambda run, t=t: run.instances("task_loader")[t],
+                f"benchmark[{b}]",
+                lambda r, b=b: r["benchmark"][b],
+                lambda run, b=b: run.instances("benchmark")[b],
             )
         )
-        if "step_selector" in loader_entry:
+        for child in ("task_loader", "eval_loader"):
+            if isinstance(benchmark_entry.get(child), dict):
+                blocks.append(
+                    _Block(
+                        f"benchmark[{b}].{child}",
+                        lambda r, b=b, c=child: r["benchmark"][b][c],
+                        lambda run, b=b, c=child: getattr(run.instances("benchmark")[b], c),
+                    )
+                )
+        if "step_selector" in (benchmark_entry.get("task_loader") or {}):
             blocks.append(
                 _Block(
-                    f"task_loader[{t}].step_selector",
-                    lambda r, t=t: r["task_loader"][t]["step_selector"],
-                    lambda run, t=t: run.instances("task_loader")[t].step_selector,
+                    f"benchmark[{b}].task_loader.step_selector",
+                    lambda r, b=b: r["benchmark"][b]["task_loader"]["step_selector"],
+                    lambda run, b=b: run.instances("benchmark")[b].task_loader.step_selector,
                 )
             )
 

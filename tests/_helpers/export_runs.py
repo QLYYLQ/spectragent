@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -57,15 +58,20 @@ def exporter_entry(sources_root: Path, output_dir: Path, **overrides: Any) -> di
 
 
 def run_export(
-    composer: ConfigComposer, entry: dict[str, Any], **layers: list[dict[str, Any]]
+    composer: ConfigComposer,
+    entry: dict[str, Any],
+    *,
+    benchmarks: Sequence[dict[str, Any]] = (),
 ) -> ExportReport:
-    """Compose one ``exporter:`` entry (plus any other top-level *layers*) as the CLI does; run it.
+    """Compose one ``exporter:`` entry as the CLI does, with the *benchmarks* it names; run it.
 
-    *layers* are further blocks of the same document — ``eval_loader=[...]``,
-    ``task_loader=[...]`` — read the way the CLI reads them
+    *benchmarks* are the blocks the named benchmark YAMLs hold
+    (``spectragent export --benchmark``), read the way the CLI reads them
     (``ExportRunner.from_run``).
     """
-    document = {"exporter": [copy.deepcopy(entry)], **copy.deepcopy(layers)}
+    document: dict[str, Any] = {"exporter": [copy.deepcopy(entry)]}
+    if benchmarks:
+        document["benchmark"] = copy.deepcopy(list(benchmarks))
     run = composer.compose(document)
     return ExportRunner.from_run(run, origin="the test document").run()
 

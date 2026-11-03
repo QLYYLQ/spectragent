@@ -226,8 +226,9 @@ class ReferenceScanner:
                 "reference_leak",
                 sample_id,
                 f"the {benchmark} eval loader could not load its references "
-                f"({type(exc).__name__}: {exc}); point it at the data with an eval_loader "
-                f"block in the export document (benchmark_name: {benchmark}, data_dir: ...)",
+                f"({type(exc).__name__}: {exc}); point it at the data with a benchmark YAML "
+                f"whose {benchmark} eval_loader sets data_dir, named by spectragent export "
+                f"--benchmark",
             ) from exc
         return () if loader is None else (loader,)
 

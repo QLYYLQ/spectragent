@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from spectragent import GENERATED_DIR
+from spectragent.benchmarks.selection import read_benchmark, run_root
 from spectragent.cli.configuration_errors import inspection_stage
 from spectragent.cli.configuration_provenance import explain_provenance
 from spectragent.cli.fingerprints import source_fingerprints
@@ -29,15 +30,32 @@ def explain_config(
     env_id: str | None = None,
     start_url: str | None = None,
     replay_archive: str | None = None,
+    benchmark: str | None = None,
     task_id: str | None = None,
 ) -> dict[str, Any]:
+    """Check *path* as a run composes and prepares it, without launching anything.
+
+    *start_url* / *replay_archive* are a written task's context; *benchmark*
+    and *task_id* select a task of a benchmark instead, whose context the
+    check prepares with.
+    """
+    if (benchmark is None) != (task_id is None):
+        raise ValueError("--benchmark and --task-id go together: they select one benchmark task")
+    if task_id is not None and (start_url or replay_archive):
+        raise ValueError(
+            "--start-url / --replay-archive: a benchmark task's start comes from its benchmark; "
+            "leave them out with --task-id"
+        )
     with inspection_stage("yaml"):
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError("The configuration must be a YAML mapping")
+        blocks = [read_benchmark(benchmark)] if benchmark is not None else []
     with inspection_stage("validation"):
-        # A name with no package, or an agent with no capability, is refused
-        # before the schema is built; it is the configuration's error.
+        # A benchmark section in the run configuration, a name with no
+        # package, or an agent with no capability, is refused before the
+        # schema is built; it is the configuration's error.
+        raw = run_root(raw, *blocks)
         named_packages(raw)
     with inspection_stage("schema"):
         composer = ConfigComposer.for_config(raw)
@@ -60,7 +78,9 @@ def explain_config(
         if not agents and any((agent_id, env_id, start_url, replay_archive, task_id)):
             raise ValueError("Agent or task options require an agent in the configuration")
         if agents and task_id is not None:
-            loader = run.single("task_loader")
+            loader = run.single("benchmark").task_loader
+            if loader.get(task_id) is None:
+                raise ValueError(f"--task-id {task_id}: benchmark {benchmark!r} has no such task")
             task = loader.get_task_context(task_id)
             context, loop_inputs = task.env, task.loop
     if agents:

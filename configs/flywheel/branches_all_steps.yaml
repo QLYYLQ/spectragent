@@ -1,0 +1,29 @@
+# The branch sweep's task source for branch_ui_tars_archive.yaml (data flywheel):
+# which recorded runs to branch, at which steps, how many times. Select it with
+# --benchmark, as any benchmark:
+#
+#   spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml \
+#     --benchmark configs/flywheel/branches_all_steps.yaml --no-eval
+#
+# A branches YAML holds only this block: the trace_branches task loader and its
+# knobs. Each branch task belongs to its source run's benchmark (its benchmark,
+# subset and task id ride along), so it is not a benchmark of its own; the branch
+# Loop, the restorer and the hooks stay in the run configuration
+# (docs/architecture_design.md §4.10.1 "分叉 sweep 是一种任务来源", §4.10 trace_branches).
+# Every task's context carries the source's setup (start_url), replay_archive
+# (the source run directory) and the checkpoint; no start flag is needed. There is
+# no eval loader for branch tasks yet, so pass --no-eval (a configured evaluator
+# is refused before anything runs).
+benchmark:
+  - benchmark_id: trace_branches
+    task_loader:
+      benchmark_name: trace_branches
+      data_dir: traces/recorded            # placeholder: the directory your recorded runs are in
+      step_selector: { selector_id: all }  # every_k {k, offset} | explicit {steps: [...]} | last
+      branches_per_step: 3                 # b0, b1, b2 per selected step, each sampled on its own
+      agent_outcome: any                   # done | max_steps | error | timeout | vetoed: how the source's agent ended
+                                           # (a checkpoint is always a step the source's trace is closed and complete through)
+      on_unbranchable: raise               # skip: leave an unbranchable source out, with its reason
+      exclude_unloaded_checkpoints: true   # leave out a checkpoint captured before its page finished loading
+                                           # (capture_state settle loaded: false), listed in the loader's skipped
+      # require_eval: { evaluator_id: online_mind2web, label: 1 }   # only runs a judge passed

@@ -15,8 +15,9 @@ LLM spend, building on M30's ``replay_driver``:
   avoided — see the fixture page's note.)
 - **The branches** (:func:`branch_config`): the same file as M30's replay
   (``network_source: archive``, ``base_time: from_archive``, no fixture
-  routes) with ``agent_loop: branch`` (``prefix_replay``, ``strict``) and a
-  ``trace_branches`` task loader over the recording's trace root. Each branch
+  routes) with ``agent_loop: branch`` (``prefix_replay``, ``strict``), composed
+  with a branches YAML's block — the ``trace_branches`` task loader over the
+  recording's trace root (§4.10.1), as ``--benchmark`` adds it. Each branch
   task runs through the real loader and :class:`BenchmarkRunner`
   (:func:`run_branch_task`), so the task context — setup, ``replay_archive``,
   ``checkpoint``, provenance — is the loader's, as in a sweep.
@@ -124,7 +125,11 @@ def branch_config(
     branches_per_step: int = 1,
     continue_steps: int = 1,
 ) -> dict[str, Any]:
-    """*record_raw* as a branch sweep over its own recordings (see the module docstring)."""
+    """*record_raw* as a branch sweep over its own recordings, with its branches YAML's block.
+
+    The run root ``spectragent bench --config ... --benchmark <branches YAML>``
+    composes (see the module docstring).
+    """
     raw = driver.to_replay_config(record_raw, llm=llm, trace_dir=trace_dir)
     agent = raw["agent"][0]
     agent["agent_loop"] = {
@@ -133,12 +138,15 @@ def branch_config(
         "continue_steps": continue_steps,
         "restorer": {"restorer_id": "prefix_replay", "verify": "strict"},
     }
-    raw["task_loader"] = [
+    raw["benchmark"] = [
         {
-            "benchmark_name": "trace_branches",
-            "data_dir": str(sources_root),
-            "step_selector": {"selector_id": "explicit", "steps": [step]},
-            "branches_per_step": branches_per_step,
+            "benchmark_id": "trace_branches",
+            "task_loader": {
+                "benchmark_name": "trace_branches",
+                "data_dir": str(sources_root),
+                "step_selector": {"selector_id": "explicit", "steps": [step]},
+                "branches_per_step": branches_per_step,
+            },
         }
     ]
     return raw
@@ -147,7 +155,7 @@ def branch_config(
 def run_branch_task(raw: dict[str, Any], task_id: str, *, timeout: float = 240) -> TaskOutcome:
     """Run one branch task of *raw* the way ``spectragent bench`` does: its loader, its runner."""
     composer = ConfigComposer.for_config(raw)
-    loader = composer.compose(raw).single("task_loader")
+    loader = composer.compose(raw).single("benchmark").task_loader
     runner = BenchmarkRunner(loader=loader, compose=lambda: composer.compose(raw), timeout=timeout)
     return asyncio.run(runner.run_task(task_id))
 

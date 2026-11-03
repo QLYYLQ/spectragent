@@ -1,0 +1,24 @@
+# The task-variant forks' task source, shared by both variant arms
+# (branch_task_variants.yaml and branch_task_variants_without_source_thoughts.yaml):
+# the checkpoints and tasks of the variants file, one decision each. Select it
+# with --benchmark (lookahead/README.md, A collection round):
+#
+#   spectragent bench --config "$ROUND_DIR/configs/branch_task_variants.yaml" \
+#     --benchmark "$ROUND_DIR/configs/branches_task_variants.yaml" --no-eval
+#
+# Each fork belongs to its source run's benchmark (docs/architecture_design.md
+# §4.10.1 "分叉 sweep 是一种任务来源"). Copy this file to a round directory and
+# replace tmp/lookahead/round before execution.
+benchmark:
+- benchmark_id: trace_branches
+  task_loader:
+    benchmark_name: trace_branches
+    data_dir: tmp/lookahead/round/record
+    exclude_runs: tmp/lookahead/round/out/health/reviewed-exclusions.json
+    branches_per_step: 1
+    agent_outcome: any
+    on_unbranchable: skip
+    exclude_unloaded_checkpoints: true
+    step_selector:
+      selector_id: all
+    task_variants: tmp/lookahead/round/variants/variants.json

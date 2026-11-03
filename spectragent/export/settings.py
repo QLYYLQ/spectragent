@@ -192,8 +192,8 @@ class Decontamination:
     against: tuple[BenchmarkRef, ...] = Field(
         default=(),
         description=(
-            "Benchmarks the student will be evaluated on, read through the export "
-            "document's eval_loader / task_loader blocks (by benchmark_name; else each "
+            "Benchmarks the student will be evaluated on, read through the loaders of the "
+            "benchmarks spectragent export --benchmark names (by benchmark_name; else each "
             "benchmark's registered loader with its defaults). Only the benchmarks listed "
             "here are checked. Default []: nothing is decontaminated, and the dataset "
             "manifest says decontaminated: false."

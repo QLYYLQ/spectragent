@@ -66,8 +66,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from spectragent.benchmarks import Benchmark
+from spectragent.benchmarks.selection import read_benchmark, run_root
 from spectragent.core.benchmark_session import SessionLedger, TaskProgress
 from spectragent.core.composer import ComposedRun, ConfigComposer
+from spectragent.core.data_loader.eval.base import BaseEvalLoader
 from spectragent.core.experiment import ExperimentScope
 from spectragent.core.llm.exceptions import ModelOutputTruncatedError
 from spectragent.core.loops.errors import RunAbort
@@ -108,7 +111,7 @@ TOKEN_LIMIT_EXIT_CODE = 4
 _MODEL_CALL_PHASES = ("llm", "prompt")
 
 
-def _safe_run_id(task_id: str, *, prefix: str = "") -> str:
+def safe_run_id(task_id: str, *, prefix: str = "") -> str:
     """Filesystem-safe, collision-resistant trace directory name.
 
     Keeps the task id legible — the whole point is that ``ls traces/``
@@ -950,7 +953,7 @@ class BenchmarkRunner:
                 task_id=task_id,
                 benchmark=self._benchmark,
                 subset=self._subset,
-                run_id=_safe_run_id(task_id, prefix=self._run_id_prefix),
+                run_id=safe_run_id(task_id, prefix=self._run_id_prefix),
                 env_context=context.env,
                 loop_inputs=context.loop,
                 branch=context.branch,
@@ -958,7 +961,7 @@ class BenchmarkRunner:
                 timeout=self._timeout,
                 oracle_timeout=self._oracle_timeout,
                 raise_on_error=False,
-                config=_task_snapshot(task, self._benchmark, self._subset),
+                config=task_snapshot(task, self._benchmark, self._subset),
             )
             error = vetoed = None
         except RunAbort as exc:
@@ -1001,7 +1004,7 @@ class BenchmarkRunner:
         )
 
 
-def _task_snapshot(task: Any, benchmark: str, subset: str) -> dict[str, Any]:
+def task_snapshot(task: Any, benchmark: str, subset: str) -> dict[str, Any]:
     """Small, secret-free context recorded into the trace config.
 
     Deliberately not the whole composed YAML: that carries credentials.
@@ -1019,22 +1022,6 @@ def _task_snapshot(task: Any, benchmark: str, subset: str) -> dict[str, Any]:
 
 
 # ── CLI ────────────────────────────────────────────────────────────
-
-
-def _resolve_loader(run: ComposedRun, benchmark: str | None, subset: str | None) -> Any:
-    """Prefer the loader the config wired; fall back to explicit flags."""
-    loader = run.optional_single("task_loader")
-    if loader is not None:
-        return loader
-    if not benchmark:
-        raise SystemExit(
-            "No task_loader in the config and no --benchmark given: "
-            "nothing says which dataset to run."
-        )
-    from spectragent.core.data_loader.task._registrar import TaskLoaderRegistrar
-
-    loader_cls = TaskLoaderRegistrar.get(benchmark)
-    return loader_cls(subset=subset) if subset else loader_cls()
 
 
 def _resolve_evaluator(run: ComposedRun, evaluator_id: str | None) -> Any:
@@ -1072,38 +1059,23 @@ def _resolve_evaluator(run: ComposedRun, evaluator_id: str | None) -> Any:
     return matches[0]
 
 
-def _resolve_eval_loader(run: ComposedRun, benchmark: str | None, subset: str | None) -> Any:
-    """Reference data for scoring: config first, then the registry.
+def _reference_loader(benchmark: Benchmark, selection: str) -> BaseEvalLoader:
+    """The reference data a configured evaluator scores this sweep against.
 
-    Falls back to ``EvalLoaderRegistrar.get(benchmark)`` because the eval
-    loader carries no secrets and no wiring — the benchmark name is enough
-    to construct it, and requiring it in YAML would be ceremony. Called only
-    when an evaluator is configured: a sweep that scores nothing never asks.
-
-    A benchmark with no registered eval loader stops the sweep before
-    anything runs, naming it — ``trace_branches`` has none in v1 (how a
-    branch result becomes a training signal is open, §4.10), and a sweep
-    must not run for hours to fail at its scoring pass.
+    The benchmark's own (:meth:`BenchmarkBase.reference_loader`). A benchmark
+    with none stops the sweep before anything runs, naming it: a branch
+    sweep's task source has none in v1 (how a branch result becomes a training
+    signal is open, §4.10), and a sweep must not run for hours to fail at its
+    scoring pass.
     """
-    loader = run.optional_single("eval_loader")
-    if loader is not None:
-        return loader
-    if not benchmark:
+    loader = benchmark.reference_loader()
+    if loader is None:
         raise SystemExit(
-            "An evaluator is configured but nothing says which reference "
-            "data to score against: add an 'eval_loader:' block or pass "
-            "--benchmark."
+            f"An evaluator is configured, but benchmark {selection!r} has no reference data to "
+            f"score against (a branch sweep's task source has none): drop the evaluator, or pass "
+            f"--no-eval."
         )
-    from spectragent.core.data_loader.eval._registrar import EvalLoaderRegistrar
-
-    loader_cls = EvalLoaderRegistrar.get_or_none(benchmark)
-    if loader_cls is None:
-        raise SystemExit(
-            f"An evaluator is configured, but benchmark {benchmark!r} has no registered "
-            f"eval loader to score against (a 'trace_branches' sweep has none): add an "
-            f"'eval_loader:' block, drop the evaluator, or pass --no-eval."
-        )
-    return loader_cls(subset=subset) if subset else loader_cls()
+    return loader
 
 
 def _token_limit_argument(text: str) -> int | Unlimited:
@@ -1167,8 +1139,15 @@ def main(
         "--config-source-sha256",
         help="Digest captured from that original YAML's consumed bytes; requires --config-source.",
     )
-    parser.add_argument("--benchmark", help="Task loader key (if not in the config).")
-    parser.add_argument("--subset", help="Benchmark subset/split.")
+    parser.add_argument(
+        "--benchmark",
+        required=True,
+        help=(
+            "The benchmark whose tasks to run: a shipped alias "
+            "(configs/benchmarks/<alias>.yaml) or the path of a benchmark YAML, such as a "
+            "branches YAML for a branch sweep. The run configuration never holds one."
+        ),
+    )
     parser.add_argument("--task-id", action="append", dest="task_ids", help="Repeatable.")
     parser.add_argument("--limit", type=int, help="Run at most N tasks.")
     parser.add_argument("--timeout", type=positive_seconds, default=300.0, help="Per-task seconds.")
@@ -1234,7 +1213,7 @@ def main(
 
     canonical = args.config.expanduser().resolve()
     source_bytes = canonical.read_bytes()
-    raw = yaml.safe_load(source_bytes)
+    raw = run_root(yaml.safe_load(source_bytes), read_benchmark(args.benchmark))
     config_source = (
         ConfigSource(path=str(args.config_source), sha256=args.config_source_sha256)
         if args.config_source is not None
@@ -1242,12 +1221,13 @@ def main(
     )
     composer = ConfigComposer.for_config(raw)
     probe = composer.compose(raw)
-    loader = _resolve_loader(probe, args.benchmark, args.subset)
+    chosen: Benchmark = probe.single("benchmark")
+    loader = chosen.task_loader
 
     evaluator = None if args.no_eval else _resolve_evaluator(probe, args.evaluator)
-    benchmark = args.benchmark or getattr(loader, "benchmark_name", "")
-    subset = args.subset if args.subset is not None else getattr(loader, "subset", "")
-    eval_loader = _resolve_eval_loader(probe, benchmark, subset) if evaluator is not None else None
+    benchmark = loader.benchmark_name
+    subset = getattr(loader, "subset", "")
+    eval_loader = _reference_loader(chosen, args.benchmark) if evaluator is not None else None
 
     from spectragent.core.benchmark_session import BatchSession
 
@@ -1271,8 +1251,6 @@ def main(
         env_id=args.env_id,
         timeout=args.timeout,
         oracle_timeout=args.oracle_timeout,
-        benchmark=args.benchmark,
-        subset=args.subset,
         evaluator=evaluator,
         eval_loader=eval_loader,
         evals_dir=args.evals_dir if evaluator is not None else None,

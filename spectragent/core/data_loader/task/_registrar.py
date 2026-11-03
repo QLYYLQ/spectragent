@@ -26,6 +26,8 @@ TaskLoaderRegistrar = create_registrar(
     "task_loader",
     BaseTaskLoader,
     discriminator_field="benchmark_name",
+    # Written only inside a benchmark block (``docs/architecture_design.md`` §4.10.1).
+    inline_only=True,
 )
 
 

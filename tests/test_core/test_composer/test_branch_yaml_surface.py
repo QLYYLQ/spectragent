@@ -277,12 +277,18 @@ class TestTyposRejected:
             composer.top_level_type.model_validate(raw)
 
 
-# ── the task loader that feeds a branch sweep: trace_branches → step_selector ──
+# ── the task source that feeds a branch sweep: trace_branches → step_selector ──
 
 
 def _sweep(**loader: Any) -> dict[str, Any]:
+    """The branch run configuration with its branches YAML's block, as ``--benchmark`` adds it."""
     raw = _branch(restorer={"restorer_id": "prefix_replay"})
-    raw["task_loader"] = [{"benchmark_name": "trace_branches", **loader}]
+    raw["benchmark"] = [
+        {
+            "benchmark_id": "trace_branches",
+            "task_loader": {"benchmark_name": "trace_branches", **loader},
+        }
+    ]
     return raw
 
 
@@ -303,7 +309,7 @@ class TestTheTaskLoaderSurface:
                 step_selector={"selector_id": "every_k", "k": 2, "offset": 1},
             )
         )
-        loader = run.single("task_loader")
+        loader = run.single("benchmark").task_loader
         assert isinstance(loader, TraceBranchesTaskLoader)
         assert isinstance(loader.step_selector, EveryKSteps)
         assert (loader.step_selector.k, loader.step_selector.offset) == (2, 1)
