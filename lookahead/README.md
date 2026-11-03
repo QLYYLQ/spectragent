@@ -136,8 +136,8 @@ The preparation script binds `LOOKAHEAD_TASK_DATA` as the round's benchmark YAML
 which the recording selects with `--benchmark`. Keep this private dataset and seed contents fixed;
 its directory contains `data_info.json`. Check the visible
 account in a pilot. For an anonymous experiment use a separate round and record that change.
-If using the installed public task data without seeds, pass the shipped `--benchmark
-lexbench_browser` instead; that is a different task setup from the authenticated ten-site run.
+If using the installed public task data without seeds, pass `--benchmark lexbench_browser
+--subset All` explicitly; that is a different task setup from the authenticated ten-site run.
 
 For the pilot, record one task, run health and create its reviewed exclusion file, then
 use `branch_same_task` with `--benchmark .../branches_same_task.yaml --list` and run one

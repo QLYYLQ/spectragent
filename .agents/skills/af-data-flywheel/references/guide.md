@@ -157,14 +157,15 @@ Run it like any benchmark config, or record one task:
 
 ```bash
 uv run spectragent bench --config configs/flywheel/record_ui_tars_pinned.yaml \
-    --benchmark online_mind2web --no-eval        # plus --task-id, --limit
+    --benchmark online_mind2web --no-eval        # plus --subset, --task-id, --limit
 uv run spectragent run --config configs/flywheel/record_ui_tars_pinned.yaml \
     --start-url URL --task "..."
 ```
 
 `--benchmark` takes a shipped alias (`configs/benchmarks/<alias>.yaml`) or the path of a
-benchmark YAML of your own; the subset and the data directory are its task loader's knobs
-(there is no `--subset`), and a run configuration never holds a benchmark
+benchmark YAML of your own; the data directory is its task loader's knob, `--subset` writes
+the subset into that task loader before the run is composed (so the resolved configuration
+and the run's identity record it), and a run configuration never holds a benchmark
 (`docs/architecture_design.md` §4.10.1). `--start-url` is a start flag the browser declares
 (`START_FLAGS` in its `declarations.py`, §4.9 "起始参数").
 
@@ -697,7 +698,7 @@ of `configs/flywheel/`.
 name: first-live
 root: traces/chains/first-live        # everything lands under it (traces/ is git-ignored)
 evidence: live                         # live | rehearsal
-tasks: {benchmark: online_mind2web, task_ids: [...], limit: null}   # record / control only; alias or path, required
+tasks: {benchmark: online_mind2web, subset: All, task_ids: [...], limit: null}   # record / control only; benchmark: alias or path, required
 token_limit: 2000000                   # every run stage together; unlimited (the default): no limit
 record:    {config: <recording YAML>, timeout: 600, evaluate: false}   # timeout defaults to 300
 control:   {config: <the recording with archive: []>}                  # optional overhead control

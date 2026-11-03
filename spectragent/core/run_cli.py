@@ -4,8 +4,9 @@ A task comes from one of two places (``docs/architecture_design.md``
 §4.10.1 "单个任务照样简单"):
 
 - a benchmark's task source: ``--benchmark <alias|path.yaml> --task-id <id>``
-  gives the task's text and its three context parts (environment, Loop,
-  branch), exactly as ``spectragent bench`` runs it;
+  (and ``--subset``, the subset that task is in) gives the task's text and its
+  three context parts (environment, Loop, branch), exactly as ``spectragent
+  bench`` runs it;
 - the command line: ``--task`` and the start flags of the run's
   capabilities (``--start-url`` …), which each capability package declares in
   its ``declarations.py`` (``START_FLAGS``, §4.9 "起始参数"). Every
@@ -158,6 +159,7 @@ async def _run_in_experiment(
     dry_run: bool,
     start: Mapping[str, str] | None = None,
     benchmark: str | None = None,
+    subset: str | None = None,
     task_id: str | None = None,
     oracle_timeout: float = ORACLE_TIMEOUT_S,
     progress: Any = None,
@@ -165,9 +167,8 @@ async def _run_in_experiment(
 ) -> int:
     canonical = config_path.expanduser().resolve()
     source_bytes = canonical.read_bytes()
-    raw = run_root(
-        yaml.safe_load(source_bytes), *([read_benchmark(benchmark)] if benchmark else [])
-    )
+    blocks = [read_benchmark(benchmark, subset=subset)] if benchmark else []
+    raw = run_root(yaml.safe_load(source_bytes), *blocks)
     context = start_context(start or {}, raw)
     config_source = ConfigSource.from_path(canonical, data=source_bytes)
     run = scope.bind(ConfigComposer.for_config(raw).compose(raw))
@@ -175,9 +176,10 @@ async def _run_in_experiment(
         loader = run.single("benchmark").task_loader
         definition = loader.get(task_id)
         if definition is None:
+            selection = f"--benchmark {benchmark}" + (f" --subset {subset}" if subset else "")
             raise ValueError(
-                f"--task-id {task_id}: benchmark {benchmark!r} has no such task "
-                f"({len(loader)} tasks; spectragent bench --benchmark {benchmark} --list lists them)"
+                f"--task-id {task_id}: benchmark {benchmark!r} (subset {loader.subset!r}) has no "
+                f"such task ({len(loader)} tasks; spectragent bench {selection} --list lists them)"
             )
         parts = loader.get_task_context(task_id)
         selected = _Task(
@@ -323,6 +325,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run this task of --benchmark: its text and where it starts come from the benchmark",
     )
     parser.add_argument(
+        "--subset",
+        help="The subset of --benchmark the task is in, written into its task loader",
+    )
+    parser.add_argument(
         "--timeout", type=positive_seconds, default=300.0, help="Run timeout in seconds"
     )
     parser.add_argument(
@@ -357,6 +363,8 @@ def main(
     }
     if (args.benchmark is None) != (args.task_id is None):
         parser.error("--benchmark and --task-id go together: they select one task of a benchmark")
+    if args.subset is not None and args.task_id is None:
+        parser.error("--subset selects a benchmark's tasks: it goes with --benchmark and --task-id")
     if args.task_id is not None:
         given = [*(["--task"] if args.task else []), *start]
         if given:
@@ -378,6 +386,7 @@ def main(
             task=args.task,
             start=start,
             benchmark=args.benchmark,
+            subset=args.subset,
             task_id=args.task_id,
             timeout=args.timeout,
             oracle_timeout=args.oracle_timeout,

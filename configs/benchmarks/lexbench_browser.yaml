@@ -1,6 +1,5 @@
 # LexBench's browser tasks. Select it with --benchmark lexbench_browser
-# (docs/architecture_design.md §4.10.1); for one split, copy this file, set its
-# subset and pass the copy's path.
+# (docs/architecture_design.md §4.10.1); for one split, add --subset <split>.
 benchmark:
   - benchmark_id: lexbench_browser
     task_loader:

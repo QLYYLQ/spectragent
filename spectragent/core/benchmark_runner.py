@@ -558,7 +558,8 @@ class BenchmarkRunner:
 
     Args:
         loader: A ``TaskLoader`` — the source of task ids, task text and
-            per-task environment context.
+            per-task environment context, and of the identity every run
+            records (its ``benchmark_name`` and ``subset``).
         compose: Zero-arg factory returning a fresh :class:`ComposedRun`.
             Called once per task (the first task's call happens in the
             pre-flight, whose stack that task then runs on). Pass
@@ -573,7 +574,6 @@ class BenchmarkRunner:
         timeout: Per-task wall-clock budget.
         oracle_timeout: Seconds each task oracle may take to score a task
             after its run (``AgentRuntime.execute``'s ``oracle_timeout``).
-        benchmark / subset: Recorded identity. Default to the loader's own.
         run_id_prefix: Prepended to every generated trace directory name.
         evaluator: Optional ``BaseEvaluator``. When given, every trace the
             sweep produced is scored after the last task finishes.
@@ -598,8 +598,6 @@ class BenchmarkRunner:
         env_id: str | None = None,
         timeout: float = 300.0,
         oracle_timeout: float = ORACLE_TIMEOUT_S,
-        benchmark: str | None = None,
-        subset: str | None = None,
         run_id_prefix: str = "",
         evaluator: Any = None,
         eval_loader: Any = None,
@@ -622,8 +620,8 @@ class BenchmarkRunner:
         self._env_id = env_id
         self._timeout = timeout
         self._oracle_timeout = oracle_timeout
-        self._benchmark = benchmark or getattr(loader, "benchmark_name", "")
-        self._subset = subset if subset is not None else getattr(loader, "subset", "")
+        self._benchmark = getattr(loader, "benchmark_name", "")
+        self._subset = getattr(loader, "subset", "")
         self._run_id_prefix = run_id_prefix
         if evaluator is not None and eval_loader is None:
             raise ValueError(
@@ -1148,6 +1146,13 @@ def main(
             "branches YAML for a branch sweep. The run configuration never holds one."
         ),
     )
+    parser.add_argument(
+        "--subset",
+        help=(
+            "Which subset of the benchmark's tasks to run, written into its task loader before "
+            "the run is composed, so every run's configuration and identity record it."
+        ),
+    )
     parser.add_argument("--task-id", action="append", dest="task_ids", help="Repeatable.")
     parser.add_argument("--limit", type=int, help="Run at most N tasks.")
     parser.add_argument("--timeout", type=positive_seconds, default=300.0, help="Per-task seconds.")
@@ -1213,7 +1218,7 @@ def main(
 
     canonical = args.config.expanduser().resolve()
     source_bytes = canonical.read_bytes()
-    raw = run_root(yaml.safe_load(source_bytes), read_benchmark(args.benchmark))
+    raw = run_root(yaml.safe_load(source_bytes), read_benchmark(args.benchmark, subset=args.subset))
     config_source = (
         ConfigSource(path=str(args.config_source), sha256=args.config_source_sha256)
         if args.config_source is not None

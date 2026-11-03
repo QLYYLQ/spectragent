@@ -91,7 +91,7 @@ uv run spectragent run --config configs/browser_use_local.yaml \
 
 # 跑 5 个 benchmark 任务，只记录不判分
 uv run spectragent bench --config configs/browser_use_local.yaml \
-  --benchmark online_mind2web --limit 5 --no-eval
+  --benchmark online_mind2web --subset All --limit 5 --no-eval
 
 # 查看记录
 uv run spectragent runs list

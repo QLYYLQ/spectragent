@@ -91,7 +91,7 @@ uv run spectragent run --config configs/browser_use_local.yaml \
 
 # Five benchmark tasks, recorded without scoring
 uv run spectragent bench --config configs/browser_use_local.yaml \
-  --benchmark online_mind2web --limit 5 --no-eval
+  --benchmark online_mind2web --subset All --limit 5 --no-eval
 
 # Look at what was recorded
 uv run spectragent runs list

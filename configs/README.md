@@ -715,14 +715,14 @@ only writes their path fields (the trace writer's `trace_dir`, the `trace_branch
 `data_dir` in a branch stage's branches YAML, the exporter's `sources_root` / `sources` /
 `output_dir`) and runs the existing CLIs in this process. Relative paths are relative to the
 working directory. The recording stages run `tasks.benchmark` (an alias or a benchmark YAML's
-path; required); a branch stage names its own branches YAML (`benchmark`, required there and
-refused on a recording stage).
+path; required), with `tasks.subset` as `--subset` when it is set; a branch stage names its
+own branches YAML (`benchmark`, required there and refused on a recording stage).
 
 ```yaml
 name: first-live
 root: traces/chains/first-live         # everything lands under it (traces/ is git-ignored)
 evidence: live                         # live | rehearsal: the basis of every recommendation
-tasks: {benchmark: online_mind2web, task_ids: [...], limit: null}   # record / control flags
+tasks: {benchmark: online_mind2web, subset: All, task_ids: [...], limit: null}   # record / control flags
 token_limit: 2000000                   # every run stage together; unlimited (the default): no limit
 record:    {config: <recording YAML>, timeout: 600, evaluate: false}   # evaluate: false → --no-eval; optional oracle_timeout → --oracle-timeout
 control:   {config: <the recording with archive: []>}                  # optional: the overhead control group
@@ -820,6 +820,7 @@ its hooks, never a benchmark (a `benchmark:` section in it is refused). Select o
 
 ```bash
 uv run spectragent bench --config configs/browser_use_local.yaml --benchmark online_mind2web --list
+uv run spectragent bench --config configs/browser_use_local.yaml --benchmark online_mind2web --subset Hard --list
 uv run spectragent run --config configs/browser_use_local.yaml --benchmark online_mind2web --task-id <id>
 uv run spectragent config check configs/browser_use_local.yaml --benchmark online_mind2web --task-id <id>
 uv run spectragent eval --config judge.yaml --benchmark online_mind2web --traces traces --out evals/one
@@ -831,13 +832,15 @@ benchmark:
   - benchmark_id: online_mind2web
     task_loader:
       benchmark_name: online_mind2web
-      subset: All                # All | Hard: copy the file to pick another subset
+      subset: All                # All | Hard; --subset Hard picks the other one
       data_dir: null             # null: $SPECTRAGENT_BENCHMARK_DATA/browser/online_mind2web
     # eval_loader left out: the registered online_mind2web eval loader for the task loader's subset
 ```
 
-`spectragent bench` has no `--subset`: the subset is the task loader's knob, written in
-the benchmark YAML. Each benchmark is a package, `spectragent/benchmarks/<benchmark_id>/`,
+`--subset` (on `bench`, and on `run` with `--task-id`) is the one benchmark knob the
+command line sets: it is written into the selected block's task loader before the run is
+composed, so the resolved configuration, its `config_hash` and every run's identity record
+it as if the YAML had said it. For another data directory, copy the YAML and pass its path. Each benchmark is a package, `spectragent/benchmarks/<benchmark_id>/`,
 imported only when a configuration names it. A branch sweep's tasks come from a branches
 YAML of the same shape (`benchmark_id: trace_branches`, see
 [Branching a recorded run](#branching-a-recorded-run)).

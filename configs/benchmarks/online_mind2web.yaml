@@ -5,8 +5,9 @@
 #
 # A benchmark YAML holds only this section; the run configuration holds the
 # agent, its environment and its hooks (docs/architecture_design.md §4.10.1).
-# For another subset or a data directory of your own, copy this file and pass
-# its path: --benchmark ./my_online_mind2web.yaml.
+# For another subset add --subset Hard, which is written into the task loader
+# below; for a data directory of your own, copy this file and pass its path:
+# --benchmark ./my_online_mind2web.yaml.
 benchmark:
   - benchmark_id: online_mind2web
     task_loader:

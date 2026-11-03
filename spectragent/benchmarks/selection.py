@@ -7,6 +7,12 @@ is a path when it ends in ``.yaml`` / ``.yml`` or holds a path separator, and
 an alias otherwise. The run configuration never holds a benchmark: a
 ``benchmark:`` section in it is refused when the run is composed
 (:func:`run_root`), whether or not ``--benchmark`` was given.
+
+``--subset`` selects which of the benchmark's tasks run, and is the one knob
+the command line sets on a benchmark: it is written into the selected block's
+task loader before the run is composed (:func:`read_benchmark`), so the
+resolved configuration and every run's identity record it, as if the YAML had
+said it.
 """
 
 from __future__ import annotations
@@ -40,13 +46,15 @@ def aliases() -> tuple[str, ...]:
     return tuple(sorted(path.stem for path in ALIAS_DIR.glob("*.yaml")))
 
 
-def read_benchmark(selection: str) -> dict[str, Any]:
+def read_benchmark(selection: str, *, subset: str | None = None) -> dict[str, Any]:
     """The one ``benchmark:`` block of the benchmark YAML *selection* names (module docstring).
+
+    With *subset* (``--subset``), the block's task loader takes that subset.
 
     Raises:
         BenchmarkSelectionError: No such alias or file, a file that does not
-            read as YAML, or a document that is not exactly one block under
-            ``benchmark:``.
+            read as YAML, a document that is not exactly one block under
+            ``benchmark:``, or a *subset* for a block with no task loader.
     """
     if is_path(selection):
         path = Path(selection).expanduser()
@@ -79,7 +87,15 @@ def read_benchmark(selection: str) -> dict[str, Any]:
             f"--benchmark {selection}: {path} must hold exactly one benchmark block under "
             f"'{BENCHMARK_SECTION}:'"
         )
-    return dict(blocks[0])
+    block = dict(blocks[0])
+    if subset is not None:
+        loader = block.get("task_loader")
+        if not isinstance(loader, Mapping):
+            raise BenchmarkSelectionError(
+                f"--subset {subset}: the benchmark block of {path} has no task_loader to take it"
+            )
+        block["task_loader"] = {**loader, "subset": subset}
+    return block
 
 
 def run_root(raw: object, *benchmarks: dict[str, Any]) -> dict[str, Any]:

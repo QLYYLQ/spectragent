@@ -12,7 +12,8 @@ file must compose and prepare. Relative paths in it (the root, each stage's
 config) are relative to the working directory, as every af CLI reads them.
 
 **The tasks.** The recording stages run ``tasks.benchmark`` (a shipped alias
-or a benchmark YAML's path, handed to ``spectragent bench --benchmark``);
+or a benchmark YAML's path, handed to ``spectragent bench --benchmark``, with
+``tasks.subset`` as ``--subset`` when set);
 ``same_path`` / ``branch`` each run their own branches YAML (the stage's
 ``benchmark``: the ``trace_branches`` task source, arch §4.10.1 "分叉 sweep 是一种任务来源").
 
@@ -131,6 +132,8 @@ class TasksSpec(_Spec):
 
     #: The benchmark the recording stages run: a shipped alias or a benchmark YAML's path.
     benchmark: str = Field(min_length=1)
+    #: Which subset of it the recording stages run (``--subset``); ``None``: the YAML's own.
+    subset: str | None = Field(default=None, min_length=1)
     task_ids: list[str] | None = None
     limit: int | None = Field(default=None, ge=1)
 
@@ -753,6 +756,8 @@ def _run_stage(
     else:
         tasks = spec.tasks
         argv += ["--benchmark", tasks.benchmark]
+        if tasks.subset is not None:
+            argv += ["--subset", tasks.subset]
         for task_id in tasks.task_ids or []:
             argv += ["--task-id", task_id]
         if tasks.limit is not None:

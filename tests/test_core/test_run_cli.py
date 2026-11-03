@@ -9,7 +9,6 @@ anything starts.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +16,7 @@ import pytest
 import yaml
 
 from spectragent.core import run_cli
+from tests._helpers.benchmark_data import online_mind2web_benchmark
 
 CONFIGS = Path(__file__).resolve().parents[2] / "configs"
 BROWSER_CONFIG = CONFIGS / "browser_use_local.yaml"
@@ -106,6 +106,7 @@ def test_the_oracle_timeout_flag_reaches_the_run(monkeypatch: pytest.MonkeyPatch
     [
         (["--benchmark", "online_mind2web"], "--benchmark and --task-id go together"),
         (["--task-id", "t1"], "--benchmark and --task-id go together"),
+        (["--task", "x", "--subset", "Hard"], "--subset selects a benchmark's tasks"),
         (
             ["--benchmark", "online_mind2web", "--task-id", "t1", "--task", "other"],
             "--task: a benchmark task's text and start come from its benchmark",
@@ -144,19 +145,10 @@ def test_a_start_flag_of_another_capability_launches_nothing(tmp_path: Path) -> 
 
 
 def _benchmark(tmp_path: Path, start_url: str) -> Path:
-    """An ``online_mind2web`` benchmark YAML over one task, in a data directory of its own."""
-    data = tmp_path / "data"
-    data.mkdir(parents=True)
-    (data / "data_info.json").write_text(json.dumps({"split": {"All": "tasks.json"}}))
+    """An ``online_mind2web`` benchmark YAML over one task; its ``Hard`` subset has harder text."""
     task = {"task_id": "t1", "task_text": "find the kettle", "start_url": start_url}
-    (data / "tasks.json").write_text(json.dumps([task]))
-    path = tmp_path / "benchmark.yaml"
-    block = {
-        "benchmark_id": "online_mind2web",
-        "task_loader": {"benchmark_name": "online_mind2web", "data_dir": str(data)},
-    }
-    path.write_text(yaml.safe_dump({"benchmark": [block]}))
-    return path
+    hard = {**task, "task_text": "find the cheapest kettle"}
+    return online_mind2web_benchmark(tmp_path, {"All": [task], "Hard": [hard]})
 
 
 def test_a_benchmark_task_prepares_with_its_own_start(tmp_path: Path) -> None:
@@ -176,6 +168,8 @@ def test_an_unknown_task_id_is_refused_by_name(tmp_path: Path) -> None:
     argv = ["--config", str(BROWSER_CONFIG), "--benchmark", str(benchmark), "--dry-run"]
     with pytest.raises(ValueError, match="--task-id t9: benchmark .* has no such task"):
         run_cli.main([*argv, "--task-id", "t9"])
+    with pytest.raises(ValueError, match=r"subset 'Hard'.*--subset Hard --list lists them"):
+        run_cli.main([*argv, "--task-id", "t9", "--subset", "Hard"])
 
 
 async def test_a_benchmark_task_runs_with_its_text_context_and_identity(
@@ -210,3 +204,44 @@ async def test_a_benchmark_task_runs_with_its_text_context_and_identity(
     )
     assert seen["run_id"].startswith("t1_")
     assert seen["config"]["benchmark"] == "online_mind2web"
+
+
+async def test_a_subset_selects_the_task_and_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--subset`` is written into the benchmark's task loader: the run reads and records it."""
+    from spectragent.core.composer import ComposedRun, ConfigComposer
+    from spectragent.core.runtime import AgentRuntime
+    from tests._helpers.trace_builder import agent_result
+
+    seen: dict[str, Any] = {}
+
+    async def execute(self: AgentRuntime, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return agent_result()
+
+    compose = ConfigComposer.compose
+
+    def resolved(self: ConfigComposer, raw: Any) -> ComposedRun:
+        run = compose(self, raw)
+        assert run.top_level_cfg is not None
+        seen["resolved_config"] = run.top_level_cfg.model_dump()
+        return run
+
+    monkeypatch.setattr(AgentRuntime, "execute", execute)
+    monkeypatch.setattr(ConfigComposer, "compose", resolved)
+    code = await run_cli._run(
+        config_path=BROWSER_CONFIG,
+        task="",
+        benchmark=str(_benchmark(tmp_path, "https://shop.example/kettles")),
+        subset="Hard",
+        task_id="t1",
+        timeout=1,
+        dry_run=False,
+    )
+    assert code == 0
+    assert seen["task"] == "find the cheapest kettle"
+    assert (seen["benchmark"], seen["subset"]) == ("online_mind2web", "Hard")
+    assert seen["config"]["subset"] == "Hard"
+    (block,) = seen["resolved_config"]["benchmark"]
+    assert block["task_loader"]["subset"] == "Hard"

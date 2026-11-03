@@ -1579,6 +1579,38 @@ def test_the_oracle_timeout_flag_reaches_the_runner(tmp_path, monkeypatch):
     assert given == [ORACLE_TIMEOUT_S, 12.5]
 
 
+def test_the_subset_flag_selects_the_tasks_and_is_recorded(tmp_path, monkeypatch, capsys):
+    """``--subset`` is written into the benchmark's task loader before the run is composed.
+
+    It selects the tasks, and the resolved configuration (so ``config_hash``)
+    and every run's identity record it, as if the benchmark YAML said it.
+    """
+    from pathlib import Path
+
+    from spectragent.core.benchmark_runner import main
+    from tests._helpers.benchmark_data import online_mind2web_benchmark
+
+    task = {"task_text": "find the kettle", "start_url": "https://shop.example"}
+    tasks = [{**task, "task_id": "easy"}, {**task, "task_id": "hard"}]
+    benchmark = online_mind2web_benchmark(tmp_path, {"All": tasks, "Hard": tasks[1:]})
+    seen: list[tuple[str, Any]] = []
+    construct = BenchmarkRunner.__init__
+
+    def spy(self, **kwargs):
+        construct(self, **kwargs)
+        (block,) = kwargs["compose"]().top_level_cfg.model_dump()["benchmark"]
+        seen.append((kwargs["loader"].subset, block["task_loader"]["subset"]))
+
+    monkeypatch.setattr(BenchmarkRunner, "__init__", spy)
+    config = Path(__file__).resolve().parents[2] / "configs" / "browser_use_local.yaml"
+    argv = ["--config", str(config), "--benchmark", str(benchmark), "--no-eval", "--list"]
+    assert main([*argv, "--session-dir", str(tmp_path / ".sessions")]) == 0
+    assert capsys.readouterr().out.split() == ["easy", "hard"]
+    assert main([*argv, "--session-dir", str(tmp_path / ".sessions"), "--subset", "Hard"]) == 0
+    assert capsys.readouterr().out.split() == ["hard"]
+    assert seen == [("All", "All"), ("Hard", "Hard")]
+
+
 @pytest.mark.parametrize("flag", ["--timeout", "--oracle-timeout"])
 @pytest.mark.parametrize("value", ["0", "-5", "nan", "soon"])
 def test_a_time_limit_is_seconds_above_zero_on_both_clis(flag, value, capsys):

@@ -62,7 +62,7 @@ uv run spectragent config generate
 uv run spectragent run --config configs/browser_use_local.yaml \
   --start-url https://example.com --task "报告当前页面标题" --tui
 uv run spectragent bench --config configs/browser_use_local.yaml \
-  --benchmark online_mind2web --limit 5 --no-eval --tui
+  --benchmark online_mind2web --subset All --limit 5 --no-eval --tui
 ```
 
 批量命令在 trace 根目录的 `.sessions/` 中记录所选任务及停止原因，保留未启动任务。文件里的 running 只表示未记录收尾，不是进程存活证明。`--json` 将结构化结果写到 stdout，日志仍到 stderr；不能与 `--tui` 同用。
@@ -310,15 +310,15 @@ network_source: { source_id: live }
 export OPENAI_API_KEY="你的密钥"
 export SPECTRAGENT_BENCHMARK_DATA="$HOME/agent-data"
 uv run spectragent bench --config configs/browser_use_local.yaml \
-  --benchmark online_mind2web --list
+  --benchmark online_mind2web --subset All --list
 uv run spectragent bench --config configs/browser_use_local.yaml \
-  --benchmark online_mind2web --limit 1 --no-eval
+  --benchmark online_mind2web --subset All --limit 1 --no-eval
 # 只跑其中一个任务，与 bench 跑它时同一份上下文与身份：
 uv run spectragent run --config configs/browser_use_local.yaml \
   --benchmark online_mind2web --task-id <ID>
 ```
 
-把 `--config` 换成上面的其他 agent YAML，就使用同一个数据集入口。也可以用 `--task-id <ID>` 指定任务，或用 `--limit N` 控制数量。`--list` 会先加载数据并只打印选中的任务 ID，不启动浏览器。要换 subset（例如 `online_mind2web` 的 `Hard`）或数据目录，复制 `configs/benchmarks/online_mind2web.yaml`、改它的 `task_loader`，再用 `--benchmark ./我的基准.yaml` 选它；`bench` 不再有 `--subset`。数据集 loader 把每个任务的 `start_url` 传给 browser capability，trace 记下的也是这一个。
+把 `--config` 换成上面的其他 agent YAML，就使用同一个数据集入口。也可以用 `--task-id <ID>` 指定任务，或用 `--limit N` 控制数量。`--list` 会先加载数据并只打印选中的任务 ID，不启动浏览器。`--subset`（例如 `online_mind2web` 的 `Hard`）在组装之前写进所选基准块的任务加载器，所以解析后的配置、`config_hash` 与每个 run 的身份都记着它，与基准 YAML 自己写的一样；`run` 只在带 `--task-id` 时收它。要换数据目录，复制 `configs/benchmarks/online_mind2web.yaml`、改它的 `task_loader`，再用 `--benchmark ./我的基准.yaml` 选它。数据集 loader 把每个任务的 `start_url` 传给 browser capability，trace 记下的也是这一个。
 
 起始页必须是完整的 http(s) URL。`lexbench_browser` 的数据（每个 split）把起始页写成不带协议头的主机名，例如 `www.bilibili.com`、`s.weibo.com/top/summary`，加载器把它补成 `https://www.bilibili.com` 再交出去，飞轮报告和导出按这个 URL 的主机认站点。写成文字或几个站点的起始页（L1 有 7 个、L2 有 3 个，例如 `www.xiachufang.com或其他美食网站`、`jd.com + tmall.com + suning.com`）原样留下，在 `prepare()` 被拒，不打开 trace，消息点名这个起始页：这样的任务若是 sweep 的第一个任务，开跑前的预检查停下，退出码 2；否则只记在那个任务上，汇总表里那一行写着原因（算作 infrastructure failure，退出码 1）。其他数据集的起始页本来就是完整的 URL，加载器不改。`spectragent bench` 不调用 `load_dotenv()`，所以运行前要在 shell 导出模型及云后端需要的密钥。需要自动评分时，在 YAML 中配置 `evaluator:`，然后去掉 `--no-eval`；只有任务数据与 trace 不会自动产生评分。
 

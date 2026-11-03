@@ -80,7 +80,7 @@ def _spec(tmp_path: Path, **overrides: Any) -> ChainSpec:
         "name": "test-chain",
         "root": tmp_path / "root",
         "evidence": "rehearsal",
-        "tasks": {"benchmark": "online_mind2web", "task_ids": ["a", "b"]},
+        "tasks": {"benchmark": "online_mind2web", "subset": "All", "task_ids": ["a", "b"]},
         "record": {"config": _write(tmp_path / "record.yaml", RUN_YAML), "timeout": 60},
         "control": {"config": _write(tmp_path / "control.yaml", RUN_YAML)},
         "same_path": {
@@ -177,6 +177,8 @@ class TestThePaths:
             "WARNING",
             "--benchmark",
             "online_mind2web",
+            "--subset",
+            "All",
             "--task-id",
             "a",
             "--task-id",

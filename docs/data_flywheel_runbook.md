@@ -382,10 +382,10 @@ uv run python -m tests._helpers.flywheel_rehearsal --out /tmp/af-rehearsal
 ```bash
 export OPENAI_API_KEY="你的密钥"
 uv run spectragent bench --config my/record.yaml \
-  --benchmark online_mind2web --task-id <ID> --no-eval
+  --benchmark online_mind2web --subset All --task-id <ID> --no-eval
 ```
 
-基准数据不随仓库发布，数据目录怎么设见 [Browser agent 运行手册](browser_agent_runbook.md) 的"跑数据集"；`--benchmark` 收发布的别名（`configs/benchmarks/<别名>.yaml`）或自己写的基准 YAML 的路径，subset 与数据目录写在基准 YAML 的 `task_loader` 里。单个自由文本任务用 `spectragent run --config my/record.yaml --start-url URL --task "..."`，基准里的一个任务用 `spectragent run --config my/record.yaml --benchmark online_mind2web --task-id <ID>`。数据集任务的 trace 目录是 `<trace_dir>/<task_id>_<8 位随机串>`，`spectragent run` 的是 `<trace_dir>/<run_id>`。飞轮的每一段都不需要评测结果；只有想按评测结果筛选源 run（分叉和导出的可选过滤 `require_eval`，默认 `null`）时，才在录制配置里加 `evaluator:` 块、去掉 `--no-eval`，判定会写进每个 trace 的 `evals/`。
+基准数据不随仓库发布，数据目录怎么设见 [Browser agent 运行手册](browser_agent_runbook.md) 的"跑数据集"；`--benchmark` 收发布的别名（`configs/benchmarks/<别名>.yaml`）或自己写的基准 YAML 的路径，数据目录写在基准 YAML 的 `task_loader` 里，`--subset` 在组装之前写进它（解析后的配置与 run 的身份都记着）。单个自由文本任务用 `spectragent run --config my/record.yaml --start-url URL --task "..."`，基准里的一个任务用 `spectragent run --config my/record.yaml --benchmark online_mind2web --task-id <ID>`。数据集任务的 trace 目录是 `<trace_dir>/<task_id>_<8 位随机串>`，`spectragent run` 的是 `<trace_dir>/<run_id>`。飞轮的每一段都不需要评测结果；只有想按评测结果筛选源 run（分叉和导出的可选过滤 `require_eval`，默认 `null`）时，才在录制配置里加 `evaluator:` 块、去掉 `--no-eval`，判定会写进每个 trace 的 `evals/`。
 
 ```yaml
 hook:
@@ -773,7 +773,7 @@ exporter:
 name: first-live
 root: traces/chains/first-live      # 规格里的相对路径都相对工作目录
 evidence: live                      # live | rehearsal
-tasks: {benchmark: online_mind2web, task_ids: [<ID>, <ID>], limit: null}   # benchmark：别名或基准 YAML 的路径（必填）
+tasks: {benchmark: online_mind2web, subset: All, task_ids: [<ID>, <ID>], limit: null}   # benchmark：别名或基准 YAML 的路径（必填）
 token_limit: 2000000                # 所有运行段合计的 token 上限；默认 unlimited（不限）
 record:    {config: my/record.yaml, timeout: 600, evaluate: false}
 control:   {config: my/control.yaml, timeout: 600}        # 可选：录制配置加 archive: []
@@ -783,7 +783,7 @@ export:    {config: my/export.yaml, repeat: 2}            # 2：顺带量导出�
 report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}
 ```
 
-`my/` 下是从 `configs/flywheel/` 复制来改过的文件。录制段（`record`、`control`）跑 `tasks.benchmark`；分叉段（`same_path`、`branch`）必须写 `benchmark`，点名它的分叉 YAML，录制段写了会被拒。`tasks` 不再有 `subset`：subset 写在基准 YAML 里。
+`my/` 下是从 `configs/flywheel/` 复制来改过的文件。录制段（`record`、`control`）跑 `tasks.benchmark`；分叉段（`same_path`、`branch`）必须写 `benchmark`，点名它的分叉 YAML，录制段写了会被拒。`tasks.subset` 交给录制段的 `--subset`，省略时用基准 YAML 自己的。
 
 ```bash
 uv run spectragent flywheel run --spec chain.yaml                     # 规格里配了的每一段

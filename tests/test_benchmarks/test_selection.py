@@ -15,7 +15,8 @@ from spectragent.benchmarks.selection import (
     run_root,
 )
 
-_BLOCK = {"benchmark_id": "online_mind2web", "task_loader": {"benchmark_name": "online_mind2web"}}
+_LOADER = {"benchmark_name": "online_mind2web"}
+_BLOCK = {"benchmark_id": "online_mind2web", "task_loader": _LOADER}
 
 
 def _document(tmp_path: Path, raw: object, name: str = "mine.yaml") -> Path:
@@ -77,6 +78,22 @@ def test_a_benchmark_yaml_is_one_block_under_benchmark(
 ) -> None:
     with pytest.raises(BenchmarkSelectionError, match=problem):
         read_benchmark(str(_document(tmp_path, raw)))
+
+
+def test_a_subset_is_written_into_the_task_loader(tmp_path: Path) -> None:
+    block = read_benchmark("online_mind2web", subset="Hard")
+    assert block["task_loader"]["subset"] == "Hard"
+    assert read_benchmark("online_mind2web")["task_loader"]["subset"] == "All", (
+        "the shipped YAML is not changed"
+    )
+    path = _document(tmp_path, {"benchmark": [_BLOCK]})
+    assert read_benchmark(str(path), subset="Hard") == {
+        **_BLOCK,
+        "task_loader": {**_LOADER, "subset": "Hard"},
+    }
+    no_loader = _document(tmp_path, {"benchmark": [{"benchmark_id": "x"}]}, "no_loader.yaml")
+    with pytest.raises(BenchmarkSelectionError, match="has no task_loader to take it"):
+        read_benchmark(str(no_loader), subset="Hard")
 
 
 def test_the_run_root_holds_the_run_configuration_and_the_benchmark(tmp_path: Path) -> None:
