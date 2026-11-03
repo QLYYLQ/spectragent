@@ -136,8 +136,10 @@ class AndroidTypingBackend(Protocol):
             RemoteError: No text went in and the field is as it was, when the
                 code is one of :data:`UNCHANGED_FIELD_CODES`
                 (``no_focused_field``, ``password_field``, ``set_text_failed``,
-                ``no_input_method``); any other code (``internal``) says
-                nothing about the field.
+                ``no_input_method``); ``typed_partly`` when part of the text
+                went in (``key_events`` failed partway, after the clear and
+                some of its keys); any other code (``internal``) says nothing
+                about the field.
         """
         ...
 

@@ -209,6 +209,9 @@ class ScriptedPhone:
             wire form (:data:`FOREST` unless changed).
         tree_reads: The node limit each ``tree`` request asked for, in order.
         tree_delay_s: How long the service takes to answer ``tree``.
+        typing_fails: The error code the helper's ``type_text`` answers with
+            from now on (``typed_partly``: a key failed after others went
+            in); ``None``: it types.
         inputs: Every input the device side received, in order, setup's test
             tap first: ``"<program> stroke (x,y)@t ..."``, ``"helper key
             KEYCODE_..."``, ``"helper type_text '...' replace|at the cursor"``,
@@ -242,6 +245,7 @@ class ScriptedPhone:
     forest: JsonObject = field(default_factory=lambda: dict(FOREST))
     tree_reads: list[JsonValue] = field(default_factory=list)
     tree_delay_s: float = 0.0
+    typing_fails: str | None = None
     inputs: list[str] = field(default_factory=list)
     side: FakeDeviceSide = field(init=False)
     _booted: float = field(init=False, default_factory=time.monotonic)
@@ -367,6 +371,9 @@ class ScriptedPhone:
             named = ", ".join(f"{c!r} (U+{ord(c):04X})" for c in keyless)
             raise Failure("unmappable_text", f"the device's key map has no key for {named}")
         how = "replace" if params.get("replace") else "at the cursor"
+        if self.typing_fails is not None:
+            self.inputs.append(f"helper type_text {text!r} {how}, failed partway")
+            raise Failure(self.typing_fails, "2 key events went in before one failed")
         self.inputs.append(f"helper type_text {text!r} {how}")
         return Answer()
 

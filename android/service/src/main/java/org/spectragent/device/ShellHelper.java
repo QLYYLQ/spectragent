@@ -4,6 +4,7 @@ import android.content.ComponentName;
 import android.graphics.Bitmap;
 import android.os.SystemClock;
 import android.view.InputDevice;
+import android.view.InputEvent;
 import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -14,11 +15,11 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import org.json.JSONObject;
 
@@ -94,7 +95,7 @@ public final class ShellHelper {
             case "key":
                 return key(params);
             case "type_text":
-                return typeText(params);
+                return typeText(params, Hidden::inject);
             case "gesture":
                 return Reply.of(Json.obj("elapsed_ms", touch(Strokes.parse(params, 1).get(0))));
             case "enable_service":
@@ -132,7 +133,14 @@ public final class ShellHelper {
         if (code == KeyEvent.KEYCODE_UNKNOWN) {
             throw new Failure("bad_params", "not an Android key code: " + name);
         }
-        pressKey(code, 0);
+        Keys keys = new Keys(Hidden::inject);
+        try {
+            keys.send(KeyEvent.ACTION_DOWN, code, 0);
+            keys.send(KeyEvent.ACTION_UP, code, 0);
+        } catch (Failure failed) {
+            keys.liftAll();
+            throw failed;
+        }
         return Reply.of(new JSONObject());
     }
 
@@ -147,36 +155,44 @@ public final class ShellHelper {
      * stamped as it is injected: the input dispatcher drops an event more than 10 s old, which a
      * long text reaches when every event carries the time the text was mapped, as
      * {@code input text}'s do.
+     *
+     * <p>A key that fails to go in lifts every key still down ({@link Keys#liftAll}), so no shift or
+     * ctrl stays held, and fails the request: with the injector's own failure when it was the first
+     * key, so nothing went in, else with typed_partly, since the clear and the keys before it did.
      */
-    private static Reply typeText(JSONObject params) throws Failure {
+    static Reply typeText(JSONObject params, Injector injector) throws Failure {
         if (!params.has("text")) {
             throw new Failure("bad_params", "text is required");
         }
         String text = params.optString("text");
-        KeyCharacterMap keys = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
-        String keyless = keyless(keys, text);
+        KeyCharacterMap map = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
+        String keyless = keyless(map, text);
         if (!keyless.isEmpty()) {
             throw new Failure("unmappable_text", "the device's key map has no key for " + keyless
                     + ", so no key was pressed");
         }
-        KeyEvent[] events = text.isEmpty() ? new KeyEvent[0] : keys.getEvents(text.toCharArray());
-        if (params.optBoolean("replace", false)) {
-            int ctrl = KeyEvent.META_CTRL_ON | KeyEvent.META_CTRL_LEFT_ON;
-            long held = SystemClock.uptimeMillis();
-            injectKey(held, held, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_CTRL_LEFT, ctrl);
-            pressKey(KeyEvent.KEYCODE_A, ctrl);
-            injectKey(held, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, KeyEvent.KEYCODE_CTRL_LEFT, 0);
-            pressKey(KeyEvent.KEYCODE_DEL, 0);
-        }
-        Map<Integer, Long> downAt = new HashMap<>();
-        for (KeyEvent event : events) {
-            long now = SystemClock.uptimeMillis();
-            int code = event.getKeyCode();
-            if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                downAt.put(code, now);
+        KeyEvent[] events = text.isEmpty() ? new KeyEvent[0] : map.getEvents(text.toCharArray());
+        Keys keys = new Keys(injector);
+        try {
+            if (params.optBoolean("replace", false)) {
+                int ctrl = KeyEvent.META_CTRL_ON | KeyEvent.META_CTRL_LEFT_ON;
+                keys.send(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_CTRL_LEFT, ctrl);
+                keys.send(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_A, ctrl);
+                keys.send(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_A, ctrl);
+                keys.send(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_CTRL_LEFT, 0);
+                keys.send(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL, 0);
+                keys.send(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL, 0);
             }
-            Long down = downAt.get(code);
-            injectKey(down == null ? now : down, now, event.getAction(), code, event.getMetaState());
+            for (KeyEvent event : events) {
+                keys.send(event.getAction(), event.getKeyCode(), event.getMetaState());
+            }
+        } catch (Failure failed) {
+            keys.liftAll();
+            if (keys.sent == 0) {
+                throw failed;
+            }
+            throw new Failure("typed_partly", keys.sent + (keys.sent == 1 ? " key event" : " key events")
+                    + " went in before one failed: " + failed.getMessage());
         }
         return Reply.of(new JSONObject());
     }
@@ -209,16 +225,63 @@ public final class ShellHelper {
         return String.join(", ", found) + (more > 0 ? " and " + more + " more" : "");
     }
 
-    /** One key down and up, with metaState held. */
-    private static void pressKey(int code, int metaState) throws Failure {
-        long down = SystemClock.uptimeMillis();
-        injectKey(down, down, KeyEvent.ACTION_DOWN, code, metaState);
-        injectKey(down, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, code, metaState);
+    /** Injects one input event, waiting until it is handled or not (Hidden's modes); a test stands in for it. */
+    interface Injector {
+        void inject(InputEvent event, int mode) throws Failure;
     }
 
-    private static void injectKey(long down, long time, int action, int code, int metaState) throws Failure {
-        Hidden.inject(new KeyEvent(down, time, action, code, 0, metaState, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0,
-                InputDevice.SOURCE_KEYBOARD), Hidden.INJECT_WAIT_FOR_FINISH);
+    /**
+     * The key events of one request, through one injector: how many went in, and which keys are
+     * down, each with its down time, so an up carries the down time of its own down.
+     */
+    private static final class Keys {
+        private final Injector injector;
+        /** Keys pressed and not yet released, in the order pressed. */
+        private final LinkedHashMap<Integer, Long> down = new LinkedHashMap<>();
+        /** How many events went in. */
+        int sent;
+
+        Keys(Injector injector) {
+            this.injector = injector;
+        }
+
+        /**
+         * Sends one key event, stamped now, and waits until the window handled it. A down counts as
+         * held from the moment it is tried: one that timed out may still arrive.
+         */
+        void send(int action, int code, int metaState) throws Failure {
+            long now = SystemClock.uptimeMillis();
+            if (action == KeyEvent.ACTION_DOWN) {
+                down.put(code, now);
+            }
+            Long pressed = down.get(code);
+            injector.inject(keyEvent(pressed == null ? now : pressed, now, action, code, metaState),
+                    Hidden.INJECT_WAIT_FOR_FINISH);
+            if (action == KeyEvent.ACTION_UP) {
+                down.remove(code);
+            }
+            sent++;
+        }
+
+        /** Lifts every key still down, the last pressed first, without waiting: the window may not answer. */
+        void liftAll() {
+            List<Integer> codes = new ArrayList<>(down.keySet());
+            Collections.reverse(codes);
+            for (int code : codes) {
+                try {
+                    injector.inject(keyEvent(down.get(code), SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, code, 0),
+                            Hidden.INJECT_ASYNC);
+                } catch (Failure ignored) {
+                    // The request already fails with the first failure.
+                }
+            }
+            down.clear();
+        }
+    }
+
+    private static KeyEvent keyEvent(long down, long time, int action, int code, int metaState) {
+        return new KeyEvent(down, time, action, code, 0, metaState, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0,
+                InputDevice.SOURCE_KEYBOARD);
     }
 
     /**

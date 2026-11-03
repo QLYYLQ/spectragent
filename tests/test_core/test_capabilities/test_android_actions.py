@@ -607,6 +607,25 @@ async def test_the_key_events_backend_types_through_the_shell_helper() -> None:
     assert refused.error is not None and "'é' (U+00E9)" in refused.error
 
 
+async def test_a_text_that_fails_partway_is_reported_as_partly_typed() -> None:
+    """Some keys went in before one failed, so the action fails without saying that no text
+    went in."""
+    phone = ScriptedPhone(text_field=True, typing_fails="typed_partly")
+    async with (
+        phone_server(phone) as adb,
+        android_capability(adb, typing_backend=KeyEventsBackend()) as capability,
+    ):
+        result = await act(capability, "type_coordinate", text="rm cats.png")
+
+    assert phone.inputs[-1] == "helper type_text 'rm cats.png' replace, failed partway"
+    assert not result.success
+    assert result.error is not None and "typed_partly" in result.error
+    effect = result.effect
+    assert not (isinstance(effect, AndroidTextEffect) and not effect.text_entered), (
+        "never 'No text was entered'"
+    )
+
+
 async def test_typing_at_a_point_where_focus_stays_on_a_field_away_from_it_is_refused(
     capability: AndroidCapability, phone: ScriptedPhone
 ) -> None:

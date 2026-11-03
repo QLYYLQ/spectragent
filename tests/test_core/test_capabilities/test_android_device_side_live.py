@@ -22,7 +22,8 @@ installed afresh and the AVD stays as it was. The boot covers, in file order:
   field, over its text and at its cursor; text typed as the helper's key
   events, capitals and symbols included, at the cursor and over the field's
   text, refused before any key when a character has none, and a text long
-  enough that ``input text`` would lose its tail arriving whole;
+  enough that ``input text`` would lose its tail arriving whole; a key that
+  fails lifts every key still down, and the answer says whether any went in;
 - the node with input focus, reported with its bounds, and when asked with
   the bounds of the field as drawn: on the search screen, whose only text
   field it is, more than the field's own; and with the window on top at a
@@ -109,6 +110,62 @@ _POLL_S = 0.3
 #: adbd connects for the host, and an app's.
 SHELL_UID, APP_UID = 2000, 10000
 PROBE_PATH = "/data/local/tmp/spectragent-probe.dex"
+HARNESS_PATH = "/data/local/tmp/spectragent-typing-harness.dex"
+#: Runs the helper's ``type_text`` beside the APK, in a process of its own, with an injector that
+#: prints each key event it is given and fails the one at an index: arguments are the text,
+#: ``replace`` or ``at-cursor``, and that index. Each event prints as ``<down|up> <key> <meta in
+#: hex> <wait|async>``, ``failed`` added to the one it fails; the answer last, ``answer <code>:
+#: <message>``. Nothing reaches the screen. The APK's classes are package-private, so it reaches
+#: them by reflection.
+TYPING_HARNESS = """
+import android.view.KeyEvent;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import org.json.JSONObject;
+
+public final class TypingHarness {
+    public static void main(String[] args) throws Exception {
+        final int failAt = Integer.parseInt(args[2]);
+        Class<?> helper = Class.forName("org.spectragent.device.ShellHelper");
+        Class<?> injector = Class.forName("org.spectragent.device.ShellHelper$Injector");
+        final Class<?> failure = Class.forName("org.spectragent.device.Failure");
+        final int[] tried = {0};
+        InvocationHandler print = new InvocationHandler() {
+            @Override
+            public Object invoke(Object proxy, Method method, Object[] call) throws Throwable {
+                KeyEvent event = (KeyEvent) call[0];
+                boolean fails = tried[0]++ == failAt;
+                System.out.println((event.getAction() == KeyEvent.ACTION_DOWN ? "down " : "up ")
+                        + KeyEvent.keyCodeToString(event.getKeyCode()) + " "
+                        + Integer.toHexString(event.getMetaState()) + ((Integer) call[1] == 0 ? " async" : " wait")
+                        + (fails ? " failed" : ""));
+                if (fails) {
+                    Constructor<?> make = failure.getDeclaredConstructor(String.class, String.class);
+                    make.setAccessible(true);
+                    throw (Throwable) make.newInstance("inject_failed", "the harness failed key event " + failAt);
+                }
+                return null;
+            }
+        };
+        Object fake = Proxy.newProxyInstance(injector.getClassLoader(), new Class<?>[] {injector}, print);
+        Method type = helper.getDeclaredMethod("typeText", JSONObject.class, injector);
+        type.setAccessible(true);
+        JSONObject params = new JSONObject().put("text", args[0]).put("replace", args[1].equals("replace"));
+        try {
+            type.invoke(null, params, fake);
+            System.out.println("answer ok");
+        } catch (InvocationTargetException thrown) {
+            Field code = failure.getDeclaredField("code");
+            code.setAccessible(true);
+            System.out.println("answer " + code.get(thrown.getCause()) + ": " + thrown.getCause().getMessage());
+        }
+    }
+}
+"""
 #: A client of an abstract socket, to connect as a peer the host never is: once connected it prints
 #: ``connected``, sends its stdin, and prints what comes back. The image has no such tool (toybox
 #: nc 0.8.6 knows only socket files), so the test builds it with the JDK and the SDK that build the
@@ -670,6 +727,64 @@ async def test_a_long_text_typed_as_key_events_arrives_whole(up: Up) -> None:
     )
 
 
+async def test_a_key_that_fails_lifts_every_key_still_down_and_says_what_went_in(
+    up: Up, tmp_path: Path
+) -> None:
+    """A failure on the first key answers with the injector's own failure, nothing having gone
+    in; one after keys went in answers ``typed_partly``. Either way every key still down is lifted
+    without waiting, the last pressed first, so no shift or ctrl stays held (``TYPING_HARNESS``)."""
+    dex = await asyncio.to_thread(_dex, tmp_path, "TypingHarness", TYPING_HARNESS)
+    await up.adb.shell(up.serial, f"cat > {HARNESS_PATH} && chmod 644 {HARNESS_PATH}", stdin=dex)
+    apk = (await _shell(up, f"pm path {PACKAGE}")).strip().removeprefix("package:")
+
+    async def typed(text: str, how: str, fail_at: int) -> list[str]:
+        command = (
+            f"CLASSPATH={apk}:{HARNESS_PATH} app_process / TypingHarness {text} {how} {fail_at}"
+        )
+        async with asyncio.timeout(_SHOWN_S):
+            ran = await up.adb.shell(up.serial, command)
+        assert ran.exit_code == 0, ran.stderr.decode(errors="replace")
+        return ran.stdout.decode().splitlines()
+
+    try:
+        first = await typed("AB", "at-cursor", 0)
+        partway = await typed("AB", "at-cursor", 1)
+        clearing = await typed("ab", "replace", 1)
+        whole = await typed("Ab", "at-cursor", -1)
+    finally:
+        await _shell(up, f"rm -f {HARNESS_PATH}")
+
+    shift, ctrl = "41", "3000"  # SHIFT_ON | SHIFT_LEFT_ON, CTRL_ON | CTRL_LEFT_ON
+    assert first == [
+        f"down KEYCODE_SHIFT_LEFT {shift} wait failed",
+        "up KEYCODE_SHIFT_LEFT 0 async",
+        "answer inject_failed: the harness failed key event 0",
+    ]
+    assert partway == [
+        f"down KEYCODE_SHIFT_LEFT {shift} wait",
+        f"down KEYCODE_A {shift} wait failed",
+        "up KEYCODE_A 0 async",
+        "up KEYCODE_SHIFT_LEFT 0 async",
+        "answer typed_partly: 1 key event went in before one failed: the harness failed key event 1",
+    ]
+    assert clearing == [
+        f"down KEYCODE_CTRL_LEFT {ctrl} wait",
+        f"down KEYCODE_A {ctrl} wait failed",
+        "up KEYCODE_A 0 async",
+        "up KEYCODE_CTRL_LEFT 0 async",
+        "answer typed_partly: 1 key event went in before one failed: the harness failed key event 1",
+    ]
+    assert whole[-1] == "answer ok" and all(line.endswith(" wait") for line in whole[:-1])
+    assert [line.split()[:2] for line in whole[:-1]] == [
+        ["down", "KEYCODE_SHIFT_LEFT"],
+        ["down", "KEYCODE_A"],
+        ["up", "KEYCODE_A"],
+        ["up", "KEYCODE_SHIFT_LEFT"],
+        ["down", "KEYCODE_B"],
+        ["up", "KEYCODE_B"],
+    ]
+
+
 async def test_the_node_with_input_focus_comes_with_its_bounds(up: Up) -> None:
     await _focused_search_field(up)
     # The search screen opens with an animation that still moves the field (7 px, 2026-11-02).
@@ -748,8 +863,12 @@ async def test_a_wrong_token_is_refused(up: Up) -> None:
     assert refused.value.reason == "token"
 
 
-def _probe_dex(directory: Path) -> bytes:
-    """:data:`PROBE_SOURCE` as a dex, built with javac and the SDK's d8 (skips without them)."""
+def _dex(directory: Path, name: str, source_text: str) -> bytes:
+    """Class *name*, written as *source_text*, as a dex built with javac and the SDK's d8.
+
+    Skips without them. It compiles against the platform alone; the APK's own
+    classes, on the device's ``CLASSPATH`` beside it, are reached by reflection.
+    """
     sdk = android_sdk(os.environ)
     android_jar = sdk / "platforms" / "android-33" / "android.jar"
     d8 = sdk / "build-tools" / BUILD_TOOLS / "d8"
@@ -763,31 +882,13 @@ def _probe_dex(directory: Path) -> bytes:
         pytest.skip(
             f"the probe needs a javac that runs (set JAVA_HOME to a JDK), {android_jar} and {d8}"
         )
-    source = directory / "Probe.java"
-    source.write_text(PROBE_SOURCE)
-    for command in (
-        [
-            javac,
-            "--release",
-            "8",
-            "-classpath",
-            str(android_jar),
-            "-d",
-            str(directory),
-            str(source),
-        ],
-        [
-            str(d8),
-            "--min-api",
-            "30",
-            "--lib",
-            str(android_jar),
-            "--output",
-            str(directory),
-            str(directory / "Probe.class"),
-        ],
-    ):
-        subprocess.run(command, check=True, capture_output=True, timeout=120)
+    source = directory / f"{name}.java"
+    source.write_text(source_text)
+    compile_java = [javac, "--release", "8", "-classpath", str(android_jar), "-d", str(directory)]
+    subprocess.run([*compile_java, str(source)], check=True, capture_output=True, timeout=120)
+    classes = [str(compiled) for compiled in directory.glob("*.class")]
+    to_dex = [str(d8), "--min-api", "30", "--lib", str(android_jar), "--output", str(directory)]
+    subprocess.run([*to_dex, *classes], check=True, capture_output=True, timeout=120)
     return (directory / "classes.dex").read_bytes()
 
 
@@ -802,7 +903,7 @@ async def test_a_connection_from_an_apps_uid_is_closed_before_it_is_read(
     connecting to an app's socket at all, adbd excepted (seen on API 33)."""
     if f"uid={APP_UID}" not in await _shell(up, f"su {APP_UID} id"):
         pytest.skip("no su to run the probe as an app's uid")
-    dex = await asyncio.to_thread(_probe_dex, tmp_path)
+    dex = await asyncio.to_thread(_dex, tmp_path, "Probe", PROBE_SOURCE)
     await up.adb.shell(up.serial, f"cat > {PROBE_PATH} && chmod 644 {PROBE_PATH}", stdin=dex)
     hello = encode_frame(
         {"kind": "hello", "protocol": PROTOCOL_VERSION, "token": "not-this-sessions-token"}

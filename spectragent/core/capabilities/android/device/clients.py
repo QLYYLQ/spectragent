@@ -434,7 +434,9 @@ class HelperClient:
             RemoteError: ``unmappable_text`` when the key map has no key for a
                 character of *text* (Chinese, an accented letter, a combining
                 accent, whose key is a dead key), naming those characters; no
-                key was pressed.
+                key was pressed. ``typed_partly`` when a key failed after
+                others went in: part of the text (and the clear) went in, and
+                every key still down was lifted.
         """
         await self.channel.call("type_text", {"text": text, "replace": replace})
 
