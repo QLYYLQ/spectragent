@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ from spectragent.cli.configuration_provenance import explain_provenance
 from spectragent.cli.fingerprints import source_fingerprints
 from spectragent.core.composer import ConfigComposer, named_packages
 from spectragent.core.hooks.base import declare_environment_presence
-from spectragent.core.run_cli import task_context
+from spectragent.core.run_cli import start_context
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.models import TraceNegotiation
 from spectragent.core.trace.redaction import redact_config
@@ -28,23 +29,22 @@ def explain_config(
     *,
     agent_id: str | None = None,
     env_id: str | None = None,
-    start_url: str | None = None,
-    replay_archive: str | None = None,
+    start: Mapping[str, str] | None = None,
     benchmark: str | None = None,
     task_id: str | None = None,
 ) -> dict[str, Any]:
     """Check *path* as a run composes and prepares it, without launching anything.
 
-    *start_url* / *replay_archive* are a written task's context; *benchmark*
-    and *task_id* select a task of a benchmark instead, whose context the
-    check prepares with.
+    *start* holds the given start flags (flag → value) of the run's
+    capabilities (§4.9 "起始参数"); *benchmark* and *task_id* select a task of a
+    benchmark instead, whose context the check prepares with.
     """
     if (benchmark is None) != (task_id is None):
         raise ValueError("--benchmark and --task-id go together: they select one benchmark task")
-    if task_id is not None and (start_url or replay_archive):
+    if task_id is not None and start:
         raise ValueError(
-            "--start-url / --replay-archive: a benchmark task's start comes from its benchmark; "
-            "leave them out with --task-id"
+            f"{', '.join(start)}: a benchmark task's start comes from its benchmark; leave the "
+            f"start flags out with --task-id"
         )
     with inspection_stage("yaml"):
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -53,10 +53,12 @@ def explain_config(
         blocks = [read_benchmark(benchmark)] if benchmark is not None else []
     with inspection_stage("validation"):
         # A benchmark section in the run configuration, a name with no
-        # package, or an agent with no capability, is refused before the
-        # schema is built; it is the configuration's error.
+        # package, an agent with no capability or a start flag of a
+        # capability it does not name, is refused before the schema is built;
+        # it is the configuration's error.
         raw = run_root(raw, *blocks)
         named_packages(raw)
+        context = start_context(start or {}, raw)
     with inspection_stage("schema"):
         composer = ConfigComposer.for_config(raw)
     with inspection_stage("validation"):
@@ -69,13 +71,12 @@ def explain_config(
     checked = "configuration"
     selected_agent = agent_id
     with inspection_stage("selection"):
-        context = task_context(start_url=start_url, replay_archive=replay_archive)
         loop_inputs = None
         if agents and selected_agent is None:
             if len(agents) != 1:
                 raise ValueError("Several agents are configured; select one with --agent-id")
             selected_agent = agents[0]
-        if not agents and any((agent_id, env_id, start_url, replay_archive, task_id)):
+        if not agents and any((agent_id, env_id, start, task_id)):
             raise ValueError("Agent or task options require an agent in the configuration")
         if agents and task_id is not None:
             loader = run.single("benchmark").task_loader

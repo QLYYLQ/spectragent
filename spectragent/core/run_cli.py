@@ -6,8 +6,11 @@ A task comes from one of two places (``docs/architecture_design.md``
 - a benchmark's task source: ``--benchmark <alias|path.yaml> --task-id <id>``
   gives the task's text and its three context parts (environment, Loop,
   branch), exactly as ``spectragent bench`` runs it;
-- the command line: ``--task``, with the browser's ``--start-url`` and
-  ``--replay-archive``.
+- the command line: ``--task`` and the start flags of the run's
+  capabilities (``--start-url`` …), which each capability package declares in
+  its ``declarations.py`` (``START_FLAGS``, §4.9 "起始参数"). Every
+  capability's flags are offered, listed by capability; one whose capability
+  the configuration does not name is refused before anything starts.
 """
 
 from __future__ import annotations
@@ -26,32 +29,84 @@ from dotenv import load_dotenv
 
 from spectragent.benchmarks.selection import read_benchmark, run_root
 from spectragent.core.benchmark_runner import positive_seconds, safe_run_id, task_snapshot
-from spectragent.core.composer import ConfigComposer
+from spectragent.core.composer import ConfigComposer, named_packages
 from spectragent.core.experiment import ExperimentScope
+from spectragent.core.registries import start_flags
 from spectragent.core.runtime import ORACLE_TIMEOUT_S, AgentRuntime
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.restoration import BranchProvenance
-from spectragent.schemas.task import REPLAY_ARCHIVE_KEY
+from spectragent.schemas.task import StartFlag
 
 
-def task_context(
-    *, start_url: str | None = None, replay_archive: str | None = None
-) -> dict[str, str] | None:
-    """The task context the flags name, routed to capabilities by key (§4.10); ``None`` if empty.
+class StartFlagError(ValueError):
+    """A start flag of a capability the run's configuration does not name."""
 
-    ``replay_archive`` is the source run directory an ``archive`` network
-    source replays, passed as given: ``AgentRuntime`` resolves a relative
-    one against the working directory before ``prepare()`` checks it, the
-    trace records it (``task_setup``) and setup opens it, for every caller
-    alike.
+
+def start_context(given: Mapping[str, str], raw: object) -> dict[str, str] | None:
+    """The environment setup context the *given* start flags fill (flag → value); ``None`` if none.
+
+    *raw* is the configuration the run composes. Its capability blocks are read
+    before anything is imported or started, and a flag of a capability it
+    does not name is refused, naming the flag, its capability and the
+    capabilities the run names. A relative ``--replay-archive`` is passed as
+    given: ``AgentRuntime`` resolves it against the working directory before
+    ``prepare()`` checks it, for every caller alike.
+
+    Raises:
+        StartFlagError: a flag of a capability the configuration does not name.
     """
-    context = {
-        key: value
-        for key, value in (("start_url", start_url), (REPLAY_ARCHIVE_KEY, replay_archive))
-        if value
+    owners = {
+        flag.flag: (capability_id, flag.key)
+        for capability_id, flags in start_flags().items()
+        for flag in flags
     }
+    named = named_packages(raw).capabilities
+    context: dict[str, str] = {}
+    for flag, value in given.items():
+        capability_id, key = owners[flag]
+        if capability_id not in named:
+            raise StartFlagError(
+                f"{flag} is a start flag of the {capability_id} capability, and the "
+                f"configuration names no {capability_id} capability (it names: "
+                f"{', '.join(sorted(named)) or 'none'})"
+            )
+        context[key] = value
     return context or None
+
+
+def start_flag_help(capability_id: str, flag: StartFlag) -> str:
+    """*flag*'s help, labelled with its capability: what ``--help`` and tab completion show."""
+    return f"({capability_id}) {flag.help}"
+
+
+def _start_flag_dests() -> dict[str, str]:
+    """Each start flag → where argparse keeps its value."""
+    return {
+        flag.flag: f"start_{capability_id}_{flag.key}"
+        for capability_id, flags in start_flags().items()
+        for flag in flags
+    }
+
+
+def add_start_flags(parser: argparse.ArgumentParser) -> None:
+    """Every capability's start flags on *parser*, one argument group per capability."""
+    dests = _start_flag_dests()
+    for capability_id, flags in start_flags().items():
+        if not flags:
+            continue
+        group = parser.add_argument_group(
+            f"{capability_id} start flags",
+            f"Where the task starts, for a run whose configuration names the {capability_id} "
+            f"capability; refused otherwise.",
+        )
+        for flag in flags:
+            group.add_argument(
+                flag.flag,
+                dest=dests[flag.flag],
+                metavar=flag.key.upper(),
+                help=start_flag_help(capability_id, flag),
+            )
 
 
 def _trace_summary(path: str | None) -> dict[str, Any]:
@@ -101,8 +156,7 @@ async def _run_in_experiment(
     task: str,
     timeout: float,
     dry_run: bool,
-    start_url: str | None = None,
-    replay_archive: str | None = None,
+    start: Mapping[str, str] | None = None,
     benchmark: str | None = None,
     task_id: str | None = None,
     oracle_timeout: float = ORACLE_TIMEOUT_S,
@@ -114,7 +168,7 @@ async def _run_in_experiment(
     raw = run_root(
         yaml.safe_load(source_bytes), *([read_benchmark(benchmark)] if benchmark else [])
     )
-    context = task_context(start_url=start_url, replay_archive=replay_archive)
+    context = start_context(start or {}, raw)
     config_source = ConfigSource.from_path(canonical, data=source_bytes)
     run = scope.bind(ConfigComposer.for_config(raw).compose(raw))
     if task_id is not None:
@@ -239,32 +293,23 @@ async def _run_in_experiment(
     return 1 if result.error or trace["status"] in ("incomplete", "writing", "unreadable") else 0
 
 
-def main(
-    argv: list[str] | None = None,
-    *,
-    progress: Any = None,
-    execute: Callable[..., Any] = asyncio.run,
-    report: Callable[[dict[str, Any]], None] | None = None,
-) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """``spectragent run``'s argument schema, with every capability's start flags.
+
+    The one schema: ``main`` parses with it, and ``spectragent``'s tab
+    completion offers its options.
+    """
     parser = argparse.ArgumentParser(
         prog="spectragent run",
         description=(
             "Run one task with a composed agent and environment: a task of a benchmark "
-            "(--benchmark and --task-id), or one written here (--task, --start-url)."
+            "(--benchmark and --task-id), or one written here (--task, and where it starts "
+            "through the start flags of the run's capabilities)."
         ),
     )
     parser.add_argument("--config", required=True, type=Path, help="YAML run config")
     parser.add_argument(
         "--task", default="", help="Task text (required unless --dry-run or --task-id)"
-    )
-    parser.add_argument(
-        "--start-url",
-        help="Browser page to open before the agent starts: one complete http:// or https:// URL",
-    )
-    parser.add_argument(
-        "--replay-archive",
-        help="Recorded run directory to replay the browser's network from "
-        "(needs network_source: archive)",
     )
     parser.add_argument(
         "--benchmark",
@@ -292,15 +337,24 @@ def main(
         help="Compose, negotiate and check what setup would refuse; launch nothing",
     )
     parser.add_argument("--log-level", default="INFO")
+    add_start_flags(parser)
+    return parser
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    progress: Any = None,
+    execute: Callable[..., Any] = asyncio.run,
+    report: Callable[[dict[str, Any]], None] | None = None,
+) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
-    start = [
-        flag
-        for flag, value in (
-            ("--start-url", args.start_url),
-            ("--replay-archive", args.replay_archive),
-        )
-        if value
-    ]
+    start = {
+        flag: value
+        for flag, dest in _start_flag_dests().items()
+        if (value := getattr(args, dest)) is not None
+    }
     if (args.benchmark is None) != (args.task_id is None):
         parser.error("--benchmark and --task-id go together: they select one task of a benchmark")
     if args.task_id is not None:
@@ -322,8 +376,7 @@ def main(
         _run(
             config_path=args.config,
             task=args.task,
-            start_url=args.start_url,
-            replay_archive=args.replay_archive,
+            start=start,
             benchmark=args.benchmark,
             task_id=args.task_id,
             timeout=args.timeout,

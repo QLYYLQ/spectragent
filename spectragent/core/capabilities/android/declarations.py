@@ -18,6 +18,7 @@ from spectragent.core.capabilities.android.ui_tree._registrar import (
     AndroidUITreeSerializerRegistrar,
     AndroidUITreeSourceRegistrar,
 )
+from spectragent.schemas.task import StartFlag
 
 #: The Android capability's internal strategy axes, layer name → registrar: the
 #: provider, the tap injector, the typing backend, the task oracle, and the UI
@@ -35,6 +36,10 @@ STRATEGY_AXES = {
 #: The Android task's setup; importing it here registers it, so a loader finds
 #: it without importing the Android implementation.
 TASK_SETUP = AndroidSetup
+
+#: No single-task start flag yet: the Android setup takes no key that says where a
+#: task starts (``docs/architecture_design.md`` §4.10 "任务的起始点归 capability").
+START_FLAGS: tuple[StartFlag, ...] = ()
 
 #: No module of this package needs an optional extra.
 OPTIONAL_EXTRA_MODULES: tuple[str, ...] = ()

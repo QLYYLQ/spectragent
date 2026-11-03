@@ -1,4 +1,11 @@
-"""``spectragent run``: a benchmark's task (``--benchmark``, ``--task-id``) or one written here."""
+"""``spectragent run``: a benchmark's task (``--benchmark``, ``--task-id``) or one written here.
+
+A written task starts where the start flags of the run's capabilities say
+(``docs/architecture_design.md`` §4.9 "起始参数"): every capability package
+declares its own in ``declarations.py``, ``--help`` lists them by capability,
+and a flag of a capability the configuration does not name is refused before
+anything starts.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +20,9 @@ from spectragent.core import run_cli
 
 CONFIGS = Path(__file__).resolve().parents[2] / "configs"
 BROWSER_CONFIG = CONFIGS / "browser_use_local.yaml"
+_ON_ANDROID = {
+    "environment": [{"env_type": "android", "capabilities": [{"capability_id": "android"}]}]
+}
 
 
 @pytest.fixture(autouse=True)
@@ -21,10 +31,28 @@ def _quiet(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(run_cli.logging, "basicConfig", lambda **_kw: None)
 
 
-def test_task_context_carries_only_what_was_given() -> None:
-    assert run_cli.task_context() is None
-    assert run_cli.task_context(start_url="https://a.example") == {"start_url": "https://a.example"}
-    assert run_cli.task_context(replay_archive="/runs/src") == {"replay_archive": "/runs/src"}
+def _main_kwargs(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> dict[str, Any]:
+    """What ``main`` hands the run, without running it."""
+    seen: dict[str, Any] = {}
+
+    async def _fake_run(**kwargs: Any) -> int:
+        seen.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(run_cli, "_run", _fake_run)
+    assert run_cli.main(argv) == 0
+    return seen
+
+
+def test_the_start_context_carries_only_what_was_given() -> None:
+    raw = yaml.safe_load(BROWSER_CONFIG.read_text())
+    assert run_cli.start_context({}, raw) is None
+    assert run_cli.start_context({"--start-url": "https://a.example"}, raw) == {
+        "start_url": "https://a.example"
+    }
+    assert run_cli.start_context({"--replay-archive": "/runs/src"}, raw) == {
+        "replay_archive": "/runs/src"
+    }
 
 
 def test_a_relative_replay_archive_is_passed_as_given() -> None:
@@ -33,55 +61,44 @@ def test_a_relative_replay_archive_is_passed_as_given() -> None:
     ``tests/test_core/test_runtime/test_env_context_paths.py`` pins that the
     trace and setup both see the absolute directory.
     """
-    assert run_cli.task_context(replay_archive="runs/src") == {"replay_archive": "runs/src"}
+    raw = yaml.safe_load(BROWSER_CONFIG.read_text())
+    assert run_cli.start_context({"--replay-archive": "runs/src"}, raw) == {
+        "replay_archive": "runs/src"
+    }
 
 
-def test_replay_archive_flag_reaches_env_context(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: dict[str, Any] = {}
-
-    async def _fake_run(**kwargs: Any) -> int:
-        seen.update(kwargs)
-        return 0
-
-    monkeypatch.setattr(run_cli, "_run", _fake_run)
-    monkeypatch.setattr(run_cli, "load_dotenv", lambda: None)  # never read the repo's .env
-    monkeypatch.setattr(run_cli.logging, "basicConfig", lambda **_kw: None)
-    code = run_cli.main(
-        ["--config", "run.yaml", "--task", "replay it", "--replay-archive", "/runs/src"]
+def test_a_flag_of_a_capability_the_run_does_not_name_is_refused() -> None:
+    with pytest.raises(run_cli.StartFlagError) as refused:
+        run_cli.start_context({"--start-url": "https://a.example"}, _ON_ANDROID)
+    assert str(refused.value) == (
+        "--start-url is a start flag of the browser capability, and the configuration names "
+        "no browser capability (it names: android)"
     )
-    assert code == 0
-    assert seen["replay_archive"] == "/runs/src" and seen["config_path"] == Path("run.yaml")
-    assert run_cli.task_context(
-        start_url=seen["start_url"], replay_archive=seen["replay_archive"]
-    ) == {"replay_archive": "/runs/src"}
+
+
+def test_the_help_lists_every_start_flag_by_capability(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        run_cli.main(["--help"])
+    help_text = capsys.readouterr().out
+    group = help_text[help_text.index("browser start flags:") :]
+    for flag in ("--start-url", "--storage-state", "--replay-archive"):
+        assert flag in group, flag
+    assert "(browser) Page to open before the agent starts" in group
+
+
+def test_a_start_flag_reaches_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _main_kwargs(
+        monkeypatch,
+        ["--config", "run.yaml", "--task", "replay it", "--replay-archive", "/runs/src"],
+    )
+    assert seen["start"] == {"--replay-archive": "/runs/src"}
+    assert seen["config_path"] == Path("run.yaml") and seen["task_id"] is None
 
 
 def test_the_oracle_timeout_flag_reaches_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: list[float] = []
-
-    async def _fake_run(**kwargs: Any) -> int:
-        seen.append(kwargs["oracle_timeout"])
-        return 0
-
-    monkeypatch.setattr(run_cli, "_run", _fake_run)
-    monkeypatch.setattr(run_cli, "load_dotenv", lambda: None)  # never read the repo's .env
-    monkeypatch.setattr(run_cli.logging, "basicConfig", lambda **_kw: None)
     argv = ["--config", "run.yaml", "--task", "score it"]
-    assert run_cli.main(argv) == 0
-    assert run_cli.main([*argv, "--oracle-timeout", "9"]) == 0
-    assert seen == [run_cli.ORACLE_TIMEOUT_S, 9.0]
-
-
-def test_a_dry_run_checks_what_setup_would_refuse(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``--dry-run`` prepares with the flags' task context: the setup check sees it too."""
-    from spectragent.core.capabilities.browser.cooperation import BrowserCooperationError
-
-    monkeypatch.setattr(run_cli, "load_dotenv", lambda: None)  # never read the repo's .env
-    monkeypatch.setattr(run_cli.logging, "basicConfig", lambda **_kw: None)
-    config = str(Path(__file__).resolve().parents[2] / "configs" / "browser_use_local.yaml")
-    assert run_cli.main(["--config", config, "--dry-run"]) == 0
-    with pytest.raises(BrowserCooperationError, match="network_source: live ↔ replay_archive"):
-        run_cli.main(["--config", config, "--dry-run", "--replay-archive", "/runs/src"])
+    assert _main_kwargs(monkeypatch, argv)["oracle_timeout"] == run_cli.ORACLE_TIMEOUT_S
+    assert _main_kwargs(monkeypatch, [*argv, "--oracle-timeout", "9"])["oracle_timeout"] == 9.0
 
 
 @pytest.mark.parametrize(
@@ -107,6 +124,23 @@ def test_a_task_comes_from_one_place(
         run_cli.main(["--config", "run.yaml", *argv])
     assert refused.value.code == 2
     assert message in capsys.readouterr().err
+
+
+def test_a_dry_run_checks_what_setup_would_refuse() -> None:
+    """``--dry-run`` prepares with the flags' task context: the setup check sees it too."""
+    from spectragent.core.capabilities.browser.cooperation import BrowserCooperationError
+
+    config = str(BROWSER_CONFIG)
+    assert run_cli.main(["--config", config, "--dry-run"]) == 0
+    with pytest.raises(BrowserCooperationError, match="network_source: live ↔ replay_archive"):
+        run_cli.main(["--config", config, "--dry-run", "--replay-archive", "/runs/src"])
+
+
+def test_a_start_flag_of_another_capability_launches_nothing(tmp_path: Path) -> None:
+    config = tmp_path / "android.yaml"
+    config.write_text(yaml.safe_dump(_ON_ANDROID))
+    with pytest.raises(run_cli.StartFlagError, match="names no browser capability"):
+        run_cli.main(["--config", str(config), "--dry-run", "--start-url", "https://a.example"])
 
 
 def _benchmark(tmp_path: Path, start_url: str) -> Path:

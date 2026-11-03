@@ -9,7 +9,9 @@ framework needs before importing it (``docs/architecture_design.md``
 ``STRATEGY_AXES``           its internal strategy axes, layer name → registrar;
 ``TASK_SETUP``              its task setup class (§4.10);
 ``OPTIONAL_EXTRA_MODULES``  modules whose top-level imports need an optional
-                            extra, which discovery never imports.
+                            extra, which discovery never imports;
+``START_FLAGS``             its single-task start flags, which ``spectragent
+                            run`` generates (§4.9 "起始参数").
 
 So adding a capability edits no file here. Every subpackage of
 ``spectragent/agents/`` is an agent family, named by the part of an
@@ -35,7 +37,7 @@ from typing import TYPE_CHECKING
 from conscribe import LayerRegistrar, discover, get_registry
 
 if TYPE_CHECKING:
-    from spectragent.schemas.task import SetupBase
+    from spectragent.schemas.task import SetupBase, StartFlag
 
 #: The package whose every subpackage is one capability.
 CAPABILITIES_PACKAGE = "spectragent.core.capabilities"
@@ -69,6 +71,8 @@ class CapabilityDeclarations:
     task_setup: type[SetupBase]
     #: Fully qualified names, all inside the package.
     optional_extra_modules: tuple[str, ...]
+    #: Its single-task start flags, in declared order.
+    start_flags: tuple[StartFlag, ...]
 
 
 def capability_ids() -> tuple[str, ...]:
@@ -98,6 +102,31 @@ def capability_declarations(
     """
     selected = capability_ids() if capabilities is None else sorted(set(capabilities))
     return tuple(_read_declarations(capability_id) for capability_id in selected)
+
+
+def start_flags() -> dict[str, tuple[StartFlag, ...]]:
+    """Every capability package's single-task start flags, by ``capability_id``, in that order.
+
+    The static union ``spectragent run`` offers (``docs/architecture_design.md``
+    §4.9 "起始参数"): read from every package's declarations, whatever a run
+    names, so ``--help`` and tab completion list them all. Imports no
+    implementation.
+
+    Raises:
+        ValueError: two packages declare one flag.
+    """
+    flags: dict[str, tuple[StartFlag, ...]] = {}
+    owners: dict[str, str] = {}
+    for capability in capability_declarations():
+        for flag in capability.start_flags:
+            owner = owners.setdefault(flag.flag, capability.capability_id)
+            if owner != capability.capability_id:
+                raise ValueError(
+                    f"capabilities {owner!r} and {capability.capability_id!r} both declare the "
+                    f"start flag {flag.flag}"
+                )
+        flags[capability.capability_id] = capability.start_flags
+    return flags
 
 
 def collect_registrars(capabilities: Iterable[str] | None = None) -> dict[str, type]:
@@ -301,10 +330,10 @@ def _read_declarations(capability_id: str) -> CapabilityDeclarations:
         raise ImportError(
             f"capability package {package} has no {DECLARATIONS_MODULE} module. Every "
             f"subpackage of {CAPABILITIES_PACKAGE} is a capability and declares its strategy "
-            f"axes, task setup and optional-extra modules there "
+            f"axes, task setup, optional-extra modules and start flags there "
             f"(docs/architecture_design.md §4.2.1)."
         ) from exc
-    from spectragent.schemas.task import SetupBase
+    from spectragent.schemas.task import SetupBase, StartFlag
 
     axes = getattr(module, "STRATEGY_AXES", None)
     if not isinstance(axes, Mapping):
@@ -323,11 +352,25 @@ def _read_declarations(capability_id: str) -> CapabilityDeclarations:
             f"{name}.OPTIONAL_EXTRA_MODULES must be a tuple of module names inside {package}, "
             f"not {optional!r}"
         )
+    flags = getattr(module, "START_FLAGS", None)
+    if not (isinstance(flags, tuple) and all(isinstance(flag, StartFlag) for flag in flags)):
+        raise TypeError(f"{name}.START_FLAGS must be a tuple of StartFlag, not {flags!r}")
+    for flag in flags:
+        if not flag.flag.startswith("--") or not flag.key or not flag.help:
+            raise ValueError(
+                f"{name}.START_FLAGS: {flag!r} needs a flag starting with '--', a context key "
+                f"and a help text"
+            )
+    for field in ("flag", "key"):
+        values = [getattr(flag, field) for flag in flags]
+        if len(set(values)) != len(values):
+            raise ValueError(f"{name}.START_FLAGS declares one {field} twice: {values}")
     return CapabilityDeclarations(
         capability_id=capability_id,
         strategy_axes=dict(axes),
         task_setup=setup,
         optional_extra_modules=optional,
+        start_flags=flags,
     )
 
 

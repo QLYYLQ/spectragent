@@ -31,6 +31,7 @@ See docs/architecture_design.md §4.10 and docs/execution_dag.md M15.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Final, Protocol, runtime_checkable
 
 from conscribe import create_registrar
@@ -260,6 +261,27 @@ class SetupTaskText(BaseModel):
 REPLAY_ARCHIVE_KEY: Final = "replay_archive"
 
 
+@dataclass(frozen=True)
+class StartFlag:
+    """A single-task start flag a capability declares in its ``declarations.py`` (``START_FLAGS``).
+
+    ``docs/architecture_design.md`` §4.9 "起始参数": ``spectragent run`` adds
+    every capability's flags, listed by capability, and refuses one whose
+    capability the run's configuration does not name. Its value is the task's
+    environment setup context entry *key* (§4.10), routed to the capability's
+    ``setup()`` like a loader task's.
+
+    Attributes:
+        flag: The command-line flag, ``--start-url``.
+        key: The environment setup context key it fills, ``start_url``.
+        help: What it sets, for ``--help`` and tab completion.
+    """
+
+    flag: str
+    key: str
+    help: str
+
+
 __all__ = [
     "SetupBase",
     "TaskSetup",
@@ -271,4 +293,5 @@ __all__ = [
     "TaskContext",
     "SetupTaskText",
     "REPLAY_ARCHIVE_KEY",
+    "StartFlag",
 ]

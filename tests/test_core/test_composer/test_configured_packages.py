@@ -47,6 +47,7 @@ _PROBE_PACKAGE = {
         STRATEGY_AXES = {}
         TASK_SETUP = ProbeSetup
         OPTIONAL_EXTRA_MODULES = ()
+        START_FLAGS = ()
     """,
     "observations.py": """
         from typing import Literal

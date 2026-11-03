@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import importlib
 import inspect
@@ -12,7 +13,7 @@ from collections.abc import Callable
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 import yaml
@@ -21,6 +22,117 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
+from typer.core import TyperCommand, TyperOption
+
+if TYPE_CHECKING:
+    # The click typer builds on; typer names these types only in its own modules.
+    from typer._click.core import Parameter
+    from typer._click.shell_completion import CompletionItem
+
+#: Where a command keeps the start flags it was given (flag → value) in ``ctx.meta``.
+_START_FLAGS = "spectragent.start_flags"
+
+#: The commands a leaf module's own parser runs: name, module, help.
+_LEAF_COMMANDS: tuple[tuple[str, str, str], ...] = (
+    (
+        "replay-review",
+        "spectragent.replay_review.cli",
+        "Review recorded replay evidence independently. Supports --json and --dry-run.",
+    ),
+    (
+        "run",
+        "spectragent.core.run_cli",
+        "Run one task. Add --tui for an interactive monitor, or --json.",
+    ),
+    (
+        "bench",
+        "spectragent.core.benchmark_runner",
+        "Run selected benchmark tasks. Supports --tui and --json.",
+    ),
+    (
+        "eval",
+        "spectragent.evaluator.cli",
+        "Evaluate recorded runs independently. Supports --json.",
+    ),
+    (
+        "export",
+        "spectragent.export.cli",
+        "Export recorded runs as training data. Supports --json.",
+    ),
+    (
+        "flywheel",
+        "spectragent.flywheel.cli",
+        "Run a data chain, compute a report or diagnose replay. Supports --json.",
+    ),
+)
+
+
+class _WithStartFlags(TyperCommand):
+    """A command that also takes every capability's start flags (``docs/architecture_design.md`` §4.9).
+
+    The flags come from each capability package's ``declarations.py``
+    (``START_FLAGS``), read when the command first parses or shows its help,
+    and are listed under one panel per capability. Their values are kept in
+    ``ctx.meta`` for the command to read (:func:`_given_start_flags`), never
+    passed as parameters: the command knows no capability's flag by name.
+    """
+
+    _start_flags_added = False
+
+    def get_params(self, ctx: typer.Context) -> list[Parameter]:
+        if not self._start_flags_added:
+            from spectragent.core.registries import start_flags
+            from spectragent.core.run_cli import start_flag_help
+
+            self._start_flags_added = True
+            self.params.extend(
+                TyperOption(
+                    param_decls=[flag.flag],
+                    metavar=flag.key.upper(),
+                    help=start_flag_help(capability_id, flag),
+                    expose_value=False,
+                    callback=_keep_start_flag,
+                    rich_help_panel=f"{capability_id} start flags (refused without a "
+                    f"{capability_id} capability)",
+                )
+                for capability_id, flags in start_flags().items()
+                for flag in flags
+            )
+        return super().get_params(ctx)
+
+
+def _keep_start_flag(ctx: typer.Context, param: Parameter, value: str | None) -> str | None:
+    if value is not None:
+        ctx.meta.setdefault(_START_FLAGS, {})[param.opts[0]] = value
+    return value
+
+
+def _given_start_flags(ctx: typer.Context) -> dict[str, str]:
+    """The start flags this command was given, flag → value."""
+    return dict(ctx.meta.get(_START_FLAGS, {}))
+
+
+class _Leaf(TyperCommand):
+    """A command run by a leaf module's own argparse parser, its one argument schema.
+
+    Tab completion offers the options of that parser when the module builds it
+    with ``build_parser()`` (``spectragent run``'s start flags among them).
+    """
+
+    def shell_complete(self, ctx: typer.Context, incomplete: str) -> list[CompletionItem]:
+        module = next(module for name, module, _ in _LEAF_COMMANDS if name == self.name)
+        build = getattr(importlib.import_module(module), "build_parser", None)
+        if build is None:
+            return super().shell_complete(ctx, incomplete)
+        parser: argparse.ArgumentParser = build()
+        mirror = TyperCommand(self.name)
+        # argparse lists a parser's arguments only in ``_actions``; argcomplete reads it too.
+        mirror.params.extend(
+            TyperOption(param_decls=list(action.option_strings), help=action.help)
+            for action in parser._actions
+            if action.option_strings and action.help != argparse.SUPPRESS
+        )
+        return mirror.shell_complete(ctx, incomplete)
 
 
 @dataclass
@@ -316,8 +428,6 @@ def create_app() -> typer.Typer:
         config: Path,
         agent_id: str | None,
         env_id: str | None,
-        start_url: str | None,
-        replay_archive: str | None,
         benchmark: str | None,
         task_id: str | None,
         json_output: bool,
@@ -325,13 +435,14 @@ def create_app() -> typer.Typer:
     ) -> None:
         from spectragent.cli.configuration import explain_config
 
+        start = _given_start_flags(ctx)
+
         def inspect() -> dict[str, Any]:
             data = explain_config(
                 config,
                 agent_id=agent_id,
                 env_id=env_id,
-                start_url=start_url,
-                replay_archive=replay_archive,
+                start=start,
                 benchmark=benchmark,
                 task_id=task_id,
             )
@@ -356,57 +467,31 @@ def create_app() -> typer.Typer:
     )
     task_id_help = "Prepare with this task of --benchmark: its environment and loop inputs."
 
-    @config_app.command("check")
+    @config_app.command("check", cls=_WithStartFlags)
     def config_check(
         ctx: typer.Context,
         config: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
         agent_id: str | None = typer.Option(None),
         env_id: str | None = typer.Option(None),
-        start_url: str | None = typer.Option(None),
-        replay_archive: str | None = typer.Option(None),
         benchmark: str | None = typer.Option(None, help=benchmark_help),
         task_id: str | None = typer.Option(None, help=task_id_help),
         json_output: bool = typer.Option(False, "--json"),
     ) -> None:
         """Validate YAML and prepare an agent, without launching a browser or model."""
-        config_operation(
-            ctx,
-            config,
-            agent_id,
-            env_id,
-            start_url,
-            replay_archive,
-            benchmark,
-            task_id,
-            json_output,
-            False,
-        )
+        config_operation(ctx, config, agent_id, env_id, benchmark, task_id, json_output, False)
 
-    @config_app.command("explain")
+    @config_app.command("explain", cls=_WithStartFlags)
     def config_explain(
         ctx: typer.Context,
         config: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
         agent_id: str | None = typer.Option(None),
         env_id: str | None = typer.Option(None),
-        start_url: str | None = typer.Option(None),
-        replay_archive: str | None = typer.Option(None),
         benchmark: str | None = typer.Option(None, help=benchmark_help),
         task_id: str | None = typer.Option(None, help=task_id_help),
         json_output: bool = typer.Option(False, "--json"),
     ) -> None:
         """Explain inputs, declaration/MRO origins, injection, negotiations and fingerprints."""
-        config_operation(
-            ctx,
-            config,
-            agent_id,
-            env_id,
-            start_url,
-            replay_archive,
-            benchmark,
-            task_id,
-            json_output,
-            True,
-        )
+        config_operation(ctx, config, agent_id, env_id, benchmark, task_id, json_output, True)
 
     @config_app.command("generate")
     def config_generate(
@@ -672,43 +757,12 @@ def create_app() -> typer.Typer:
 
         browse(root, initial_run=initial_run, config_source=config, config_hash=config_hash)
 
-    leaf_commands = (
-        (
-            "replay-review",
-            "spectragent.replay_review.cli",
-            "Review recorded replay evidence independently. Supports --json and --dry-run.",
-        ),
-        (
-            "run",
-            "spectragent.core.run_cli",
-            "Run one task. Add --tui for an interactive monitor, or --json.",
-        ),
-        (
-            "bench",
-            "spectragent.core.benchmark_runner",
-            "Run selected benchmark tasks. Supports --tui and --json.",
-        ),
-        (
-            "eval",
-            "spectragent.evaluator.cli",
-            "Evaluate recorded runs independently. Supports --json.",
-        ),
-        (
-            "export",
-            "spectragent.export.cli",
-            "Export recorded runs as training data. Supports --json.",
-        ),
-        (
-            "flywheel",
-            "spectragent.flywheel.cli",
-            "Run a data chain, compute a report or diagnose replay. Supports --json.",
-        ),
-    )
-    for name, module, help_text in leaf_commands:
+    for name, module, help_text in _LEAF_COMMANDS:
 
         def register(command_name: str, module_name: str, description: str) -> None:
             @app.command(
                 command_name,
+                cls=_Leaf,
                 help=description,
                 context_settings={
                     "allow_extra_args": True,
