@@ -79,6 +79,13 @@ history says the same (``agent.py``).
   point, as AndroidWorld's actuation does.
 - *Index 0.* A ``scroll`` with ``index`` 0 scrolls element 0; AndroidWorld's
   ``if action.index:`` reads 0 as no index and scrolls the whole screen.
+- *The element an index names.* An index names an element of the UI tree the
+  agent saw, and the action touches where that element was then (the user's
+  ruling of 2026-11-01, ``docs/architecture_design.md`` §11.2 "动作").
+  AndroidWorld reads the element list again just before it runs the action
+  (``AsyncAndroidEnv.execute_action``) and takes the element with that index
+  in the new list: another element when the screen changed after the agent
+  saw it, and a failed action when the new list is shorter.
 - *Typing needs a text field with focus.* ``type`` taps the element and then
   types only once a text field has focus; ``type_coordinate`` without a point
   types only into a text field that has focus (the capability's focus rule,
