@@ -69,7 +69,7 @@ class _Setter(_Plain):
     async def setup(self, *, negotiation: Any = None, goal_seed: int | None = None) -> None:
         raise AssertionError("neither question sets anything up")
 
-    def sets_task_text(self, context: Mapping[str, Any]) -> bool:
+    def sets_task_text(self, context: Mapping[str, Any], *, setup: object = None) -> bool:
         self.asked.append("sets_task_text")
         self.contexts.append(context)
         return self.sets

@@ -504,14 +504,19 @@ class TaskTextFromSetup(Protocol):
     its own never escapes (the ``TaskOracle`` convention).
     """
 
-    def sets_task_text(self, context: Mapping[str, Any]) -> bool:
+    def sets_task_text(
+        self, context: Mapping[str, Any], *, setup: BenchmarkSetup | None = None
+    ) -> bool:
         """Whether setup, with *context*, completes the run's task text.
 
         *context* is this capability's routed slice of the task's setup
-        context. Reads configuration and *context* only, like ``check_setup``:
-        no backend, no state written. It must agree with setup: a ``True``
-        here and no text from :meth:`task_text_from_setup` after setup fails
-        the run's setup.
+        context; *setup* is the benchmark setup component about to be bound
+        to it (``SetupHost``), ``None`` when it hosts none. ``prepare()`` asks
+        before it binds anything, so a host answers for *setup*, never for
+        what an earlier run bound. Reads configuration and its arguments only,
+        like ``check_setup``: no backend, no state written. It must agree with
+        setup: a ``True`` here and no text from :meth:`task_text_from_setup`
+        after setup fails the run's setup.
         """
         ...
 

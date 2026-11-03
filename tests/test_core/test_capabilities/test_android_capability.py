@@ -996,11 +996,13 @@ async def test_the_setup_completes_the_task_text(tmp_path: Path) -> None:
 
     goal = "Follow the instructions shown on the top of the screen: Click on the Submit button."
     setup = _RecordingSetup(goal=goal)
-    capability.bind_setup(setup)
     task: dict[str, JsonValue] = {"opaque": ["to", "the", "capability"]}
 
-    assert env.task_text_setter({"oracle_task": task}) == "android"
+    # Asked as prepare() asks: with the component about to be bound, before it is.
+    assert env.task_text_setter({"oracle_task": task}, setups=[setup]) == "android"
     assert setup.tasks == [task] and setup.tasks[0] is task, "handed over as it came"
+    assert env.task_text_setter({"oracle_task": task}) is None, "none bound, none asked about"
+    env.bind_setups([setup])
     assert await env.task_text_from_setup() == SetupTaskText(capability_id="android", text=goal)
     assert setup.calls == ["makes_goal", "made_goal"]
 

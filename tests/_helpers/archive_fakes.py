@@ -619,9 +619,11 @@ class SurfacelessEnv:
         # Every run that reaches the scoring point calls it, archiving or not.
         return await self._inner.verify_live(timeout_s=timeout_s, answer=answer)
 
-    def task_text_setter(self, context: Mapping[str, Any] | None = None) -> str | None:
+    def task_text_setter(
+        self, context: Mapping[str, Any] | None = None, *, setups: Any = ()
+    ) -> str | None:
         # Every run's ``prepare()`` asks it, archiving or not.
-        return self._inner.task_text_setter(context)
+        return self._inner.task_text_setter(context, setups=setups)
 
     async def task_text_from_setup(self) -> SetupTaskText | None:
         return await self._inner.task_text_from_setup()

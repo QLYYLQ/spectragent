@@ -808,25 +808,35 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 
     # ── The task text a setup completes; the episode the environment ends ──
 
-    def task_text_setter(self, context: Mapping[str, Any] | None = None) -> str | None:
+    def task_text_setter(
+        self,
+        context: Mapping[str, Any] | None = None,
+        *,
+        setups: Sequence[BenchmarkSetup] = (),
+    ) -> str | None:
         """The capability whose setup completes this task's text; ``None`` when none does.
 
         Routes *context* exactly as :meth:`setup` routes it (a key no
-        capability accepts raises), then asks every capability implementing
+        capability accepts raises) and *setups* as :meth:`check_setup` routes
+        them, then asks every capability implementing
         :class:`~spectragent.core.capabilities.base.TaskTextFromSetup` about
-        its own slice. Reads configuration and task data only; changes nothing
+        its own slice and the setup component about to be bound to it.
+        Reads configuration and task data only; changes nothing
         (``docs/architecture_design.md`` §4.3).
 
         Raises:
-            ValueError: A context key nobody accepts, or more than one
-                capability would complete the text: a run has one task text.
+            ValueError: A context key nobody accepts, a setup component no
+                capability here hosts, or more than one capability would
+                complete the text: a run has one task text.
         """
         self._by_capability_id()
         routed = self.route_setup_context(context or {})
+        hosted = self._setup_groups(setups)
         setters = [
             cap.capability_id
             for inst_id, cap in self.capabilities.items()
-            if isinstance(cap, TaskTextFromSetup) and cap.sets_task_text(routed[inst_id])
+            if isinstance(cap, TaskTextFromSetup)
+            and cap.sets_task_text(routed[inst_id], setup=hosted.get(cap.capability_id))
         ]
         if len(setters) > 1:
             where = getattr(type(self), "__name__", "Environment")

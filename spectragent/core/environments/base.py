@@ -283,19 +283,28 @@ class Environment(Protocol):
 
     # ── The task text a setup completes; the episode the environment ends ──
 
-    def task_text_setter(self, context: Mapping[str, Any] | None = None) -> str | None:
+    def task_text_setter(
+        self,
+        context: Mapping[str, Any] | None = None,
+        *,
+        setups: Sequence[BenchmarkSetup] = (),
+    ) -> str | None:
         """The capability whose setup completes this task's text; ``None`` when none does.
 
         ``AgentRuntime.prepare()`` asks it after :meth:`check_setup`, with the
-        same context (``docs/architecture_design.md`` §4.2, §4.10). The context
-        is routed as :meth:`setup` routes it, and every capability implementing
+        same context and the same benchmark setup components, before it binds
+        them (``docs/architecture_design.md`` §4.2, §4.10). The context is
+        routed as :meth:`setup` routes it and the components as
+        :meth:`check_setup` routes them, and every capability implementing
         ``TaskTextFromSetup`` (``core/capabilities/base.py``) answers for its
-        own slice. Reads configuration and task data only, so a structural
-        implementation needs it too: Runtime asks on every run.
+        own slice and the component it is about to host. Reads configuration
+        and task data only, so a structural implementation needs it too:
+        Runtime asks on every run.
 
         Raises:
-            ValueError: A context key no capability accepts, or more than one
-                capability would complete the text: a run has one task text.
+            ValueError: A context key no capability accepts, a setup component
+                no capability here hosts, or more than one capability would
+                complete the text: a run has one task text.
         """
         ...
 

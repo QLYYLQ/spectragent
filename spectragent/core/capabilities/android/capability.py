@@ -890,9 +890,19 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             raise RuntimeError("no bound setup component judges this run: its identity is None")
         return await component.read_score(answer=answer)
 
-    def sets_task_text(self, context: Mapping[str, Any]) -> bool:
-        """Whether the setup component makes this task's goal on the device (``TaskTextFromSetup``)."""
-        component = self._setup
+    def sets_task_text(
+        self, context: Mapping[str, Any], *, setup: BenchmarkSetup | None = None
+    ) -> bool:
+        """Whether *setup*, the component about to be bound, makes this task's goal on the device
+        (``TaskTextFromSetup``).
+
+        Asked in ``prepare()`` before the component is bound, so it answers
+        for *setup* and never for the one bound now.
+
+        Raises:
+            TypeError: *setup* is no component this capability can host.
+        """
+        component = _hostable(setup)
         return component is not None and component.makes_goal(context.get("oracle_task"))
 
     async def task_text_from_setup(self) -> str | None:

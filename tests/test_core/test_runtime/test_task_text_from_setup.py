@@ -61,7 +61,7 @@ class _TextCap(CapabilityBase):
         self.log.append("setup")
         await super().setup(negotiation=negotiation)
 
-    def sets_task_text(self, context: Mapping[str, Any]) -> bool:
+    def sets_task_text(self, context: Mapping[str, Any], *, setup: object = None) -> bool:
         self.log.append(f"sets_task_text {dict(context)}")
         return self.sets
 

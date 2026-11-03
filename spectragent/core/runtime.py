@@ -553,8 +553,12 @@ class AgentRuntime:
             # MiniWoB++ page makes its instruction as the task starts). Known
             # now, from configuration and task data, so the trace records it
             # and a Loop that could not use such a run refuses it here
-            # (docs/architecture_design.md §4.2, §4.10).
-            self._task_text_setter = env.task_text_setter(self._prepared_setup.execution)
+            # (docs/architecture_design.md §4.2, §4.10). Asked with the setup
+            # components about to be bound, as check_setup is: the binding
+            # comes last, and a fresh stack has none bound yet.
+            self._task_text_setter = env.task_text_setter(
+                self._prepared_setup.execution, setups=setups
+            )
         elif env_context:
             raise ValueError(
                 f"setup key(s) {sorted(env_context)} were given, but this run has no environment "
