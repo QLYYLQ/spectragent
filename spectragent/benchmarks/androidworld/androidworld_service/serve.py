@@ -261,7 +261,8 @@ def broadcast_in_the_foreground(execute: Execute) -> Execute:
     broadcast sent to the background queue meanwhile waited 13.7 s
     (2026-11-04; ``docs/architecture_design.md`` §11.2).
 
-    Every adb command the service runs goes through ``execute_command``:
+    Every broadcast the service sends goes through ``execute_command`` (not
+    every adb command: android_env's logcat stream runs adb itself):
     AndroidWorld's through ``adb_utils.issue_generic_request`` (the MiniWoB++
     app's reads, Clipper's clipboard, Retro Music's media scan) and
     android_env's own (the accessibility forwarder's two settings, which wait
