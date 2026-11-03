@@ -37,7 +37,12 @@ it was cloned:
 - AndroidWorld clears an app's table before a task, and when the table is
   missing it launches the app and deletes 7 s later, while OsmAnd, started on a
   fresh boot, makes its markers table 12-16 s after its process starts: the
-  launcher waits until the table is there (:func:`wait_for_the_table`).
+  launcher waits until the table is there (:func:`wait_for_the_table`);
+- AndroidWorld reads the MiniWoB++ app (the instruction at initialize, the
+  reward for the score and the episode question) through ordered broadcasts,
+  which after a boot wait in the background queue behind Play Services' burst,
+  past adb's 10 s timeout: they go to the foreground queue
+  (:func:`read_in_the_foreground`).
 
 It also adds one endpoint the app lacks. AndroidWorld's runner ends a MiniWoB++
 episode itself, when the page has reported a reward, and asks after every step
@@ -181,6 +186,49 @@ def pull_lost_a_file(error: Exception) -> bool:
     )
 
 
+def read_in_the_foreground(
+    issue: Callable[[list[str], object], str],
+    parse: Callable[[str], str | None],
+    *,
+    pause_s: float = 1.0,
+) -> Callable[[str, object], str | None]:
+    """AndroidWorld's ``miniwob_base._extract_data``, its broadcasts sent to the foreground queue.
+
+    AndroidWorld reads the MiniWoB++ app through this one function: the
+    instruction at initialize, the reward for the score, and the reward the
+    launcher's ``/task/episode_over`` reads. It sends ``am broadcast -a
+    <action>``, an ordered broadcast in the background queue, within
+    AndroidWorld's 10 s adb timeout, which android_env tries twice and then
+    raises on. After a boot, Play Services queues about 200 ordered broadcasts
+    there (``gms.phenotype.UPDATE``). On freshly booted emulators a broadcast
+    nobody receives took up to 17.1 s in that queue and at most 0.29 s with
+    ``--receiver-foreground`` (64 probes, 2026-11-03), and 14 of 92 MiniWoB++
+    tasks failed their initialize or first episode question on the timeout
+    (``docs/architecture_design.md`` §11.2). The flag only moves the broadcast
+    to the foreground queue: the same receiver answers it the same way.
+
+    The function returned takes ``_extract_data``'s arguments, the action and
+    android_env's environment. It sends ``am broadcast --receiver-foreground
+    -a <action>`` with *issue* (AndroidWorld's ``issue_generic_request``, here
+    handing back the command's output) and reads the answer with *parse*
+    (AndroidWorld's ``extract_broadcast_data``). As AndroidWorld does, it
+    returns the first answer that is not ``None``, and ``None`` after three
+    broadcasts *pause_s* apart.
+    """
+
+    def extract_data(action: str, env: object) -> str | None:
+        for _ in range(3):
+            answer = parse(
+                issue(["shell", "am", "broadcast", "--receiver-foreground", "-a", action], env)
+            )
+            if answer is not None:
+                return answer
+            time.sleep(pause_s)
+        return None
+
+    return extract_data
+
+
 def reward_ends_episode(raw: str) -> bool:
     """Whether a MiniWoB++ page's stored raw reward *raw* ends its episode, as AndroidWorld's runner says.
 
@@ -265,9 +313,13 @@ def _patch(args: argparse.Namespace) -> None:
     from android_env.proto import emulator_controller_pb2_grpc, snapshot_service_pb2_grpc
     from android_env.wrappers import a11y_grpc_wrapper
     from android_world.env import adb_utils, env_launcher, interface
+    from android_world.task_evals.miniwob import miniwob_base
     from android_world.task_evals.utils import sqlite_utils
 
     logging.set_verbosity(logging.WARNING)
+
+    def warn(note: str) -> None:
+        logging.warning("serve.py: %s", note)
 
     settings_init = config_classes.DeviceSettingsConfig.__init__
 
@@ -310,7 +362,25 @@ def _patch(args: argparse.Namespace) -> None:
         sqlite_utils.delete_all_rows_from_table,
         exists=sqlite_utils.table_exists,
         launch=launch,
-        warn=lambda note: logging.warning("serve.py: %s", note),
+        warn=warn,
+    )
+
+    # A renamed function would be added, not replaced, and MiniWoB++'s reads
+    # would queue behind Play Services' broadcasts again after a boot.
+    if "_extract_data" not in vars(miniwob_base) or not all(
+        callable(getattr(adb_utils, name, None))
+        for name in ("issue_generic_request", "extract_broadcast_data")
+    ):
+        raise SystemExit(
+            "serve.py sends MiniWoB++'s reads to the foreground queue by replacing "
+            "miniwob_base._extract_data, through adb_utils.issue_generic_request and "
+            "adb_utils.extract_broadcast_data, which this AndroidWorld does not all define"
+        )
+    miniwob_base._extract_data = read_in_the_foreground(
+        lambda command, env: adb_utils.issue_generic_request(command, env).generic.output.decode(
+            "utf-8"
+        ),
+        adb_utils.extract_broadcast_data,
     )
 
     adb_init = adb_controller.AdbController.__init__

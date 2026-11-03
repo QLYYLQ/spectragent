@@ -625,6 +625,55 @@ def test_the_launcher_counts_only_a_pull_as_one_that_lost_a_file() -> None:
     assert not _launcher().pull_lost_a_file(RuntimeError("No such file or directory"))
 
 
+_UTTERANCE = "com.google.androidenv.miniwob.app.GET_UTTERANCE_ACTION"
+
+
+@dataclass
+class _Broadcasts:
+    """AndroidWorld's issue_generic_request and extract_broadcast_data, faked for the launcher's reads."""
+
+    #: What the app answers each broadcast, in turn (``None``: the receiver gave no result).
+    answers: list[str | None]
+    env: object = field(default_factory=object)
+    sent: list[list[str]] = field(default_factory=list)
+
+    def issue(self, command: list[str], env: object) -> str:
+        assert env is self.env
+        self.sent.append(command)
+        answer = self.answers.pop(0)
+        if answer is None:
+            return "Broadcasting: Intent { flg=0x10400000 }\nBroadcast completed: result=0\n"
+        return f'Broadcasting: Intent {{ flg=0x10400000 }}\nBroadcast completed: result=-1, data="{answer}"\n'
+
+    @staticmethod
+    def parse(output: str) -> str | None:
+        """AndroidWorld's extract_broadcast_data, for the two answers above."""
+        if "result=-1, data=" in output:
+            return output.split("data=")[1].strip('"\r\n')
+        return None
+
+    def read(self, action: str = _UTTERANCE) -> str | None:
+        extract_data = _launcher().read_in_the_foreground(self.issue, self.parse, pause_s=0.01)
+        return extract_data(action, self.env)
+
+
+def test_the_launcher_sends_miniwob_reads_to_the_foreground_queue() -> None:
+    broadcasts = _Broadcasts(answers=["Click the Submit button."])
+
+    assert broadcasts.read() == "Click the Submit button."
+    assert broadcasts.sent == [
+        ["shell", "am", "broadcast", "--receiver-foreground", "-a", _UTTERANCE]
+    ]
+
+
+def test_the_launcher_asks_three_times_like_androidworld_before_it_gives_up() -> None:
+    """An empty instruction is an answer; only a broadcast nobody answered is asked again."""
+    assert _Broadcasts(answers=[None, ""]).read() == ""
+    unanswered = _Broadcasts(answers=[None, None, None])
+    assert unanswered.read() is None
+    assert len(unanswered.sent) == 3
+
+
 async def test_a_service_that_builds_another_task_is_refused_and_stopped(
     root: Path, tmp_path: Path
 ) -> None:
