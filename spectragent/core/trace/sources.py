@@ -7,11 +7,12 @@ and globs relative to it. A match is a run when it is a directory holding a
 ``manifest.json``; the matches come back sorted by their POSIX path relative
 to the root, so the order never depends on the filesystem's.
 
-The export and the metrics also share what "the task" and "the site" of a run
-are (:func:`task_identity`: a branch run's are its source task's) and how a
-run that does not read back is named (:func:`unreadable_reason`), so the
+The export and the metrics also share what "the task" of a run is and where
+it started (:func:`task_identity`: a branch run's are its source task's) and
+how a run that does not read back is named (:func:`unreadable_reason`), so the
 dataset's ``split.by: site`` / ``exclude_sites`` and the report's per-site
-statistics use one key.
+statistics use one key: the start point the run's capability states
+(:func:`start_point`; the browser's is its start URL's site).
 
 The branch loader and the export also share how they select sources by the
 two ledgers (arch §4.10, §4.15): a hard condition on the trace's own ledger —
@@ -29,11 +30,10 @@ loader's ``exclude_unloaded_checkpoints`` and the export's
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Literal, get_args
-from urllib.parse import urlsplit
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from spectragent.core.trace.encoding import MANIFEST_FILE
 from spectragent.core.trace.errors import TraceSchemaError
@@ -113,6 +113,24 @@ def unreadable_reason(directory: Path, exc: TraceSchemaError) -> str:
     return f"not a readable trace{where} ({type(exc).__name__})"
 
 
+def start_point(env_type: str, context: Mapping[str, Any]) -> str | None:
+    """Where a task with this environment setup *context* started, as its capability names it.
+
+    ``docs/architecture_design.md`` §4.10 "任务的起始点归 capability": the
+    task setup class *env_type* selects says it (``SetupBase.start_point``;
+    the browser's: the start URL's site), so no framework code reads a
+    capability's own fields. ``None`` when no registered setup claims
+    *env_type* or the setup names no start point for this context.
+    """
+    from spectragent.core.registries import setup_class_for_env
+
+    try:
+        setup = setup_class_for_env(env_type)
+    except ValueError:
+        return None
+    return setup.start_point(context)
+
+
 @dataclass(frozen=True)
 class TaskIdentity:
     """The task a run was recorded on — a branch run's is its source task's.
@@ -123,14 +141,15 @@ class TaskIdentity:
     which the benchmark, subset and task id above belong to. A run whose
     setup completed its text (``docs/architecture_design.md`` §4.10) was given
     that text; ``loader_task`` keeps the loader's, the one the benchmark's own
-    data knows the task by.
+    data knows the task by. ``start_point`` is where the task started, as its
+    capability states it (:func:`start_point`): the ``split.by: site`` key.
     """
 
     benchmark: str
     subset: str
     task_id: str
     task: str
-    start_url: str | None
+    start_point: str | None
     source_task: str | None = None
     loader_task: str | None = None
 
@@ -154,30 +173,22 @@ class TaskIdentity:
         """``<benchmark>/<subset>/<task_id>`` — the ``split.by: task`` key."""
         return f"{self.benchmark}/{self.subset}/{self.task_id}"
 
-    @property
-    def site(self) -> str | None:
-        """The start URL's host — the ``split.by: site`` key — or ``None`` without one."""
-        if not self.start_url:
-            return None
-        host = urlsplit(self.start_url).hostname
-        return host.lower() if host else None
-
 
 def task_identity(config: TraceConfig, *, task: str | None = None) -> TaskIdentity:
     """The task *config*'s run was recorded on; for a branch run, its source task.
 
-    The start URL is the recorded task setup's (M28: value-level redaction
-    leaves the host alone); a branch run's own setup context is its source
-    task's, re-resolved. A task-variant branch's ``task`` is the variant it
-    ran and ``source_task`` the source run's instruction. *task* is the run's
-    own text when a caller read it (``RunTrace.task_text``): when setup
-    completed it, it differs from ``config.task``, which becomes
-    ``loader_task``.
+    The start point is what the run's capability states from the recorded
+    task setup context (:func:`start_point`; M28: value-level redaction leaves
+    a URL's host alone); a branch run's own setup context is its source task's,
+    re-resolved. A task-variant branch's ``task`` is the variant it ran and
+    ``source_task`` the source run's instruction. *task* is the run's own text
+    when a caller read it (``RunTrace.task_text``): when setup completed it,
+    it differs from ``config.task``, which becomes ``loader_task``.
     """
     own = config.task if task is None else task
     loader_task = config.task if own != config.task else None
     setup = config.task_setup
-    start_url = setup.context.get("start_url") if setup is not None else None
+    started = start_point(config.env_type, setup.context) if setup is not None else None
     branch = config.branch
     if branch is not None:
         variant = branch.task_variant
@@ -186,7 +197,7 @@ def task_identity(config: TraceConfig, *, task: str | None = None) -> TaskIdenti
             subset=branch.source_subset,
             task_id=branch.source_task_id,
             task=own,
-            start_url=start_url if isinstance(start_url, str) else None,
+            start_point=started,
             source_task=variant.source_task_text if variant is not None else None,
             loader_task=loader_task,
         )
@@ -195,7 +206,7 @@ def task_identity(config: TraceConfig, *, task: str | None = None) -> TaskIdenti
         subset=config.subset,
         task_id=config.task_id,
         task=own,
-        start_url=start_url if isinstance(start_url, str) else None,
+        start_point=started,
         loader_task=loader_task,
     )
 
@@ -298,6 +309,7 @@ __all__ = [
     "not_closed_reason",
     "past_complete_reason",
     "source_pattern_problem",
+    "start_point",
     "task_identity",
     "unloaded_capture_reason",
     "unreadable_reason",

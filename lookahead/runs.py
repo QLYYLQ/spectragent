@@ -21,7 +21,6 @@ from dataclasses import asdict, dataclass, field
 from functools import cached_property
 from pathlib import Path
 from typing import Any, TypeVar
-from urllib.parse import urlsplit
 
 from lookahead.rows import FrameRow, RunKind
 from spectragent.core.capabilities.browser.archive.frames import iter_frames, read_frame_image
@@ -123,12 +122,8 @@ def run_kind(config: TraceConfig) -> RunKind:
 
 
 def site_of(config: TraceConfig) -> str | None:
-    """The host of the (source) task's start URL, or ``None`` when none was recorded."""
-    start_url = task_identity(config).start_url
-    if not start_url:
-        return None
-    host = urlsplit(start_url).hostname
-    return host or None
+    """The (source) task's start point — a browser task's start URL site — or ``None``."""
+    return task_identity(config).start_point
 
 
 @dataclass
@@ -158,8 +153,10 @@ class Run:
 
     @cached_property
     def start_url(self) -> str | None:
-        """The (source) task's start URL, when one was recorded."""
-        return task_identity(self.config).start_url or None
+        """The (source) task's start URL, when one was recorded (its browser setup context's)."""
+        setup = self.config.task_setup
+        start_url = setup.context.get("start_url") if setup is not None else None
+        return start_url if isinstance(start_url, str) and start_url else None
 
     @cached_property
     def task_id(self) -> str | None:

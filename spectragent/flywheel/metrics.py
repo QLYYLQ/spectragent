@@ -111,8 +111,8 @@ logger = logging.getLogger(__name__)
 ROLES: tuple[str, ...] = ("record", "control", "same_path", "branch")
 #: The two exports of a chain; export determinism compares them.
 DATASETS: tuple[str, ...] = ("first", "second")
-#: The site key of a run whose task recorded no start URL.
-NO_SITE = "(no start_url)"
+#: The site key of a run whose capability states no start point for its task.
+NO_SITE = "(no start point)"
 #: The action key of a miss the run's close-out collection took.
 TRAILING = "trailing"
 #: The action key of a miss a terminal observation's collection took (no action ran there).
@@ -231,8 +231,11 @@ class Run:
 
     @cached_property
     def site(self) -> str:
-        """The run's site key — its (source) task's start-URL host (``task_identity``)."""
-        return task_identity(self.config).site or NO_SITE
+        """The run's site key — its (source) task's start point, as its capability states it.
+
+        The browser's is its start URL's site (``task_identity``).
+        """
+        return task_identity(self.config).start_point or NO_SITE
 
     @cached_property
     def task_key(self) -> str:
@@ -483,7 +486,7 @@ def restoration_rate(traces: Iterable[RunTrace]) -> RestorationRate:
                 if action.failure is not None:
                     retargets.setdefault(action.failure, Counter())[action.method] += 1
         total += checked
-        site = task_identity(trace.config).site if checked else None
+        site = task_identity(trace.config).start_point if checked else None
         if site:
             sites.add(site)
     return RestorationRate(

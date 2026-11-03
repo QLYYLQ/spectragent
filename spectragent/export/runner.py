@@ -365,11 +365,15 @@ class ExportRunner:
             if reason is not None:
                 filtered[source.rel] = reason
                 continue
-            key = split_key(identity, exporter.split) if identity.task_id or identity.site else None
+            key = (
+                split_key(identity, exporter.split)
+                if identity.task_id or identity.start_point
+                else None
+            )
             if key is None:
                 skipped[source.rel] = (
                     f"no split key (split.by: {exporter.split.by} — the run recorded no "
-                    f"{'start_url' if exporter.split.by == 'site' else 'task id'})"
+                    f"{'start point' if exporter.split.by == 'site' else 'task id'})"
                 )
                 continue
             try:

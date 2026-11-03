@@ -1,7 +1,8 @@
 """Train / validation split and decontamination (arch §4.15 "切分与去污染").
 
 **Never by step.** A sample's split is decided by its run's key — the source
-task's ``start_url`` host (``split.by: site``) or
+task's start point, as its capability states it (the browser's: the start
+URL's site; ``split.by: site``) or
 ``<benchmark>/<subset>/<task_id>`` (``task``); a branch run uses its source
 task, so every sample of one ``branch_group_id`` and of its source run lands
 in the same split. The key's ``sha256(salt + "\\0" + key)``, read as a number
@@ -14,7 +15,7 @@ evaluation tasks is left out (``decontaminated``). ``against`` lists those
 benchmarks explicitly — nothing is inferred from the evaluator or from
 verdicts; the default, ``[]``, decontaminates nothing, and the manifest says
 ``decontaminated: false``. ``match``: ``task_id`` (the same benchmark, a task
-id of its eval loader), ``site_instruction`` (the same start-URL host and
+id of its eval loader), ``site_instruction`` (the same start point and
 normalised instruction as a task of its task loader; a task-variant branch
 is checked with its source task's instruction too, since its screens were
 recorded on that task) or ``either``. Benchmark data is read through
@@ -28,9 +29,8 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Literal
-from urllib.parse import urlsplit
 
-from spectragent.core.trace.sources import TaskIdentity
+from spectragent.core.trace.sources import TaskIdentity, start_point
 from spectragent.export.benchmarks import BenchmarkLoaders, LoaderKind
 from spectragent.export.errors import ExportConfigError
 from spectragent.export.settings import BenchmarkRef, Decontamination, SplitSettings
@@ -40,7 +40,7 @@ Split = Literal["train", "validation"]
 
 def split_key(identity: TaskIdentity, settings: SplitSettings) -> str | None:
     """The key *identity*'s samples are split by, or ``None`` when it has none."""
-    return identity.site if settings.by == "site" else identity.key
+    return identity.start_point if settings.by == "site" else identity.key
 
 
 def split_of(key: str, settings: SplitSettings) -> Split:
@@ -57,7 +57,7 @@ def normalized_text(text: str) -> str:
 
 @dataclass
 class _BenchmarkTasks:
-    """One evaluation benchmark's task ids and ``(host, instruction)`` pairs."""
+    """One evaluation benchmark's task ids and ``(start point, instruction)`` pairs."""
 
     task_ids: frozenset[str] = frozenset()
     sites: frozenset[tuple[str, str]] = frozenset()
@@ -108,9 +108,9 @@ class Decontaminator:
                 and identity.task_id in tasks.task_ids
             ):
                 return f"decontaminated: task {identity.task_id!r} is an evaluation task of {label}"
-            if self.match in ("site_instruction", "either") and identity.site is not None:
+            if self.match in ("site_instruction", "either") and identity.start_point is not None:
                 for instruction in identity.instructions:
-                    if (identity.site, normalized_text(instruction)) not in tasks.sites:
+                    if (identity.start_point, normalized_text(instruction)) not in tasks.sites:
                         continue
                     what = (
                         "instruction"
@@ -120,7 +120,7 @@ class Decontaminator:
                         else "its loader's instruction (setup completed the run's)"
                     )
                     return (
-                        f"decontaminated: site {identity.site} and {what} match an "
+                        f"decontaminated: site {identity.start_point} and {what} match an "
                         f"evaluation task of {label}"
                     )
         return None
@@ -185,10 +185,9 @@ class Decontaminator:
             for loader in loaders:
                 for task_id in loader.task_ids():
                     task = loader.get(task_id)
-                    start_url = loader.get_task_context(task_id).env.get("start_url")
-                    host = urlsplit(start_url).hostname if isinstance(start_url, str) else None
-                    if task is not None and host:
-                        pairs.add((host.lower(), normalized_text(task.task_text)))
+                    started = start_point(loader.env_type, loader.get_task_context(task_id).env)
+                    if task is not None and started:
+                        pairs.add((started, normalized_text(task.task_text)))
             return frozenset(pairs)
         except Exception as exc:
             raise _cannot_load(ref, "task", exc) from exc

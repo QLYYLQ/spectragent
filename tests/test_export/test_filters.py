@@ -28,7 +28,6 @@ from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
 from tests._helpers.archive_recorder import open_session
 from tests._helpers.browser_evidence import browser_evidence
 from tests._helpers.export_traces import (
-    START_URL,
     ExportStep,
     click_at,
     setup_record,
@@ -315,7 +314,7 @@ class TestFiltered:
     def test_sites(self, tmp_path: Path) -> None:
         _one(tmp_path, "shop")
         sources = _sources(tmp_path)
-        assert task_identity(sources["shop"].config).site == "shop.example.test"
+        assert task_identity(sources["shop"].config).start_point == "shop.example.test"
         for entry in ("example.test", "shop.example.test", "SHOP.example.test"):
             reason = filtered_out(sources["shop"], ExportFilters(exclude_sites=(entry,)), sources)
             assert reason == f"site shop.example.test is excluded ({entry!r} in exclude_sites)"
@@ -337,7 +336,7 @@ def test_a_branch_is_keyed_by_its_source_task(tmp_path: Path) -> None:
         "task-001",
     )
     assert identity.key == "online_mind2web/test/task-001"
-    assert identity.start_url == START_URL and identity.site == "shop.example.test"
+    assert identity.start_point == "shop.example.test"
 
 
 def test_light_recording_is_skipped_as_out_of_scope_not_corrupt(tmp_path: Path) -> None:

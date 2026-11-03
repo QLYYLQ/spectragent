@@ -8,8 +8,10 @@ of the browser implementation.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 
@@ -53,6 +55,13 @@ class BrowserSetup(SetupBase):
                 "credentials_ref is unsupported; include login instructions and credentials in task_text"
             )
         return value
+
+    @classmethod
+    def start_point(cls, context: Mapping[str, Any]) -> str | None:
+        """The start URL's site: its host, lowercased; ``None`` without a start URL with a host."""
+        start_url = context.get("start_url")
+        host = urlsplit(start_url).hostname if isinstance(start_url, str) else None
+        return host.lower() if host else None
 
     def to_context(self) -> dict[str, Any]:
         return _prune(

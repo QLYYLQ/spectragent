@@ -22,13 +22,13 @@ from tests._helpers.export_runs import exporter_entry, read_jsonl, run_export, w
 from tests._helpers.export_traces import START_URL, click_at, ui_tars_step, write_ui_tars_run
 
 
-def _identity(**fields: str) -> TaskIdentity:
-    values = {
+def _identity(**fields: str | None) -> TaskIdentity:
+    values: dict[str, str | None] = {
         "benchmark": "b",
         "subset": "s",
         "task_id": "t",
         "task": "Find the kettle",
-        "start_url": "https://shop.example.test/",
+        "start_point": "shop.example.test",
     }
     values.update(fields)
     return TaskIdentity(**values)  # type: ignore[arg-type]
@@ -54,7 +54,7 @@ class TestTheSplit:
         identity = _identity()
         assert split_key(identity, SplitSettings(by="site")) == "shop.example.test"
         assert split_key(identity, SplitSettings(by="task")) == "b/s/t"
-        assert split_key(_identity(start_url=""), SplitSettings(by="site")) is None
+        assert split_key(_identity(start_point=None), SplitSettings(by="site")) is None
 
     def test_never_by_step(self, composer: ConfigComposer, tmp_path: Path) -> None:
         """Every sample of a site lands in that site's split, whichever run and step it is."""

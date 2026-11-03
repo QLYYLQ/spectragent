@@ -153,7 +153,8 @@ class SplitSettings:
     by: SplitBy = Field(
         default="site",
         description=(
-            "site: the source task's start_url host; task: <benchmark>/<subset>/<task_id>. "
+            "site: the source task's start point, as its capability states it (the browser's: "
+            "its start URL's site); task: <benchmark>/<subset>/<task_id>. "
             "A branch run uses its source task."
         ),
     )
@@ -203,7 +204,7 @@ class Decontamination:
         default="either",
         description=(
             "task_id: the source task's id is one of the benchmark's tasks; "
-            "site_instruction: its start_url host and normalised instruction match one; "
+            "site_instruction: its start point and normalised instruction match one; "
             "either."
         ),
     )
