@@ -35,8 +35,10 @@ it was cloned:
 - Android deletes AndroidWorld's per-app snapshots at every boot, so the app
   states tasks restore are taken again once the service is up;
 - AndroidWorld's one-time app setup gives Markor, Simple Gallery Pro and VLC
-  All files access, which a fresh boot of AndroidWorld's AVD lacks: it is
-  granted again once the service is up (:func:`grant_all_files_access`);
+  All files access, which a fresh boot of AndroidWorld's AVD lacks: Markor and
+  Simple Gallery Pro get it again once the service is up
+  (:func:`grant_all_files_access`); VLC asks for it itself, since VLC granted
+  it beforehand never starts its media library;
 - AndroidWorld clears an app's table before a task, and when the table is
   missing it launches the app and deletes 7 s later, while OsmAnd, started on a
   fresh boot, makes its markers table 12-16 s after its process starts: the
@@ -83,11 +85,12 @@ ANDROID_ENV = "1.2.3"
 TABLE_WAIT_S = 30.0
 #: The pause between two looks; each look pulls the database's whole directory.
 TABLE_POLL_S = 1.0
-#: The apps AndroidWorld's one-time app setup (``env/setup_device/apps.py``) gives
-#: All files access: ``MarkorApp``, ``SimpleGalleryProApp`` and ``VlcApp`` tap
-#: "Allow access to manage all files" on the system's page
-#: (:func:`grant_all_files_access`).
-ALL_FILES_ACCESS = ("net.gsantner.markor", "com.simplemobiletools.gallery.pro", "org.videolan.vlc")
+#: The apps the launcher gives All files access (:func:`grant_all_files_access`), as
+#: AndroidWorld's one-time app setup (``env/setup_device/apps.py``) does:
+#: ``MarkorApp`` and ``SimpleGalleryProApp`` tap "Allow access to manage all files"
+#: on the system's page. ``VlcApp`` does too, and VLC is left out: granted
+#: beforehand, VLC never starts its media library.
+ALL_FILES_ACCESS = ("net.gsantner.markor", "com.simplemobiletools.gallery.pro")
 #: The id of the cover MiniWoB++'s ``core.js`` puts over the task when its page
 #: has loaded (``core.startEpisode``, which every page's ``window.onload`` runs),
 #: until an episode starts (``core.startEpisodeReal`` hides it).
@@ -229,6 +232,22 @@ def grant_all_files_access(
     first: in our seed-42 runs, 16 paid 4-7 steps for it; AndroidWorld's own
     runner keeps its device, so only its first such task of a slice did
     (``docs/architecture_design.md`` §11.2).
+
+    VLC is left to ask itself. AndroidWorld's setup opens it from the
+    launcher (``monkey``), whose start "runs setup logic not available using
+    ``adb shell am start``", its comment says, and grants the access through
+    VLC's own prompt. A task opens VLC at ``.gui.MainActivity``, the activity
+    AndroidWorld's app table names. There VLC asks for the access when it
+    lacks it, and its media library works once the access is granted through
+    that prompt. With the access granted beforehand, VLC asks nothing and its
+    library never starts: its Video and Playlists tabs say "Loading" (both
+    seen on fresh boots, 2026-11-04). In our regression run that day they did
+    for whole episodes, its "Add to playlist" sheet found no playlist after
+    saves, and VlcCreatePlaylist and VlcCreateTwoPlaylists failed. Both had
+    passed in the run before, where the agent granted the access through
+    VLC's prompt at the first step. AndroidWorld's own runner met the same
+    "Loading" on the second VLC task of its device, the first having granted
+    the access.
 
     For each package it asks the uid's mode with *shell* (``appops get --uid
     <package> MANAGE_EXTERNAL_STORAGE``) and, unless it is allow, sets it as
