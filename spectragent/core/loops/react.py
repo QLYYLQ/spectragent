@@ -307,13 +307,25 @@ class ReactLoop(AgentLoopBase):
         Returns:
             AgentResult with execution trace and metrics.
         """
+        loop_inputs = ctx.get("loop_inputs", {})
         run = ReactRun.from_ctx(
             agent,
             task,
             ctx,
             step_executor=ctx.get("step_executor", self),
-            max_steps=self.step_budget(ctx.get("loop_inputs", {})),
+            max_steps=self.step_budget(loop_inputs),
         )
+        requested = loop_inputs.get("max_steps")
+        if isinstance(requested, int) and requested > run.max_steps:
+            # Not silent: a sweep meant to match a benchmark's own budgets
+            # (AndroidWorld's run up to 120 steps) needs a ceiling as high.
+            logger.warning(
+                "ReactLoop: task %s brings a step budget of %d, above the configured "
+                "max_steps of %d, which caps it",
+                run.identity.task_id,
+                requested,
+                run.max_steps,
+            )
         for step_idx in range(run.max_steps):
             result = await run.step_executor.execute_step(run, step_idx)
             if result is not None:

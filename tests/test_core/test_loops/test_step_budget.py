@@ -191,11 +191,25 @@ class TestARun:
         assert agent.limits == [ExecutionLimits(max_actions_per_step=1)]
         assert trace.config.max_steps == 2
 
-    async def test_a_budget_above_the_ceiling_runs_the_ceiling(self, tmp_path: Any) -> None:
+    async def test_a_budget_above_the_ceiling_runs_the_ceiling_and_says_so(
+        self, tmp_path: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level("WARNING", logger="spectragent.core.loops.react")
         result, agent, trace = await _run(tmp_path, configured=2, loop_inputs={"max_steps": 120})
         assert result.metrics.steps == 2
         assert agent.told == [(1, 2), (2, 2)]
         assert trace.config.max_steps == 2
+        assert [record.getMessage() for record in caplog.records] == [
+            "ReactLoop: task t-1 brings a step budget of 120, above the configured max_steps "
+            "of 2, which caps it"
+        ]
+
+    async def test_a_budget_within_the_ceiling_says_nothing(
+        self, tmp_path: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level("WARNING", logger="spectragent.core.loops.react")
+        await _run(tmp_path, configured=2, loop_inputs={"max_steps": 2})
+        assert caplog.records == []
 
     async def test_the_budget_is_per_task_not_configuration(self, tmp_path: Any) -> None:
         """Two tasks of one sweep differing only in their budgets share a ``config_hash``."""
