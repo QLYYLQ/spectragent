@@ -300,6 +300,39 @@ def test_config_commands_compose_a_benchmark_with_or_without_one_of_its_tasks(tm
         assert refusal in json.loads(capsys.readouterr().out)["error"]["message"]
 
 
+@pytest.mark.parametrize("command", ["check", "explain"])
+def test_config_commands_take_the_subset_of_the_benchmark(tmp_path, capsys, command):
+    """``--subset`` is written into the benchmark's task loader before composing, as bench does."""
+    from tests._helpers.benchmark_data import online_mind2web_benchmark
+
+    task = {"task_text": "find the kettle", "start_url": "https://shop.example/kettles"}
+    benchmark = str(
+        online_mind2web_benchmark(
+            tmp_path, {"All": [{**task, "task_id": "easy"}], "Hard": [{**task, "task_id": "hard"}]}
+        )
+    )
+    argv = ["--json", "config", command, "configs/browser_use_local.yaml", "--benchmark", benchmark]
+
+    assert main([*argv, "--subset", "Hard", "--task-id", "hard"]) == 0
+    hard = json.loads(capsys.readouterr().out)
+    assert hard["checked"] == "configuration_and_prepare"
+    assert main([*argv, "--task-id", "hard"]) == 2, "the task is in Hard, not the YAML's All"
+    assert (
+        "(subset 'All') has no such task" in json.loads(capsys.readouterr().out)["error"]["message"]
+    )
+    assert main(argv) == 0
+    all_tasks = json.loads(capsys.readouterr().out)
+    # Recorded in the resolved configuration, so its hash, as if the YAML said it.
+    assert hard["resolved_config_sha256"] != all_tasks["resolved_config_sha256"]
+    if command == "explain":
+        (block,) = hard["resolved"]["benchmark"]
+        assert block["task_loader"]["subset"] == "Hard"
+
+    without = ["--json", "config", command, "configs/browser_use_local.yaml", "--subset", "Hard"]
+    assert main(without) == 2
+    assert "give --benchmark with it" in json.loads(capsys.readouterr().out)["error"]["message"]
+
+
 def test_human_explain_shows_negotiation_without_dumping_resolved_config(capsys):
     assert main(["config", "explain", "configs/browser_use_local.yaml"]) == 0
     text = capsys.readouterr().out

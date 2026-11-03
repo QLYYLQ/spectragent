@@ -31,6 +31,7 @@ def explain_config(
     env_id: str | None = None,
     start: Mapping[str, str] | None = None,
     benchmark: str | None = None,
+    subset: str | None = None,
     task_id: str | None = None,
 ) -> dict[str, Any]:
     """Check *path* as a run composes and prepares it, without launching anything.
@@ -38,11 +39,15 @@ def explain_config(
     *start* holds the given start flags (flag → value) of the run's
     capabilities (§4.9 "起始参数"), the context of a task written on the
     command line. *benchmark* is composed with the configuration as ``bench``
-    composes it; alone, the check prepares with no task context, and with
-    *task_id* it prepares with that task's.
+    composes it, with *subset* written into its task loader first (the one
+    knob ``bench`` and ``run`` set on a benchmark, §4.10.1); alone, the check
+    prepares with no task context, and with *task_id* it prepares with that
+    task's.
     """
     if task_id is not None and benchmark is None:
         raise ValueError("--task-id selects a task of a benchmark: give --benchmark with it")
+    if subset is not None and benchmark is None:
+        raise ValueError("--subset selects a benchmark's tasks: give --benchmark with it")
     if benchmark is not None and start:
         raise ValueError(
             f"{', '.join(start)}: a benchmark's tasks start where the benchmark says; leave "
@@ -52,7 +57,7 @@ def explain_config(
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError("The configuration must be a YAML mapping")
-        blocks = [read_benchmark(benchmark)] if benchmark is not None else []
+        blocks = [read_benchmark(benchmark, subset=subset)] if benchmark is not None else []
     with inspection_stage("validation"):
         # A benchmark section in the run configuration, a name with no
         # package, an agent with no capability or a start flag of a
@@ -83,7 +88,10 @@ def explain_config(
         if agents and task_id is not None:
             loader = run.single("benchmark").task_loader
             if loader.get(task_id) is None:
-                raise ValueError(f"--task-id {task_id}: benchmark {benchmark!r} has no such task")
+                raise ValueError(
+                    f"--task-id {task_id}: benchmark {benchmark!r} (subset {loader.subset!r}) has "
+                    f"no such task"
+                )
             task = loader.get_task_context(task_id)
             context, loop_inputs = task.env, task.loop
     if agents:

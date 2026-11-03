@@ -434,6 +434,7 @@ def create_app() -> typer.Typer:
         agent_id: str | None,
         env_id: str | None,
         benchmark: str | None,
+        subset: str | None,
         task_id: str | None,
         json_output: bool,
         detailed: bool,
@@ -449,6 +450,7 @@ def create_app() -> typer.Typer:
                 env_id=env_id,
                 start=start,
                 benchmark=benchmark,
+                subset=subset,
                 task_id=task_id,
             )
             if not detailed:
@@ -471,6 +473,10 @@ def create_app() -> typer.Typer:
         "as a run composes it; alone, it prepares with no task context."
     )
     task_id_help = "Prepare with this task of --benchmark: its environment and loop inputs."
+    subset_help = (
+        "The subset of --benchmark, written into its task loader before the configuration is "
+        "composed, as bench and run write it."
+    )
 
     @config_app.command("check", cls=_WithStartFlags)
     def config_check(
@@ -479,11 +485,14 @@ def create_app() -> typer.Typer:
         agent_id: str | None = typer.Option(None),
         env_id: str | None = typer.Option(None),
         benchmark: str | None = typer.Option(None, help=benchmark_help),
+        subset: str | None = typer.Option(None, help=subset_help),
         task_id: str | None = typer.Option(None, help=task_id_help),
         json_output: bool = typer.Option(False, "--json"),
     ) -> None:
         """Validate YAML and prepare an agent, without launching a browser or model."""
-        config_operation(ctx, config, agent_id, env_id, benchmark, task_id, json_output, False)
+        config_operation(
+            ctx, config, agent_id, env_id, benchmark, subset, task_id, json_output, False
+        )
 
     @config_app.command("explain", cls=_WithStartFlags)
     def config_explain(
@@ -492,11 +501,14 @@ def create_app() -> typer.Typer:
         agent_id: str | None = typer.Option(None),
         env_id: str | None = typer.Option(None),
         benchmark: str | None = typer.Option(None, help=benchmark_help),
+        subset: str | None = typer.Option(None, help=subset_help),
         task_id: str | None = typer.Option(None, help=task_id_help),
         json_output: bool = typer.Option(False, "--json"),
     ) -> None:
         """Explain inputs, declaration/MRO origins, injection, negotiations and fingerprints."""
-        config_operation(ctx, config, agent_id, env_id, benchmark, task_id, json_output, True)
+        config_operation(
+            ctx, config, agent_id, env_id, benchmark, subset, task_id, json_output, True
+        )
 
     @config_app.command("generate")
     def config_generate(
