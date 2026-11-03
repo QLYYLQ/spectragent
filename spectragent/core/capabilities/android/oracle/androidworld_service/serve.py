@@ -69,7 +69,7 @@ import importlib.metadata
 import os
 import sys
 import time
-from collections.abc import Callable, Container
+from collections.abc import Callable, Collection
 from pathlib import Path
 
 #: The android_env these patches replace private names of: the version the
@@ -281,7 +281,7 @@ def read_in_the_foreground(
 
 
 def wait_for_the_cover(
-    shown: Callable[[], Container[str]],
+    shown: Callable[[], Collection[str]],
     *,
     there: bool,
     warn: Callable[[str], object],
@@ -319,19 +319,30 @@ def wait_for_the_cover(
 
     Raises:
         RuntimeError: The cover was not there, or still there, after *wait_s*.
+            The message says what the tree showed last: it can lag behind the
+            screen, and the status bar's ids alone are not a page without its
+            cover.
     """
     began = time.monotonic()
+    last: Collection[str] = ()
 
     def done() -> bool:
-        return (COVER in shown()) == there
+        nonlocal last
+        last = shown()
+        return (COVER in last) == there
 
     if done():
         return
     if not _look_until(done, began + wait_s, poll_s):
         raise RuntimeError(
-            f"the MiniWoB++ page had not loaded {wait_s:g} s after AndroidWorld's 1 s"
-            if there
-            else f"the MiniWoB++ page had not started its episode {wait_s:g} s after its reset"
+            (
+                f"the MiniWoB++ page's cover was not in AndroidWorld's UI tree {wait_s:g} s "
+                "after AndroidWorld's 1 s"
+                if there
+                else f"the MiniWoB++ page's cover was still in AndroidWorld's UI tree {wait_s:g} s "
+                "after its reset"
+            )
+            + f"; the tree last showed {sorted(last) or 'no element ids'}"
         )
     took = time.monotonic() - began
     warn(

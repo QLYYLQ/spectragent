@@ -739,9 +739,10 @@ class _Page:
         )
 
 
-#: A page still loading, one whose onload has covered the task until its episode
-#: starts, and one whose reset has started the episode and hidden the cover.
-_LOADING: set[str] = set()
+#: A page still loading (only the status bar has ids), one whose onload has covered
+#: the task until its episode starts, and one whose reset has started the episode
+#: and hidden the cover.
+_LOADING = {"com.android.systemui:id/clock"}
 _COVERED = {"click-canvas", "sync-task-cover", "query", "subbtn"}
 _RUNNING = {"click-canvas", "query", "subbtn"}
 
@@ -776,8 +777,18 @@ def test_the_launcher_reads_the_instruction_once_the_reset_has_started_the_episo
 @pytest.mark.parametrize(
     ("there", "screen", "message"),
     [
-        (True, _LOADING, "had not loaded 0.2 s after AndroidWorld's 1 s"),
-        (False, _COVERED, "had not started its episode 0.2 s after its reset"),
+        (
+            True,
+            _LOADING,
+            r"cover was not in AndroidWorld's UI tree 0.2 s after AndroidWorld's 1 s; "
+            r"the tree last showed \['com.android.systemui:id/clock'\]",
+        ),
+        (
+            False,
+            _COVERED,
+            r"cover was still in AndroidWorld's UI tree 0.2 s after its reset; the tree last "
+            r"showed \['click-canvas', 'query', 'subbtn', 'sync-task-cover'\]",
+        ),
     ],
 )
 def test_the_launcher_fails_initialize_on_a_page_that_never_gets_there(
