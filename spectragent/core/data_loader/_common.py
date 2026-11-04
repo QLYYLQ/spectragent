@@ -18,6 +18,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from spectragent.core.refusal import Refusal
+from spectragent.schemas.data_version import DataVersion
 
 #: Environment variable naming the benchmark-data root.
 #:
@@ -79,6 +80,38 @@ def benchmark_data_root() -> Path:
     cache = os.environ.get("XDG_CACHE_HOME")
     base = Path(cache).expanduser() if cache else Path.home() / ".cache"
     return base.joinpath(*_CACHE_SUBDIR)
+
+
+#: The file beside a benchmark's data naming its version, written last by
+#: ``spectragent benchmark fetch`` (``docs/architecture_design.md`` §4.10.1 "数据").
+DATA_VERSION_FILE = "data_version.json"
+
+
+def read_data_version(directory: Path) -> DataVersion | None:
+    """The version of the data in *directory*, as a fetch recorded it; ``None`` when none did.
+
+    Raises:
+        BenchmarkDataError: The record is there and cannot be read or is not one.
+    """
+    path = directory / DATA_VERSION_FILE
+    try:
+        return DataVersion.model_validate_json(path.read_bytes())
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise BenchmarkDataError(f"cannot read the data version {path}: {exc}") from exc
+    except ValidationError as exc:
+        raise BenchmarkDataError(
+            f"{path} is not a data version record ({validation_summary(exc)})"
+        ) from None
+
+
+def write_data_version(directory: Path, version: DataVersion) -> None:
+    """Record *version* as the version of the data in *directory*, atomically."""
+    path = directory / DATA_VERSION_FILE
+    partial = path.with_name(f".{path.name}.partial")
+    partial.write_text(version.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    os.replace(partial, path)
 
 
 def resolve_data_dir(env_type: str, registry_key: str, data_dir: str | None) -> Path:

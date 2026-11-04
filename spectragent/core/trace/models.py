@@ -31,6 +31,7 @@ from spectragent.schemas._types import UTCDatetime
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.benchmark_spec import BenchmarkSpec
 from spectragent.schemas.config_source import ConfigSource
+from spectragent.schemas.data_version import DataVersion
 from spectragent.schemas.recording import RecordingPlan, RecordingProblem
 from spectragent.schemas.restoration import BranchProvenance
 
@@ -732,6 +733,13 @@ class TraceConfig(BaseModel):
     llm_model: str = ""
     benchmark: str = ""
     subset: str = ""
+    #: The version of the data the benchmark's task loader read the task from,
+    #: as the fetch that wrote it recorded it (``data_version.json``,
+    #: ``docs/architecture_design.md`` §4.10.1 "数据"), or ``None`` (not
+    #: written) for a run with no benchmark or data no fetch recorded. Part of
+    #: the digest: the same configuration on another version of the data is
+    #: another experiment.
+    data_version: DataVersion | None = Field(default=None, exclude_if=_absent)
     task: str = ""
     task_id: str = ""
     #: Caller-curated context, recorded verbatim. ``BenchmarkRunner`` puts
@@ -828,9 +836,9 @@ class TraceConfig(BaseModel):
         every task in one sweep got a different ``config_hash`` and the
         field answered no question anybody had.
 
-        Included: the component identity, the benchmark and subset the
-        run was pointed at, the resolved config and the negotiation
-        result — the archive binding (``active_archivers`` /
+        Included: the component identity, the benchmark, subset and data
+        version the run was pointed at, the resolved config and the
+        negotiation result — the archive binding (``active_archivers`` /
         ``archive_bindings``) moves it through the latter, with no special
         case. Excluded: ``task`` / ``task_id`` (which task, not which
         configuration), ``extra``, ``task_setup``, ``branch``,
@@ -904,6 +912,12 @@ class TraceConfig(BaseModel):
             "llm_model": self.llm_model,
             "benchmark": self.benchmark,
             "subset": self.subset,
+            # Only when recorded, so a run with no data version hashes as before.
+            **(
+                {"data_version": self.data_version.model_dump(mode="json")}
+                if self.data_version is not None
+                else {}
+            ),
             # Which fidelity produced ``source``. Without this a trace
             # whose every field happens to be closed-set would hash the
             # same from both sides, and one unmarked field later it

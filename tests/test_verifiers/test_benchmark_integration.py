@@ -148,6 +148,7 @@ class _Task:
 class _TaskLoader:
     benchmark_name = "offline_e2e"
     subset = "test"
+    data_version = None
 
     def task_ids(self):
         return list(_ANSWERS)

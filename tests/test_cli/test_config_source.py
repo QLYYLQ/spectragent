@@ -61,7 +61,9 @@ def _stub_composer(monkeypatch, path, *, change_source=False):
         if change_source and raw != {"benchmark": [block]}:
             assert raw == {"version": "consumed", "benchmark": [block]}
             path.write_bytes(b"version: changed\n")
-        loader = SimpleNamespace(benchmark_name="fixture", subset="all", task_ids=lambda: [])
+        loader = SimpleNamespace(
+            benchmark_name="fixture", subset="all", data_version=None, task_ids=lambda: []
+        )
         chosen = SimpleNamespace(
             benchmark_id="fixture",
             task_loader=loader,

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -1537,9 +1538,10 @@ class _JudgingCap(_DoneCap):
 
 
 class _Judged:
-    """The run's benchmark: no setup component, *verifier* its one live verifier."""
+    """The run's benchmark: no setup component, *verifier* its one live verifier, no data version."""
 
     setup = None
+    task_loader = SimpleNamespace(data_version=None)
 
     def __init__(self, verifier: _LifecycleVerifier) -> None:
         self.verifier = verifier

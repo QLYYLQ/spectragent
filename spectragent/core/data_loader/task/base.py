@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from spectragent.schemas.data_version import DataVersion
 from spectragent.schemas.task import TaskContext, TaskDefinition
 
 
@@ -30,6 +31,15 @@ class BaseTaskLoader(Protocol):
 
     @property
     def env_type(self) -> str: ...
+
+    @property
+    def data_version(self) -> DataVersion | None:
+        """The version of the data its tasks were read from; ``None`` when no fetch recorded one.
+
+        Every run records it (``TraceConfig.data_version``,
+        ``docs/architecture_design.md`` §4.10.1 "数据").
+        """
+        ...
 
     def __len__(self) -> int: ...
 

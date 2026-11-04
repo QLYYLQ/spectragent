@@ -1601,6 +1601,7 @@ class _SweepLoader:
 
     benchmark_name = "contract_archive_bench"
     subset = ""
+    data_version = None
 
     class _Task:
         def __init__(self, task_id: str) -> None:

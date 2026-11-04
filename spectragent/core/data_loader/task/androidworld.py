@@ -45,6 +45,7 @@ from pydantic import ValidationError
 
 from spectragent.core.data_loader._common import (
     BenchmarkDataError,
+    read_data_version,
     resolve_data_dir,
     resolve_split_file,
     validation_summary,
@@ -90,9 +91,9 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
             AndroidWorldTaskList,
         )
 
-        path = resolve_split_file(
-            resolve_data_dir(self.env_type, self.__registry_key__, self.data_dir), self.subset
-        )
+        root = resolve_data_dir(self.env_type, self.__registry_key__, self.data_dir)
+        self._data_version = read_data_version(root)
+        path = resolve_split_file(root, self.subset)
         try:
             listing = AndroidWorldTaskList.model_validate_json(path.read_bytes())
         except OSError as exc:

@@ -60,6 +60,7 @@ from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas.agent_result import AgentUsage
 from spectragent.schemas.benchmark_spec import BenchmarkSpec
 from spectragent.schemas.config_source import ConfigSource
+from spectragent.schemas.data_version import DataVersion
 from spectragent.schemas.recording import (
     ExecutionError,
     RecordingHealth,
@@ -302,6 +303,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         task_id: str = "",
         benchmark: str = "",
         subset: str = "",
+        data_version: DataVersion | None = None,
         run_id: str | None = None,
         config: Any = None,
         agent_id: str = "",
@@ -349,6 +351,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                 llm_model=llm_model,
                 benchmark=benchmark,
                 subset=subset,
+                data_version=data_version,
                 task=task,
                 task_id=task_id,
                 extra=snapshot(config) if isinstance(config, Mapping) else {},

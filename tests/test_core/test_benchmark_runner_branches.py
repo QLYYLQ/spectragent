@@ -164,8 +164,15 @@ class _Shop(BenchmarkBase):
     __primary_verifier__ = "shop_trace"
 
 
+class _NoPinnedData:
+    """The task loader of a benchmark built here: its data has no recorded version."""
+
+    data_version = None
+
+
 def _world() -> _World:
     benchmark = _World()
+    benchmark.task_loader = _NoPinnedData()  # type: ignore[assignment]
     benchmark.setup = _WorldSetup()
     benchmark.verifiers = [_LiveJudge(), _WorldTraceJudge()]
     return benchmark
@@ -173,6 +180,7 @@ def _world() -> _World:
 
 def _shop() -> _Shop:
     benchmark = _Shop()
+    benchmark.task_loader = _NoPinnedData()  # type: ignore[assignment]
     benchmark.verifiers = [_ShopTraceJudge()]
     return benchmark
 
