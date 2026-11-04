@@ -282,7 +282,7 @@ A new registrar must also be listed in [AGENTS.md](AGENTS.md) §2.2 and `docs/ar
 ```bash
 uv sync --extra dev
 uv run pytest -m "not requires_chrome"     # skip the tests that launch a real Chrome
-uv run pytest                              # everything, on a quiet machine
+uv run pytest                              # everything, once before a push, on a quiet machine
 uv run ruff check . && uv run ruff format .
 uv run pyright spectragent tests
 ```
