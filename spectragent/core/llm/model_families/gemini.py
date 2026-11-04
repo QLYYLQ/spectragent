@@ -59,7 +59,9 @@ _NO_THINKING_DEFAULT = GeminiThinkingPolicy()
 #: below 1.0) may lead to unexpected behavior, such as looping or degraded
 #: performance". https://ai.google.dev/gemini-api/docs/gemini-3#temperature
 _GEMINI_3_TEMPERATURE = 1.0
-#: The provider's long-standing default for every model before Gemini 3.
+#: What ``temperature: auto`` sends to every model before Gemini 3: the value
+#: the provider sent by default until 2026-11-04, when its default became
+#: "not sent" (``docs/architecture_design.md`` §4.7).
 _EARLIER_TEMPERATURE = 0.5
 #: Any Gemini 3 model id, a gateway's ``google/`` prefix included: "gemini-3"
 #: followed by a separator or the end, never by another digit.

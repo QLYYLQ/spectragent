@@ -48,12 +48,25 @@ class ChatOCI(ChatModelBase):
     compartment_id: Annotated[str, Field(description="OCI compartment OCID")]
     oci_provider: Annotated[str, Field(description="OCI model provider (meta/cohere/xai)")] = "meta"
 
-    temperature: Annotated[float | None, Field(description="Sampling temperature")] = 1.0
+    # A sampling value the configuration leaves out is not sent: the SDK's
+    # request serializer drops an attribute that is None
+    # (``BaseClient.sanitize_for_serialization``), so the model's own default applies.
+    temperature: Annotated[
+        float | None, Field(description="Sampling temperature. None (the default): not sent.")
+    ] = None
     max_tokens: Annotated[int | None, Field(description="Maximum tokens in response")] = 600
-    frequency_penalty: Annotated[float | None, Field(description="Frequency penalty")] = 0.0
-    presence_penalty: Annotated[float | None, Field(description="Presence penalty")] = 0.0
-    top_p: Annotated[float | None, Field(description="Top-p sampling parameter")] = 0.75
-    top_k: Annotated[int | None, Field(description="Top-k sampling parameter")] = 0
+    frequency_penalty: Annotated[
+        float | None, Field(description="Frequency penalty. None (the default): not sent.")
+    ] = None
+    presence_penalty: Annotated[
+        float | None, Field(description="Presence penalty. None (the default): not sent.")
+    ] = None
+    top_p: Annotated[
+        float | None, Field(description="Top-p sampling parameter. None (the default): not sent.")
+    ] = None
+    top_k: Annotated[
+        int | None, Field(description="Top-k sampling parameter. None (the default): not sent.")
+    ] = None
 
     auth_type: Annotated[str, Field(description="Authentication type")] = "API_KEY"
     auth_profile: Annotated[str, Field(description="Authentication profile name")] = "DEFAULT"

@@ -207,9 +207,13 @@ class TestWhatReachesTheOfficialApi:
     async def test_the_effort_and_the_sampling_values_that_take_effect(
         self, effort: str, sent: str | None, temperature: float | None
     ) -> None:
-        """``auto`` sends nothing (the server thinks at ``high``); thinking makes temperature moot."""
+        """``auto`` sends nothing (the server thinks at ``high``); thinking makes temperature moot.
+
+        Both sampling values are written: one that is not written is never sent.
+        """
         wire = _Wire(_REPLY)
-        await _deepseek(wire, reasoning_effort=effort).ainvoke(_PROMPT, _agent_output())
+        chat = _deepseek(wire, reasoning_effort=effort, temperature=0.2, frequency_penalty=0.3)
+        await chat.ainvoke(_PROMPT, _agent_output())
 
         assert wire.body.get("reasoning_effort") == sent
         assert wire.body.get("temperature") == temperature

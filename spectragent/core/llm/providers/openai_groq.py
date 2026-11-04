@@ -30,6 +30,20 @@ class ChatGroq(OpenAICompatBase):
     def provider(self) -> str:
         return "groq"
 
+    def _settings(self) -> dict[str, Any]:
+        """The request settings this route sends, each only when the configuration sets it.
+
+        The Groq SDK sends an argument given as ``None`` as JSON ``null``, so an
+        unset value is left out of the call, never passed as ``None``.
+        """
+        settings = {
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "seed": self.seed,
+            "service_tier": self.service_tier,
+        }
+        return {name: value for name, value in settings.items() if value is not None}
+
     def get_client(self):
         from groq import AsyncGroq
 
@@ -117,10 +131,7 @@ class ChatGroq(OpenAICompatBase):
                     resp = await client.chat.completions.create(
                         messages=groq_messages,
                         model=self.model,
-                        service_tier=self.service_tier,
-                        temperature=self.temperature,
-                        top_p=self.top_p,
-                        seed=self.seed,
+                        **self._settings(),
                         **self.tool_kwargs(tools, tool_choice),
                     )
                 usage = self.get_usage(resp) if hasattr(resp, "usage") else None
@@ -140,9 +151,7 @@ class ChatGroq(OpenAICompatBase):
                     resp = await client.chat.completions.create(
                         model=self.model,
                         messages=groq_messages,
-                        temperature=self.temperature,
-                        top_p=self.top_p,
-                        seed=self.seed,
+                        **self._settings(),
                         response_format=ResponseFormatResponseFormatJsonSchema(
                             json_schema=ResponseFormatResponseFormatJsonSchemaJsonSchema(
                                 name=output_format.__name__,
@@ -151,7 +160,6 @@ class ChatGroq(OpenAICompatBase):
                             ),
                             type="json_schema",
                         ),
-                        service_tier=self.service_tier,
                     )
                 if not resp.choices[0].message.content:
                     raise ModelProviderError(

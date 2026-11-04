@@ -148,13 +148,11 @@ async def test_explicit_budget_and_level_precedence_are_unchanged() -> None:
         ("gemini-flash-latest", 0.5),
     ],
 )
-async def test_omitted_temperature_follows_google_guidance_for_gemini_3(
+async def test_auto_temperature_follows_google_guidance_for_gemini_3(
     model: str, expected: float
 ) -> None:
     """Google documents 1.0 for every Gemini 3 model and warns against lowering it."""
-    chat = _composed_google(model)
-    assert chat.temperature == "auto"
-    config = await _wire_config(chat)
+    config = await _wire_config(_composed_google(model, temperature="auto"))
     assert config["temperature"] == expected
 
 
@@ -163,8 +161,12 @@ async def test_explicit_temperature_is_sent_as_written_on_any_model() -> None:
     assert config["temperature"] == 0.2
 
 
-async def test_null_temperature_sends_nothing() -> None:
-    config = await _wire_config(_composed_google("gemini-3.8-flash", temperature=None))
+@pytest.mark.parametrize("model", ["gemini-3.8-flash", "gemini-2.5-flash"])
+async def test_omitted_temperature_sends_nothing(model: str) -> None:
+    """Not written, not sent: the server's default applies (1.0 on Gemini 3, as Google advises)."""
+    chat = _composed_google(model)
+    assert chat.temperature is None
+    config = await _wire_config(chat)
     assert "temperature" not in config
 
 

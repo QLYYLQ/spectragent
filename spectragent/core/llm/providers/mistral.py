@@ -80,7 +80,9 @@ class ChatMistral(ChatModelBase):
     model: Annotated[str, Field(description="Mistral model name")] = "mistral-medium-latest"
 
     # Generation params
-    temperature: Annotated[float | None, Field(description="Sampling temperature")] = 0.2
+    temperature: Annotated[
+        float | None, Field(description="Sampling temperature. None (the default): not sent.")
+    ] = None
     top_p: Annotated[
         float | None, Field(description="Nucleus sampling top-p. None (the default): not sent.")
     ] = None

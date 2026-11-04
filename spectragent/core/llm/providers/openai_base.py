@@ -142,8 +142,16 @@ class OpenAICompatBase(ChatModelBase):
     model: Annotated[str, Field(description="Model name")]
 
     # --- Generation params ---
-    temperature: Annotated[float | None, Field(description="Sampling temperature")] = 0.2
-    frequency_penalty: Annotated[float | None, Field(description="Frequency penalty")] = 0.3
+    # Sampling is the run's choice: a value the configuration leaves out is not
+    # sent, so the model's own default applies (user ruling 2026-11-04,
+    # ``docs/architecture_design.md`` §4.7). An agent's official values start
+    # its ``config template`` block instead (§4.17 "agent 的模板起点").
+    temperature: Annotated[
+        float | None, Field(description="Sampling temperature. None (the default): not sent.")
+    ] = None
+    frequency_penalty: Annotated[
+        float | None, Field(description="Frequency penalty. None (the default): not sent.")
+    ] = None
     reasoning_effort: Annotated[
         ReasoningEffortSetting,
         Field(
