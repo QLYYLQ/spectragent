@@ -25,13 +25,14 @@ const steps = (...spec) => ({ data: { steps: spec.map(([step, origin = "policy"]
 /** The rows as [kind, key-or-id, step, lane] for readable assertions. */
 const shape = (layout) => layout.rows.map((row) => [row.kind, row.key ?? row.id ?? null, row.step ?? null, row.lane]);
 
-test("tasks group by the read side's task key and take their title from an own run", () => {
-  const rows = [fork("b", 2, { task: "variant", branch: { checkpoint_step: 2, task_variant: { source_task_text: "Original" } } }), live("a"), live("c", { task_key: "other" })];
+test("tasks group by the read side's task key and keep its header", () => {
+  const header = { key: TASK, title: "Find a video", task_id: "118" };
+  const rows = [fork("b", 2, { task_header: header }), live("a", { task_header: header }), live("c", { task_key: "other", task_header: { key: "other" } })];
   const [first, second] = taskGroups(rows);
   assert.deepEqual(first.runs.map((row) => row.key), ["b", "a"]);
-  assert.equal(first.title, "Find a video");
+  assert.equal(first.header, header);
   assert.equal(second.key, "other");
-  assert.equal(taskGroups([rows[0]])[0].title, "Original");
+  assert.deepEqual(taskGroups([{ key: "x" }]), []);
 });
 
 test("a branch block sits after the commit it leaves, one lane deeper, and the source runs on", () => {

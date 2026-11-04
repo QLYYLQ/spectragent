@@ -324,16 +324,17 @@ function TaskSection({ group, graph, error, folded, onFold, revision, ctx }) {
   const ref = useRef(null);
   const near = useNear(ref);
   const summary = taskSummary(group);
-  const identity = `${group.benchmark || "未记录基准测试"}${group.subset ? ` / ${group.subset}` : ""} · ${group.taskId ? `任务 ${group.taskId}` : "任务身份不完整，单独列出"}`;
+  const header = group.header;
+  const identity = `${header.benchmark || "未记录基准测试"}${header.subset ? ` / ${header.subset}` : ""} · ${header.incomplete || !header.task_id ? "任务身份不完整，单独列出" : `任务 ${header.task_id}`}`;
   return (
-    <section className={`tg-task ${folded ? "folded" : ""}`} ref={ref} aria-label={group.title}>
+    <section className={`tg-task ${folded ? "folded" : ""}`} ref={ref} aria-label={header.title}>
       <header className="tg-task-head">
         <button type="button" className="tg-fold" aria-expanded={!folded} onClick={onFold} aria-label={folded ? "展开这个任务的步骤" : "收起这个任务的步骤"}>
           <span aria-hidden="true">{folded ? "+" : "−"}</span>
         </button>
         <div className="tg-task-copy">
           <div className="tg-task-id">{identity}</div>
-          <h3>{group.title}</h3>
+          <h3>{header.title}</h3>
           <div className="tg-harness">
             <span><b>{summary.runs}</b> 次运行</span>
             <span><b>{summary.branches}</b> 个分叉</span>

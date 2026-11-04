@@ -29,6 +29,7 @@ from spectragent.inspection.graph import (
     restoration_tally,
     run_graph,
     task_graph,
+    task_headers,
     task_key,
     task_keys,
 )
@@ -56,7 +57,9 @@ from spectragent.schemas.verdict import Verdict
 
 _IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 #: Row fields the list computes rather than reads from a run's record.
-_RESOLVED = frozenset({"source_key", "source_resolution", "task_key", "task_incomplete"})
+_RESOLVED = frozenset(
+    {"source_key", "source_resolution", "task_key", "task_incomplete", "task_header"}
+)
 
 
 class RepositoryError(ValueError):
@@ -442,7 +445,16 @@ class _FileRepository:
                 else:
                     config = trace.config
                     others.append(
-                        {"key": key, "task_key": task_key(config), "branch": _json(config.branch)}
+                        {
+                            "key": key,
+                            "task_key": task_key(config),
+                            "branch": _json(config.branch),
+                            "benchmark": config.benchmark,
+                            "subset": config.subset,
+                            "task_id": config.task_id,
+                            "task": trace.task_text(),
+                            "created_at": trace.manifest.created_at.isoformat(),
+                        }
                     )
             except (RepositoryError, TraceSchemaError, OSError) as exc:
                 if self.config_source is not None or self.config_hash is not None:
@@ -466,6 +478,9 @@ class _FileRepository:
                     "found" if len(candidates) == 1 else "ambiguous" if candidates else "missing"
                 )
         task_keys(rows + others)
+        headers = task_headers(rows + others)
+        for row in rows:
+            row["task_header"] = headers[row["task_key"]]
         return rows
 
     def list_runs(self, search: str = "") -> list[dict[str, Any]]:

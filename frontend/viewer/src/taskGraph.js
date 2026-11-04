@@ -24,27 +24,18 @@ const STATUS = {
 export const endLabel = (value) => DONE[value] || value || "没有结果";
 export const callText = (calls) => (calls == null ? "未统计调用" : `${calls} 次调用`);
 
-/** The task list: rows grouped by the task key the read side gave each run, in list order. */
+/**
+ * The task list: rows grouped by the task key the read side gave each run,
+ * in list order, each with the header the read side wrote for its task.
+ */
 export function taskGroups(rows) {
   const groups = new Map();
   for (const row of rows) {
     if (!row.task_key) continue;
-    if (!groups.has(row.task_key)) groups.set(row.task_key, { key: row.task_key, runs: [] });
+    if (!groups.has(row.task_key)) groups.set(row.task_key, { key: row.task_key, header: row.task_header, runs: [] });
     groups.get(row.task_key).runs.push(row);
   }
-  return [...groups.values()].map((group) => {
-    const own = group.runs.filter((row) => !row.branch);
-    const first = own.at(-1) || group.runs.at(-1);
-    const branch = first.branch || {};
-    return {
-      ...group,
-      benchmark: (first.branch ? branch.source_benchmark : first.benchmark) || "",
-      subset: (first.branch ? branch.source_subset : first.subset) || "",
-      taskId: (first.branch ? branch.source_task_id : first.task_id) || "",
-      title: branch.task_variant?.source_task_text || first.task || first.task_id || first.key,
-      incomplete: Boolean(first.task_incomplete),
-    };
-  });
+  return [...groups.values()];
 }
 
 const unique = (values) => [...new Set(values.filter(Boolean))];

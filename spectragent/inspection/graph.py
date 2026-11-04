@@ -131,6 +131,38 @@ def task_keys(rows: Iterable[dict[str, Any]]) -> None:
         row["task_key"], row["task_incomplete"] = key, incomplete
 
 
+def _started(row: Mapping[str, Any]) -> tuple[str, str]:
+    return row.get("created_at") or "", row["key"]
+
+
+def task_headers(rows: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Each task's header, by task key: what the task view says about the task itself.
+
+    Benchmark, subset, task id and title come from the task's oldest run of
+    its own (a branch's are its source's); only a task of branches alone
+    takes them from its oldest branch, whose title is its source's task text.
+    """
+    tasks: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        tasks.setdefault(row["task_key"], []).append(row)
+    headers = {}
+    for key, members in tasks.items():
+        own = sorted((row for row in members if not row.get("branch")), key=_started)
+        first = own[0] if own else min(members, key=_started)
+        branch = first.get("branch") or {}
+        variant = branch.get("task_variant") or {}
+        headers[key] = {
+            "key": key,
+            "benchmark": (branch.get("source_benchmark") if branch else first.get("benchmark"))
+            or "",
+            "subset": (branch.get("source_subset") if branch else first.get("subset")) or "",
+            "task_id": (branch.get("source_task_id") if branch else first.get("task_id")) or "",
+            "title": variant.get("source_task_text") or first.get("task") or first["key"],
+            "incomplete": bool(first.get("task_incomplete")),
+        }
+    return headers
+
+
 def restoration_tally(records: list[StepRecord], checkpoint: int) -> dict[str, Any]:
     """A branch's restoration at a glance: its restored prefix by verdict, and its checkpoint check.
 
@@ -228,14 +260,11 @@ def _differences(rows: list[dict[str, Any]]) -> tuple[list[str], dict[str, int]]
     return differs, ordinals
 
 
-def _started(row: Mapping[str, Any]) -> tuple[str, str]:
-    return row.get("created_at") or "", row["key"]
-
-
 def task_graph(rows: list[dict[str, Any]], key: str) -> dict[str, Any]:
     """One task's runs placed as a graph, from the run list alone.
 
-    *rows* are run list rows with ``task_key``: every run under the root, plus
+    *rows* are run list rows with ``task_key`` and ``task_header``
+    (:func:`task_headers`): every run under the root, plus
     the sources of branches the list's filters left out, marked ``context``.
     Returns the task, its runs, its lines and its fork points. The lines are
     every run of the task in the order a top-down graph draws them: top-level
@@ -291,18 +320,8 @@ def task_graph(rows: list[dict[str, Any]], key: str) -> dict[str, Any]:
         }
         for (parent, step), keys in sorted(children.items())
     ]
-    first = members[0]
-    branch = first.get("branch") or {}
-    variant = branch.get("task_variant") or {}
     return {
-        "task": {
-            "key": key,
-            "benchmark": branch.get("source_benchmark") if branch else first.get("benchmark"),
-            "subset": branch.get("source_subset") if branch else first.get("subset"),
-            "task_id": branch.get("source_task_id") if branch else first.get("task_id"),
-            "title": variant.get("source_task_text") or first.get("task") or "",
-            "incomplete": bool(first.get("task_incomplete")),
-        },
+        "task": members[0]["task_header"],
         "runs": runs,
         "lines": ordered,
         "forks": forks,
