@@ -242,19 +242,27 @@ def test_two_strategies_for_one_receptor_are_refused_at_the_discriminator(tmp_pa
     assert "writes 'shell_injection' and the benchmark androidworld" in str(refused)
 
 
-def test_an_app_table_in_the_run_configuration_is_refused_against_the_benchmarks(
+def test_an_app_table_in_the_run_configuration_is_refused_naming_where_the_tables_differ(
     tmp_path: Path,
 ) -> None:
-    listed: list[JsonValue] = [
-        {"action_id": "android.open_app", "apps": {"Clock": "com.google.android.deskclock"}}
-    ]
-    raw = _run(_android(actions=listed), _table(tmp_path))
+    """A free-form map is one value; its conflict names the keys that differ, never the whole map."""
+    table: dict[str, JsonValue] = {f"app {n}": f"com.example.app{n}" for n in range(6)}
+    apps: dict[str, JsonValue] = {"Clock": "com.google.android.deskclock", "app 0": "com.other"}
+    listed: list[JsonValue] = [{"action_id": "android.open_app", "apps": apps}]
+    raw = _run(_android(actions=listed), _table(tmp_path, table))
 
     refused = _refused(raw)
 
-    assert refused.issue is not None
+    assert refused.issue is not None and refused.issue.code == "capability_setting_conflict"
     assert refused.issue.path == "environment[0].capabilities[0].actions[android.open_app].apps"
-    assert "and the benchmark androidworld, computed in code (benchmark[0]) writes" in str(refused)
+    assert str(refused) == (
+        "environment[0].capabilities[0].actions[android.open_app].apps: the run configuration "
+        "(environment[0].capabilities[0]) writes 2 entries and the benchmark androidworld, "
+        "computed in code (benchmark[0]) writes 6 entries, which differ (only the first has "
+        "'Clock'; only the second has 'app 1', 'app 2', 'app 3' and 2 more; both have 'app 0' "
+        "with different values); a run takes each setting from one side only: leave it out of "
+        "one of them, or write the same value in both."
+    )
 
 
 def test_a_list_left_without_the_entry_the_benchmark_sets_is_refused(tmp_path: Path) -> None:

@@ -18,7 +18,8 @@ that capability (:meth:`CapabilityMerge.merge`):
   refused (§4.3 "消歧靠拒绝"); a strategy block both write (``backend``) is
   merged inside when both name the same strategy, refused when they name two,
   and so is a block of settings a field is typed as (``network_source.matcher``),
-  while a free-form map (``open_app``'s ``apps``) is one value;
+  while a free-form map (``open_app``'s ``apps``) is one value, whose
+  conflict names the keys the two maps differ in rather than either map;
 - a list of strategy blocks (``actions``) is the run configuration's, or the
   whole default list when it leaves the list out: a part may set options on an
   entry already there, matched by its discriminator (``action_id``), and never
@@ -56,6 +57,8 @@ ENVIRONMENT_SECTION = "environment"
 ENVIRONMENT_CAPABILITIES = "capabilities"
 #: How long a value shown in a conflict may be before it is cut.
 _SHOWN = 120
+#: How many keys of a map in a conflict are named before the rest are counted.
+_NAMED = 3
 
 
 @dataclass(frozen=True)
@@ -440,11 +443,18 @@ class CapabilityMerge:
         self, target: _Block, at: str, existing: object, value: object, side: _Side
     ) -> MergeProblem:
         first = _first_writer(target, at)
+        if isinstance(existing, Mapping) and isinstance(value, Mapping):
+            # A whole map (open_app's 117 names) says nothing: say where the two differ.
+            written = (
+                f"{first} writes {_entries(existing)} and {side} writes {_entries(value)}, "
+                f"which differ ({_difference(existing, value)})"
+            )
+        else:
+            written = f"{first} writes {_shown(existing)} and {side} writes {_shown(value)}"
         return MergeProblem(
             f"{target.path}.{at}",
-            f"{first} writes {_shown(existing)} and {side} writes {_shown(value)}; a run takes "
-            f"each setting from one side only: leave it out of one of them, or write the same "
-            f"value in both",
+            f"{written}; a run takes each setting from one side only: leave it out of one of "
+            f"them, or write the same value in both",
         )
 
 
@@ -544,6 +554,35 @@ def _joined(path: str, loc: tuple[int | str, ...], block: Mapping[str, JsonValue
 def _shown(value: object) -> str:
     text = repr(value)
     return text if len(text) <= _SHOWN else f"{text[: _SHOWN - 3]}..."
+
+
+def _entries(value: Mapping[object, object]) -> str:
+    return "1 entry" if len(value) == 1 else f"{len(value)} entries"
+
+
+def _difference(first: Mapping[object, object], second: Mapping[object, object]) -> str:
+    """Where two maps differ: the keys only one has, and the keys both have with different values."""
+    said = [
+        f"{lead} {_named(keys)}{tail}"
+        for lead, keys, tail in (
+            ("only the first has", [key for key in first if key not in second], ""),
+            ("only the second has", [key for key in second if key not in first], ""),
+            (
+                "both have",
+                [key for key in first if key in second and first[key] != second[key]],
+                " with different values",
+            ),
+        )
+        if keys
+    ]
+    return "; ".join(said)
+
+
+def _named(keys: Sequence[object]) -> str:
+    """The first few of *keys* by name, and how many more there are."""
+    named = ", ".join(_shown(key) for key in keys[:_NAMED])
+    rest = len(keys) - _NAMED
+    return f"{named} and {rest} more" if rest > 0 else named
 
 
 __all__ = [
