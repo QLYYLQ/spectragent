@@ -499,13 +499,15 @@ uv run pytest tests/test_core/test_llm/test_schema_dialects.py
       `Params` → `execute` → event → handler-actually-reads-it.
 - [ ] `_GOLDEN_PROSE` entry added (or edited, with a comment).
 - [ ] Regenerated if you added a knob, and the knob is reachable from YAML.
-- [ ] The viewer can say it: a verb in `inspection/marks.py::ACTION_VERBS` and a line in
-      `_css` (the browser's) or `_android` (Android's), and, if it points, a mark from its
-      measured effect or its `PointAxis` params; an element param is named from the fragment
-      its `AddressesElement` names. Without them the task view's commits, the step list and
-      the review archive show the raw name and JSON params
-      (`tests/test_inspection/test_android_marks.py::test_every_android_action_has_a_verb`
-      checks Android's).
+- [ ] The viewer can say it, from your own package: the action class implements
+      `core/presentation.py::PresentsAction` (a `person_verb` and a classmethod `present`
+      returning an `ActionPresentation`: the line, and the point, box or path it marks,
+      in your viewport units). Share one wording module per capability, as
+      `browser/presentation.py` (`BrowserWords`) and `android/presentation.py`
+      (`AndroidWords`) do. If an element param addresses a fragment, that fragment class
+      implements `DescribesElements`. Never edit `inspection/marks.py`: it names no
+      capability (`tests/test_inspection/test_capability_seam.py`). Without them the
+      viewer shows the raw name and JSON params.
 
 One last triage note, from an agent who got 1 failure, then 72, then 0 from identical
 source: other streams edit this tree concurrently. Before believing a red full-suite

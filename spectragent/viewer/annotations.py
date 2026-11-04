@@ -172,7 +172,7 @@ def annotation_router(
         key = run_key(source.run)
         if isinstance(source, ArchiveImage):
             return repository.archive_image(key, source.step, source.archiver, source.name)
-        data = repository.screenshot(key, source.step, view="browser")
+        data = repository.screenshot(key, source.step, view="raw")
         if data is None:
             raise FileNotFoundError(f"运行 {source.run} 的第 {source.step} 步没有截图")
         return data
@@ -308,7 +308,7 @@ def annotation_router(
                 raise HTTPException(422, "动作前截图需要 frame_id")
             data = repository.step_frame_image(key, index, frame_id)
         else:
-            data = repository.screenshot(key, index, view="browser")
+            data = repository.screenshot(key, index, view="raw")
             if data is None:
                 raise FileNotFoundError("这一步没有已提交的观察截图")
         return Response(content=data, media_type=image_type(data))
@@ -390,7 +390,7 @@ def annotation_router(
             raise FileNotFoundError(f"运行 {key} 没有已提交的第 {body.step} 步")
         # A committed step never changes, so an ad-hoc label needs no version;
         # its screenshot is read only to check boxes drawn on it.
-        screenshot = repository.screenshot(key, body.step, view="browser") if body.regions else None
+        screenshot = repository.screenshot(key, body.step, view="raw") if body.regions else None
         current.append_adhoc(
             key,
             body.step,

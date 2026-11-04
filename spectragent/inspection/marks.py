@@ -1,85 +1,67 @@
 """Where a recorded action pointed, drawn as marks on an image, and how it reads to a person.
 
-The one place a recorded action becomes a mark, and the one place its Chinese
-wording lives: the browser's actions, the Android capability's and the Loop's
-``loop.done``, each by its fully-qualified name. The viewer serves these marks
-to its run page and its review page (``/api/marks``, ``/api/review/marks``) and
-labels its steps with the verbs of :func:`action_verb` (the run API's
-``action_verbs``); the lookahead queue builders write the same Chinese action
-lines into their items.
-Everything is read from a committed run through :class:`RunTrace`.
+The one place a recorded action becomes a mark and a line, for the viewer's
+run page and review page (``/api/marks``, ``/api/review/marks``), its step
+labels (the run API's ``action_verbs``) and the lookahead queues' action
+lines. Everything is read from a committed run through :class:`RunTrace`, and
+nothing here names a capability (``docs/architecture_design.md`` §4.17
+"动作标记"): what only a capability knows it states itself, on the classes it
+registers, through the Protocols of ``core/presentation.py``.
 
-Action parameters and measured effects are CSS viewport pixels
-(``docs/architecture_design.md`` §4.1). A mark is in the pixels of the image it
-is drawn on, converted with that image's recorded geometry — its own pixel
-size and the viewport it depicts — by the one conversion rule
+- How an action reads and where it pointed is its action class's
+  (``PresentsAction``), found by the recorded action's name. A class that
+  says nothing keeps its recorded name and params.
+- The element an action named by index is described by the fragment its
+  element param declares it addresses (``AddressesElement``), when that
+  fragment's class describes elements (``DescribesElements``); else the
+  element is named by its index. A fragment that does not is never read.
+- A screen an archiver kept before an action is its archiver's to find
+  (``KeepsActionFrames``).
+
+Points are in the capability's viewport units. A mark is in the pixels of the
+image it is drawn on, converted with that image's recorded geometry, its own
+pixel size and the viewport it depicts, by the one conversion rule
 (:func:`~spectragent.schemas.observation.geometry.point_grid`); device scale 1
 is never assumed. An image whose geometry is unknown gets its actions listed
-and none drawn, and says why.
-
-Which point a mark uses: the point the action's effect measured (where the
-input was actually dispatched) when there is one, else the point its
-parameters named. Which params are a point, and which name an element, is
-what the recorded action's registered ``Params`` declare
-(``core/actions/params.py``: ``point_params``, ``element_params``); a drag
-presses at its first point and releases at its second. A scroll given a start
-point is drawn there, where the pointer moved before the wheel turned. A page
-scroll without one is dispatched where the pointer was, so its mark sits at
-the pointer position the step's observation recorded, moved by the pointer
-actions before it in the same step; unknown is left unknown. Typing given no
-point went into the field that had focus: it is listed, not drawn, and moves
-no pointer.
-
-An Android touch is drawn where its effect says the finger went down (and, for
-a drag, where it lifted; a scroll's arrow, as on the browser, points the way
-its verb says, against the finger's path); an action naming an element of the UI
-tree also gets that element's recorded bounds as a box, and its line names the
-element by its text, read from the UI tree its step's observation recorded
-(the fragment the action's element param declares it addresses).
-
-The image is the step's one screenshot, and the pointer the step's one capture
-state: each found by its observation field name (``screenshot``,
-``capture_state``), which negotiation keeps unique in a run, as
-``RunTrace.screenshot`` finds it.
+and none drawn, and says why. The image is the step's one screenshot, and the
+pointer the step's one capture state, each found by its observation field
+name (``screenshot``, ``capture_state``), which negotiation keeps unique in a
+run, as ``RunTrace.screenshot`` finds it.
 """
 
 from __future__ import annotations
 
-import json
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from types import MappingProxyType
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from spectragent.core.actions._registrar import registered_params
-from spectragent.core.actions.params import element_params, param_fragments, point_params
-from spectragent.core.capabilities.android.effects import (
-    AndroidTextEffect,
-    AndroidTouchEffect,
-    ScreenPoint,
-    Touch,
+from spectragent.core.actions._registrar import (
+    ActionRegistrar,
+    registered_params,
 )
-from spectragent.core.capabilities.android.observations import AndroidUITreeObs
-from spectragent.core.capabilities.browser.archive.frames import (
-    FRAMES_ARCHIVER_ID,
-    FrameRecord,
-    iter_frames,
-    read_frames,
-)
-from spectragent.core.capabilities.browser.effects import (
-    ElementFacts,
-    PointerEffect,
-    ScrollEffect,
-    SelectionEffect,
-    TextInputEffect,
-    ViewportPoint,
-    WaitEffect,
+from spectragent.core.actions.params import element_params, param_fragments
+from spectragent.core.archive._registrar import ArchiverRegistrar
+from spectragent.core.presentation import (
+    UNMOVED,
+    ActionPresentation,
+    ArchivedFrame,
+    DescribesElements,
+    Direction,
+    ElementDescription,
+    KeepsActionFrames,
+    MarkKind,
+    Point,
+    PresentsAction,
+    discover_capabilities,
+    number,
+    registered,
+    unworded,
 )
 from spectragent.core.trace.errors import RecordingScopeError, TraceSchemaError
 from spectragent.core.trace.reader import RunTrace
-from spectragent.schemas.action import Action, ActionEffect, ActionResult
+from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation._registrar import (
     FragmentBase,
     ObservationRegistrar,
@@ -88,170 +70,6 @@ from spectragent.schemas.observation._registrar import (
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.geometry import PointGrid, ScreenshotGeometry, point_grid
 from spectragent.schemas.step_record import StepRecord
-
-MarkKind = Literal["click", "drag", "type", "scroll"]
-Direction = Literal["up", "down", "left", "right"]
-
-#: How far quoted page text, typed text and answers are shown in a line.
-NAME_CHARS = 30
-TYPED_CHARS = 40
-ANSWER_CHARS = 80
-
-#: Each action as the verb a person reads, by its fully-qualified name: the
-#: browser's actions, the Android capability's and the Loop's ``loop.done``.
-#: The head of the action's line (:func:`action_text`) and the viewer's step
-#: label (:func:`action_verb`). An action not here keeps its recorded name.
-ACTION_VERBS: Mapping[str, str] = MappingProxyType(
-    {
-        "browser.click": "点击",
-        "browser.click_coordinate": "点击",
-        "browser.type": "输入",
-        "browser.type_coordinate": "输入",
-        "browser.send_keys": "按键",
-        "browser.scroll": "滚动",
-        "browser.drag": "拖动",
-        "browser.wait": "等待",
-        "browser.navigate": "打开网址",
-        "browser.go_back": "后退",
-        "browser.go_forward": "前进",
-        "browser.switch_tab": "切换标签页",
-        "browser.select_dropdown": "在下拉框中选择",
-        "browser.extract_content": "读取页面文字",
-        "browser.screenshot": "截图",
-        "android.click": "点击",
-        "android.click_coordinate": "点击",
-        "android.long_press": "长按",
-        "android.drag": "拖动",
-        "android.scroll": "滚动",
-        "android.type": "输入",
-        "android.type_coordinate": "输入",
-        "android.press_key": "按键",
-        "android.open_app": "打开应用",
-        "android.wait": "等待",
-        "loop.done": "完成",
-    }
-)
-
-_DIRECTIONS = {"up": "上", "down": "下", "left": "左", "right": "右"}
-_EDGES = {"up": "顶", "down": "底", "left": "最左边", "right": "最右边"}
-#: ARIA roles as a person names the thing on screen; others keep the role word.
-_ROLES = {
-    "button": "按钮",
-    "link": "链接",
-    "textbox": "输入框",
-    "searchbox": "搜索框",
-    "combobox": "下拉框",
-    "listbox": "列表框",
-    "checkbox": "复选框",
-    "radio": "单选项",
-    "switch": "开关",
-    "tab": "标签",
-    "menuitem": "菜单项",
-    "menuitemcheckbox": "菜单项",
-    "menuitemradio": "菜单项",
-    "option": "选项",
-    "slider": "滑块",
-    "spinbutton": "数字框",
-    "treeitem": "树节点",
-    "img": "图片",
-    "image": "图片",
-    "heading": "标题",
-    "listitem": "列表项",
-    "list": "列表",
-    "row": "行",
-    "cell": "单元格",
-    "gridcell": "单元格",
-    "dialog": "对话框",
-    "paragraph": "段落",
-    "navigation": "导航栏",
-    "generic": "元素",
-    "text": "文字",
-    "StaticText": "文字",
-    "video": "视频",
-    "article": "文章",
-    "region": "区域",
-    "main": "主体区域",
-    "banner": "页头",
-    "contentinfo": "页脚",
-    "form": "表单",
-    "figure": "图",
-    "iframe": "内嵌页面",
-    "document": "页面",
-    "presentation": "元素",
-    "none": "元素",
-    "svg": "图标",
-    "graphics-symbol": "图标",
-    "group": "分组",
-    "toolbar": "工具栏",
-    "menu": "菜单",
-    "menubar": "菜单栏",
-    "tablist": "标签栏",
-    "tabpanel": "标签页内容",
-    "table": "表格",
-    "grid": "表格",
-    "columnheader": "表头",
-    "rowheader": "表头",
-    "alert": "提示",
-    "status": "状态提示",
-    "progressbar": "进度条",
-    "scrollbar": "滚动条",
-    "separator": "分隔线",
-    "complementary": "侧栏",
-    "search": "搜索区域",
-    "section": "区域",
-}
-#: Android view classes (the class name's last part) as a person names the
-#: thing on screen; any other class is an element.
-_ANDROID_ROLES = {
-    "Button": "按钮",
-    "ImageButton": "按钮",
-    "MaterialButton": "按钮",
-    "FloatingActionButton": "按钮",
-    "ExtendedFloatingActionButton": "按钮",
-    "TextView": "文字",
-    "CheckedTextView": "文字",
-    "EditText": "输入框",
-    "AutoCompleteTextView": "输入框",
-    "TextInputEditText": "输入框",
-    "ImageView": "图片",
-    "Switch": "开关",
-    "SwitchCompat": "开关",
-    "SwitchMaterial": "开关",
-    "ToggleButton": "开关",
-    "CheckBox": "复选框",
-    "RadioButton": "单选项",
-    "SeekBar": "滑块",
-    "Spinner": "下拉框",
-    "RecyclerView": "列表",
-    "ListView": "列表",
-    "ScrollView": "滚动区域",
-    "HorizontalScrollView": "滚动区域",
-    "ViewPager": "翻页区域",
-    "TabWidget": "标签栏",
-}
-#: The Android capability's actions, whose lines and marks :func:`_android` makes.
-_ANDROID_ACTIONS = frozenset(
-    {
-        "android.click",
-        "android.click_coordinate",
-        "android.long_press",
-        "android.drag",
-        "android.scroll",
-        "android.type",
-        "android.type_coordinate",
-        "android.press_key",
-        "android.open_app",
-        "android.wait",
-    }
-)
-#: The Android system keys ``android.press_key`` presses, as a person names them.
-_ANDROID_KEYS = {
-    "back": "返回",
-    "home": "主屏幕",
-    "enter": "回车",
-    "delete": "删除",
-    "recent_apps": "最近任务",
-}
 
 
 class ActionMark(BaseModel):
@@ -360,6 +178,37 @@ class MarkRequest:
 TraceOpener = Callable[[str], RunTrace]
 
 
+# ── what a capability registers ───────────────────────────────────────
+
+
+def presenter(name: str) -> PresentsAction | None:
+    """The class of the action recorded as *name*, when it says how it reads (``PresentsAction``)."""
+    action = registered(ActionRegistrar.get_or_none, name)
+    return action if isinstance(action, PresentsAction) else None
+
+
+def _describing(key: str) -> bool:
+    """Whether the fragment class registered under *key* describes its elements."""
+    fragment = registered(ObservationRegistrar.get_or_none, key)
+    return isinstance(fragment, type) and issubclass(fragment, DescribesElements)
+
+
+def frame_keeper(archiver: str) -> KeepsActionFrames | None:
+    """The archiver class registered under *archiver*, when it keeps screens before actions."""
+    found = registered(ArchiverRegistrar.get_or_none, archiver)
+    return found if isinstance(found, KeepsActionFrames) else None
+
+
+def frame_keepers() -> list[KeepsActionFrames]:
+    """Every registered archiver class that keeps screens before actions."""
+    discover_capabilities()
+    return [
+        found
+        for found in ArchiverRegistrar.get_all().values()
+        if isinstance(found, KeepsActionFrames)
+    ]
+
+
 # ── reading a run ──────────────────────────────────────────────────────
 
 
@@ -371,7 +220,7 @@ _CAPTURE_STATE = "capture_state"
 
 
 def _fragment(trace: RunTrace, step: int, key: str) -> FragmentBase | FragmentFailure | None:
-    """*step*'s committed fragment *key* (``android.ui_tree``), or ``None``."""
+    """*step*'s committed fragment *key*, or ``None`` when absent, failed or not recorded."""
     entry = next((entry for entry in trace.manifest.steps if entry.step == step), None)
     if entry is None:
         return None
@@ -393,43 +242,16 @@ def _field(trace: RunTrace, step: int, field: str) -> FragmentBase | FragmentFai
     return _fragment(trace, step, keys[0]) if len(keys) == 1 else None
 
 
-@dataclass(frozen=True)
-class AddressedElement:
-    """The element an action's params named, as its step's observation recorded it.
-
-    ``text`` names it for a person (``#6 按钮“Start”``); ``bounds`` is where it
-    was, ``(left, top, right, bottom)`` in the capability's viewport units,
-    or ``None`` when the observation does not say.
-    """
-
-    text: str
-    bounds: tuple[int, int, int, int] | None = None
-
-
-def _android_element(tree: AndroidUITreeObs, index: int) -> AddressedElement:
-    """Element *index* of an Android UI tree: its class as a role, its text, its bounds."""
-    node = tree.tree().node(index)
-    if node is None:
-        return AddressedElement(f"#{index}（界面树里没有这个元素）")
-    role = _ANDROID_ROLES.get(node.class_name.rsplit(".", 1)[-1], "元素")
-    name = node.text or node.content_description or node.hint_text
-    text = f"#{index} {role}“{_clip(name, NAME_CHARS)}”" if name else f"#{index} {role}"
-    box = node.bounds_in_screen
-    bounds = (box.left, box.top, box.right, box.bottom) if box.right > box.left else None
-    return AddressedElement(text, bounds)
-
-
-def addressed_elements(trace: RunTrace, record: StepRecord) -> list[AddressedElement | None]:
+def addressed_elements(trace: RunTrace, record: StepRecord) -> list[ElementDescription | None]:
     """For each of *record*'s actions, the element its params named, from its step's observation.
 
     The fragment read is the one the action's element param declares it
-    addresses (``AddressesElement("android.ui_tree")``), and only when it is
-    one this view can name an element from: the Android UI tree. Any other
-    (the browser's DOM, which can be tens of MB, and whose elements the
-    browser's effects name) is never read, and its element is named by its
-    index alone. ``None`` for an action that names no element.
+    addresses, and only when its class describes elements
+    (``DescribesElements``); any other (one that can be tens of MB) is never
+    read, and its element is named by its index alone. ``None`` for an action
+    that names no element.
     """
-    found: list[AddressedElement | None] = []
+    found: list[ElementDescription | None] = []
     read: dict[str, FragmentBase | FragmentFailure | None] = {}
     for action in record.actions:
         params = registered_params(action.name)
@@ -437,23 +259,23 @@ def addressed_elements(trace: RunTrace, record: StepRecord) -> list[AddressedEle
             found.append(None)
             continue
         fragments = param_fragments(params)
-        element: AddressedElement | None = None
+        element: ElementDescription | None = None
         for name in element_params(params):
-            index = _number(action.params.get(name))
+            index = number(action.params.get(name))
             if index is None:
                 continue
             for key in sorted(fragments.get(name, ())):
-                fragment = ObservationRegistrar.get_or_none(key)
-                if not (isinstance(fragment, type) and issubclass(fragment, AndroidUITreeObs)):
+                if not _describing(key):
                     continue
                 if key not in read:
                     try:
                         read[key] = _fragment(trace, record.step, key)
                     except (TraceSchemaError, KeyError, ValueError):
                         read[key] = None
-                if isinstance(read[key], AndroidUITreeObs):
-                    element = _android_element(read[key], index)
-            element = element or AddressedElement(f"#{index}")
+                fragment = read[key]
+                if isinstance(fragment, DescribesElements):
+                    element = fragment.describe_element(index)
+            element = element or ElementDescription(f"#{index}")
             break
         found.append(element)
     return found
@@ -474,47 +296,37 @@ def observation_geometry(trace: RunTrace, step: int) -> Geometry:
     return Geometry(grid, width, height)
 
 
-def frame_record(trace: RunTrace, step: int | None, name: str) -> FrameRecord | None:
-    """The ``browser.frames`` record of the image *name* committed at *step* (``None``: trailing)."""
-    records = (
-        read_frames(trace, step)
-        if step is not None
-        else [record for at, record in iter_frames(trace, include_trailing=True) if at is None]
-    )
-    return next((record for record in records if record.name == name), None)
-
-
-def frame_geometry(trace: RunTrace, step: int | None, record: FrameRecord | None) -> Geometry:
-    """A frame's geometry: its own pixel size over the viewport of the observation of *step*.
+def frame_geometry(trace: RunTrace, step: int | None, frame: ArchivedFrame | None) -> Geometry:
+    """A kept frame's geometry: its own pixel size over the viewport of the observation of *step*.
 
     For an action frame, callers that resolve its execution owner pass that
     step, independently of which archive collection committed the image.
     """
-    if record is None:
+    if frame is None:
         return Geometry(None, None, None, "找不到这张画面的记录，动作只列出、不画出")
     if step is None:
         return Geometry(
             None,
-            record.width,
-            record.height,
+            frame.width,
+            frame.height,
             "这张画面属于收尾记录，不知道它的视口，动作只列出、不画出",
         )
     observed = observation_geometry(trace, step)
-    if observed.grid is None or not record.width or not record.height:
+    if observed.grid is None or not frame.width or not frame.height:
         return Geometry(
             None,
-            record.width,
-            record.height,
+            frame.width,
+            frame.height,
             observed.problem or "这张画面没有记录尺寸，动作只列出、不画出",
         )
     grid = PointGrid(
         "screenshot_pixels",
-        record.width,
-        record.height,
+        frame.width,
+        frame.height,
         observed.grid.viewport_width,
         observed.grid.viewport_height,
     )
-    return Geometry(grid, record.width, record.height)
+    return Geometry(grid, frame.width, frame.height)
 
 
 def executed_action(record: StepRecord, call: int, name: str | None) -> int | None:
@@ -544,7 +356,7 @@ def executed_action(record: StepRecord, call: int, name: str | None) -> int | No
     return None
 
 
-def _initial_pointer(trace: RunTrace, step: int) -> tuple[int, int] | None:
+def _initial_pointer(trace: RunTrace, step: int) -> Point | None:
     """The pointer position *step*'s observation recorded, in CSS px, or ``None``."""
     try:
         state = _field(trace, step, _CAPTURE_STATE)
@@ -562,368 +374,23 @@ def _initial_pointer(trace: RunTrace, step: int) -> tuple[int, int] | None:
 # ── one action ─────────────────────────────────────────────────────────
 
 
-def _clip(text: str, limit: int) -> str:
-    text = " ".join(str(text).split())
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-def element_text(fact: Any) -> str | None:
-    """An effect's element as a person names it (``按钮“最多播放”``), or ``None`` when unknown."""
-    if isinstance(fact, ElementFacts):
-        role = _ROLES.get(fact.role, fact.role)
-        return f"{role}“{_clip(fact.name, NAME_CHARS)}”" if fact.name else role
-    if fact == "nothing":
-        return "空白处"
-    return None
-
-
-def _number(value: Any) -> int | None:
-    return int(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
-
-
-def _param_points(action: Action) -> list[tuple[int, int] | None]:
-    """Each point *action*'s registered ``Params`` declare, as its params state it (``None``: not stated)."""
-    params = registered_params(action.name)
-    pairs = point_params(params) if params is not None else []
-    found: list[tuple[int, int] | None] = []
-    for x, y in pairs:
-        px, py = _number(action.params.get(x)), _number(action.params.get(y))
-        found.append((px, py) if px is not None and py is not None else None)
-    return found
-
-
-def _element(action: Action) -> Any:
-    """The element *action*'s params name (its first ``element_params`` value), or ``None``."""
-    params = registered_params(action.name)
-    for name in element_params(params) if params is not None else ():
-        if action.params.get(name) is not None:
-            return action.params[name]
-    return None
-
-
-def _point(fact: Any) -> tuple[int, int] | None:
-    return (fact.x, fact.y) if isinstance(fact, ViewportPoint) else None
-
-
-def _seconds(value: float) -> str:
-    return f"{value:.1f}".rstrip("0").rstrip(".")
-
-
-@dataclass(frozen=True)
-class _Css:
-    """An action in CSS px, before it is placed on an image."""
-
-    kind: MarkKind | None
-    text: str
-    point: tuple[int, int] | None = None
-    end: tuple[int, int] | None = None
-    #: The named element's bounds, ``(left, top, right, bottom)``.
-    box: tuple[int, int, int, int] | None = None
-    direction: Direction | None = None
-    typed: str | None = None
-    measured: bool = False
-    unplaced: str | None = None
-    #: Where the pointer is after this action; ``...`` (Ellipsis): it did not move.
-    pointer_after: Any = ...
-
-
-def _typed(params: dict[str, Any], result: ActionResult | None, effect: Any) -> str | None:
-    """The typed text as a person may read it; withheld for a sensitive field."""
-    text = params.get("text")
-    if not isinstance(text, str):
-        return None
-    sensitive = (result is not None and result.typed_into_sensitive_field) or (
-        isinstance(effect, TextInputEffect) and effect.sensitive is True
-    )
-    return None if sensitive else text
-
-
-def _touch(effect: ActionEffect | None) -> Touch | None:
-    """The touch an Android action's effect says it made, or ``None``."""
-    if isinstance(effect, AndroidTouchEffect):
-        return effect.touch
-    if isinstance(effect, AndroidTextEffect):
-        return effect.tap
-    return None
-
-
-def _screen(point: ScreenPoint) -> tuple[int, int]:
-    return point.x, point.y
-
-
-def _android(action: Action, result: ActionResult | None, element: AddressedElement | None) -> _Css:
-    """An Android action in the screen's pixels: where the finger went, and its line.
-
-    The point is where the effect says the finger went down, else the point
-    the params give; never a point nothing recorded. An element the params
-    name is drawn as its recorded bounds either way.
-    """
-    name, params = action.name, action.params
-    verb = action_verb(name)
-    effect = result.effect if result is not None else None
-    touch = _touch(effect)
-    points = _param_points(action)
-    first = points[0] if points else None
-    named = _element(action)
-    target = element.text if element is not None else f"#{named}" if named is not None else None
-    box = element.bounds if element is not None else None
-    # Said for an action whose point nothing recorded: its element's box may still be drawn.
-    no_point = "没有记录按下的位置" + ("；虚线框是它指名的元素" if box else "")
-    if name in ("android.click", "android.click_coordinate", "android.long_press"):
-        point = (_screen(touch.start) if touch else None) or first
-        if point is not None:
-            line = f"{verb} {_xy(point)}" + (f" → {target}" if target else "")
-        else:
-            line = f"{verb} {target}" if target else verb
-        if name == "android.long_press" and touch is not None:
-            line += f"，按住 {_seconds(touch.duration_ms / 1000)} 秒"
-        return _Css(
-            "click",
-            line,
-            point=point,
-            box=box,
-            measured=touch is not None,
-            unplaced=None if point else no_point,
-        )
-    if name == "android.drag":
-        start = _screen(touch.start) if touch else first
-        end = _screen(touch.end) if touch else (points[-1] if len(points) > 1 else None)
-        return _Css(
-            "drag",
-            f"{verb} {_xy(start)} → {_xy(end)}" if start and end else verb,
-            point=start,
-            end=end,
-            measured=touch is not None,
-            unplaced=None if start and end else "没有记录拖动的起点或终点",
-        )
-    if name == "android.scroll":
-        direction = params.get("direction")
-        word = _DIRECTIONS.get(str(direction), "")
-        line = f"向{word}{verb}" if word else verb
-        if target:
-            line += f" → {target}"
-        elif first is not None:
-            line = f"在 {_xy(first)} {line}"
-        start = _screen(touch.start) if touch else first
-        if touch is not None:
-            line += f"，手指从 {_xy(start)} 滑到 {_xy(_screen(touch.end))}"
-        # The mark's arrow points the way the verb says, as on the browser; the
-        # finger's opposite path is in the line.
-        return _Css(
-            "scroll",
-            line,
-            point=start,
-            box=box,
-            direction=direction if direction in _DIRECTIONS else None,
-            measured=touch is not None,
-            unplaced=None
-            if start
-            else "没有记录滑动的位置" + ("；虚线框是它指名的元素" if box else ""),
-        )
-    if name in ("android.type", "android.type_coordinate"):
-        text = params.get("text")
-        sensitive = result is not None and result.typed_into_sensitive_field is True
-        if not isinstance(text, str):
-            line = verb
-        elif sensitive:
-            line = f"{verb}（敏感字段，内容不显示）"
-        else:
-            line = f"{verb}“{_clip(text, TYPED_CHARS)}”"
-        if target:
-            line += f" → {target}"
-        if isinstance(effect, AndroidTextEffect) and not effect.text_entered:
-            line += "，没有输入文字"
-        point = (_screen(touch.start) if touch else None) or first
-        if point is None and box is None:
-            # Typed into the field that had focus: no place to draw.
-            return _Css(None, line)
-        typed = _clip(text, TYPED_CHARS) if isinstance(text, str) and not sensitive else None
-        return _Css(
-            "type",
-            line,
-            point=point,
-            box=box,
-            typed=typed,
-            measured=touch is not None,
-            unplaced=None if point else no_point,
-        )
-    if name == "android.press_key":
-        key = params.get("key")
-        return _Css(None, f"{verb} {_ANDROID_KEYS.get(str(key), key or '')}".strip())
-    if name == "android.open_app":
-        return _Css(None, f"{verb} {params.get('app_name', '')}".strip())
-    if name == "android.wait":
-        seconds = params.get("seconds")
-        if isinstance(seconds, int | float) and not isinstance(seconds, bool):
-            return _Css(None, f"{verb} {_seconds(float(seconds))} 秒")
-    return _Css(None, verb)
-
-
-def _css(
+def _present(
     action: Action,
     result: ActionResult | None,
-    pointer: tuple[int, int] | None,
-    addressed: AddressedElement | None = None,
-) -> _Css:
-    name = action.name
-    if name in _ANDROID_ACTIONS:
-        return _android(action, result, addressed)
-    verb = action_verb(name)
-    params = action.params
-    effect = result.effect if result is not None else None
-    points = _param_points(action)
-    first = points[0] if points else None
-    element = _element(action)
-    if name in ("browser.click_coordinate", "browser.click", "browser.drag"):
-        measured = _point(effect.point) if isinstance(effect, PointerEffect) else None
-        hit = element_text(effect.hit) if isinstance(effect, PointerEffect) else None
-        if name == "browser.drag":
-            start = measured or first
-            release = (
-                _point(effect.release_point)
-                if isinstance(effect, PointerEffect) and effect.release_point is not None
-                else None
-            )
-            end = release or (points[-1] if len(points) > 1 else None)
-            line = (f"{verb} {_xy(start)} → {_xy(end)}" if start and end else verb) + (
-                f"，按在{hit}上" if hit else ""
-            )
-            return _Css(
-                "drag",
-                line,
-                point=start,
-                end=end,
-                measured=measured is not None,
-                unplaced=None if start and end else "没有记录拖动的起点或终点",
-                pointer_after=end,
-            )
-        point = measured or first
-        if point is not None:
-            line = f"{verb} {_xy(point)}" + (f" → {hit}" if hit else "")
-        else:
-            line = f"{verb}元素 #{element}" if element is not None else verb
-            line += f" → {hit}" if hit else ""
-        return _Css(
-            "click",
-            line,
-            point=point,
-            measured=measured is not None,
-            unplaced=None if point else "没有记录点击的位置",
-            pointer_after=point,
-        )
-    if name in ("browser.type_coordinate", "browser.type"):
-        typed = _typed(params, result, effect)
-        target = element_text(effect.target) if isinstance(effect, TextInputEffect) else None
-        if not isinstance(params.get("text"), str):
-            said = verb
-        elif typed is None:
-            said = f"{verb}（敏感字段，内容不显示）"
-        else:
-            said = f"{verb}“{_clip(typed, TYPED_CHARS)}”"
-        if target:
-            said += f" → {target}"
-        elif element is not None:
-            said += f" → 元素 #{element}"
-        if name == "browser.type":
-            return _Css(None, said, pointer_after=None)
-        if first is None:
-            # Typed into the focus as it was: no place to draw, and the pointer did not move.
-            return _Css(None, said)
-        return _Css(
-            "type",
-            said,
-            point=first,
-            typed=_clip(typed, TYPED_CHARS) if typed is not None else None,
-            pointer_after=first,
-        )
-    if name == "browser.scroll":
-        direction = params.get("direction")
-        if isinstance(effect, ScrollEffect):
-            direction = effect.direction
-        word = _DIRECTIONS.get(str(direction), "")
-        line = f"向{word}{verb}" if word else verb
-        if first is not None:
-            line = f"在 {_xy(first)} {line}"
-        amount = _number(params.get("amount"))
-        delta = effect.delta if isinstance(effect, ScrollEffect) else None
-        if delta is not None and isinstance(effect, ScrollEffect):
-            moved = abs(delta.y if effect.direction in ("up", "down") else delta.x)
-            what = "页面" if effect.container == "page" else "区域"
-            line += f"，{what}移动了 {moved} 像素" if moved else "，没有移动"
-        elif amount is not None:
-            line += f" {amount} 像素"
-        if isinstance(effect, ScrollEffect) and effect.at_boundary is True:
-            line += f"，已到{_EDGES.get(effect.direction, '边缘')}"
-        shown = direction if direction in _DIRECTIONS else None
-        if first is not None:
-            # The pointer moved to the start and the wheel turned there.
-            return _Css("scroll", line, point=first, direction=shown, pointer_after=first)
-        by_element = element is not None
-        point = None if by_element else pointer
-        unplaced = (
-            "滚动的是页面中的某个元素，没有记录滚轮的位置"
-            if by_element
-            else None
-            if point
-            else "滚动时鼠标的位置没有记录"
-        )
-        return _Css(
-            "scroll",
-            line,
-            point=point,
-            direction=shown,
-            unplaced=unplaced,
-            pointer_after=None if by_element else ...,
-        )
-    if name == "browser.send_keys":
-        return _Css(None, f"{verb} {params.get('keys', '')}".strip())
-    if name == "browser.wait":
-        if isinstance(effect, WaitEffect):
-            return _Css(None, f"{verb} {_seconds(effect.waited_ms / 1000)} 秒")
-        seconds = params.get("seconds")
-        if isinstance(seconds, int | float) and not isinstance(seconds, bool):
-            return _Css(None, f"{verb} {_seconds(float(seconds))} 秒")
-        return _Css(None, verb)
-    if name == "loop.done":
-        answer = params.get("extracted_content")
-        head = "结束（报告没有完成任务）" if params.get("success") is False else "完成并回答"
-        if isinstance(answer, str) and answer.strip():
-            return _Css(None, f"{head}：{_clip(answer, ANSWER_CHARS)}")
-        return _Css(None, head)
-    if name == "browser.navigate":
-        return _Css(None, f"{verb} {params.get('url', '')}".strip())
-    if name == "browser.go_back":
-        return _Css(None, f"{verb}到上一页")
-    if name == "browser.go_forward":
-        return _Css(None, f"{verb}到下一页")
-    if name == "browser.switch_tab":
-        return _Css(None, verb)
-    if name == "browser.select_dropdown":
-        chosen = None
-        if isinstance(effect, SelectionEffect) and not isinstance(effect.selected, str):
-            chosen = effect.selected.text
-        chosen = chosen or params.get("text")
-        option = _number(params.get("option_index"))
-        if isinstance(chosen, str) and chosen:
-            line = f"{verb}“{_clip(chosen, NAME_CHARS)}”"
-        elif option is not None:
-            line = f"{verb}第 {option + 1} 项"
-        else:
-            line = verb
-        return _Css(None, line, pointer_after=None)
-    if name in ("browser.extract_content", "browser.screenshot"):
-        return _Css(None, verb)
-    shown = json.dumps(params, ensure_ascii=False) if params else ""
-    return _Css(None, f"{name} {shown}".strip())
-
-
-def _xy(point: tuple[int, int] | None) -> str:
-    return f"({point[0]}, {point[1]})" if point is not None else "(?)"
+    pointer: Point | None,
+    element: ElementDescription | None = None,
+) -> ActionPresentation:
+    """How *action* reads and where it pointed, as its class says; else its name and params."""
+    action_class = presenter(action.name)
+    if action_class is None:
+        return unworded(action)
+    return action_class.present(action, result, element=element, pointer=pointer)
 
 
 def action_verb(name: str) -> str:
     """The verb a person reads for the action recorded as *name* (``点击``); else *name* itself."""
-    return ACTION_VERBS.get(name, name)
+    action_class = presenter(name)
+    return action_class.person_verb if action_class is not None else name
 
 
 def action_verbs(names: Iterable[str]) -> dict[str, str]:
@@ -932,14 +399,14 @@ def action_verbs(names: Iterable[str]) -> dict[str, str]:
 
 
 def action_text(
-    action: Action, result: ActionResult | None, element: AddressedElement | None = None
+    action: Action, result: ActionResult | None, element: ElementDescription | None = None
 ) -> str:
     """One Chinese line for a recorded action, with ``（没有成功）`` when it failed.
 
     *element* is the element the action named, as its step recorded it
     (:func:`addressed_elements`); without it an element is named by its index.
     """
-    line = _css(action, result, None, element).text
+    line = _present(action, result, None, element).text
     return line + ("（没有成功）" if result is not None and not result.success else "")
 
 
@@ -955,7 +422,7 @@ def _not_executed(record: StepRecord, index: int) -> str | None:
 
 
 def action_lines(
-    record: StepRecord, elements: Sequence[AddressedElement | None] | None = None
+    record: StepRecord, elements: Sequence[ElementDescription | None] | None = None
 ) -> str:
     """A step's actions, one numbered Chinese line each (``1. 点击 (223, 234) → 按钮“最多播放”``).
 
@@ -990,7 +457,7 @@ def step_marks(
     *,
     pointer: tuple[int, int] | None = None,
     only: frozenset[int] | None = None,
-    elements: Sequence[AddressedElement | None] | None = None,
+    elements: Sequence[ElementDescription | None] | None = None,
 ) -> list[ActionMark]:
     """The marks of *record*'s actions on an image of *geometry*.
 
@@ -1002,7 +469,7 @@ def step_marks(
     for index, action in enumerate(record.actions):
         result = record.action_results[index] if index < len(record.action_results) else None
         element = elements[index] if elements is not None and index < len(elements) else None
-        css = _css(action, result, pointer, element)
+        css = _present(action, result, pointer, element)
         failed = result is not None and not result.success
         not_executed = _not_executed(record, index)
         if not_executed is not None:
@@ -1018,7 +485,7 @@ def step_marks(
                     )
                 )
             continue
-        if css.pointer_after is not ...:
+        if css.pointer_after is not UNMOVED:
             # A pointer action that failed before measuring anything may not
             # have moved the pointer at all.
             pointer = None if failed and not css.measured else css.pointer_after
@@ -1094,14 +561,14 @@ def observation_marks(trace: RunTrace, run: str, step: int) -> ImageMarks:
 def observation_pointer(trace: RunTrace, step: int) -> ImagePointer:
     """The pointer of the observation itself; action results never supply it."""
     geometry = observation_geometry(trace, step)
-    base: dict[str, Any] = {"width": geometry.width, "height": geometry.height}
     try:
         state = _field(trace, step, _CAPTURE_STATE)
         pointer = getattr(state, "pointer", None)
         if pointer is not None:
             if pointer.status != "known":
                 return ImagePointer(
-                    **base,
+                    width=geometry.width,
+                    height=geometry.height,
                     status=pointer.status,
                     source="capture_state",
                     problem="这个环境没有鼠标"
@@ -1115,13 +582,18 @@ def observation_pointer(trace: RunTrace, step: int) -> ImagePointer:
             position = getattr(getattr(shot, "cursor", None), "position", None)
             source = "screenshot_cursor"
     except (TraceSchemaError, KeyError, ValueError) as exc:
-        return ImagePointer(**base, problem=f"观察时鼠标位置读不出来：{exc}")
+        return ImagePointer(
+            width=geometry.width, height=geometry.height, problem=f"观察时鼠标位置读不出来：{exc}"
+        )
     if position is None:
-        return ImagePointer(**base, problem="这次观察没有记录鼠标位置")
+        return ImagePointer(
+            width=geometry.width, height=geometry.height, problem="这次观察没有记录鼠标位置"
+        )
     viewport = (int(position[0]), int(position[1]))
     point = _place(viewport, geometry.grid)
     return ImagePointer(
-        **base,
+        width=geometry.width,
+        height=geometry.height,
         status="known",
         x=point[0] if point is not None else None,
         y=point[1] if point is not None else None,
@@ -1132,7 +604,7 @@ def observation_pointer(trace: RunTrace, step: int) -> ImagePointer:
     )
 
 
-def before_action_marks(trace: RunTrace, run: str, step: int, frame: FrameRecord) -> ImageMarks:
+def before_action_marks(trace: RunTrace, run: str, step: int, frame: ArchivedFrame) -> ImageMarks:
     """Marks for a frame already associated with *step*'s actual action call.
 
     The step is its execution owner, not the later archive collection batch.
@@ -1140,8 +612,8 @@ def before_action_marks(trace: RunTrace, run: str, step: int, frame: FrameRecord
     geometry = frame_geometry(trace, step, frame)
     record = trace.step(step) if trace.config.recording.trajectory else None
     index = (
-        executed_action(record, frame.action_index, frame.action)
-        if record is not None and frame.action_index is not None
+        executed_action(record, frame.action_call, frame.action)
+        if record is not None and frame.action_call is not None
         else None
     )
     request = MarkRequest(
@@ -1164,25 +636,25 @@ def default_requests(
 ) -> tuple[Geometry, list[MarkRequest]]:
     """An image's geometry and whose actions it shows when its queue names none.
 
-    An observation shows its step's actions; a ``browser.frames`` before-action
-    frame the action it was taken before; any other image none.
+    An observation shows its step's actions; a frame kept before an action
+    (its archiver's, ``KeepsActionFrames``) the action it was taken before;
+    any other image none.
     """
     if archiver is None:
         assert step is not None, "an observation image names its step"
         return observation_geometry(trace, step), [observation_request(run, step)]
-    if archiver != FRAMES_ARCHIVER_ID or name is None:
+    keeper = frame_keeper(archiver)
+    if keeper is None or name is None:
         return Geometry(
             None, None, None, "这张图不是截图或画面帧，不知道它的视口，动作只列出、不画出"
         ), []
-    record = frame_record(trace, step, name)
-    geometry = frame_geometry(trace, step, record)
-    if record is None or step is None or record.kind != "before_action":
-        return geometry, []
-    if record.action_index is None:
+    frame = keeper.archived_frame(trace, step, name)
+    geometry = frame_geometry(trace, step, frame)
+    if frame is None or step is None or frame.action_call is None:
         return geometry, []
     step_record = trace.step(step) if trace.config.recording.trajectory else None
     index = (
-        executed_action(step_record, record.action_index, record.action)
+        executed_action(step_record, frame.action_call, frame.action)
         if step_record is not None
         else None
     )
@@ -1195,14 +667,12 @@ def default_requests(
 def image_geometry(
     trace: RunTrace, step: int | None, archiver: str | None, name: str | None
 ) -> Geometry:
-    """The geometry of an observation (``archiver`` ``None``) or of a ``browser.frames`` image."""
+    """The geometry of an observation (``archiver`` ``None``) or of a kept frame."""
     return default_requests(trace, "", step, archiver, name)[0]
 
 
 __all__ = [
-    "ACTION_VERBS",
     "ActionMark",
-    "AddressedElement",
     "Geometry",
     "ImageMarks",
     "ImagePointer",
@@ -1215,15 +685,16 @@ __all__ = [
     "addressed_elements",
     "before_action_marks",
     "default_requests",
-    "element_text",
     "executed_action",
     "frame_geometry",
-    "frame_record",
+    "frame_keeper",
+    "frame_keepers",
     "image_geometry",
     "mark_set",
     "marks_on",
     "observation_geometry",
     "observation_marks",
     "observation_pointer",
+    "presenter",
     "step_marks",
 ]

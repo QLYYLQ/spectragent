@@ -24,11 +24,11 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
 from spectragent.inspection.graph import run_graph
 from spectragent.inspection.marks import (
-    ACTION_VERBS,
     action_lines,
     action_text,
     addressed_elements,
     observation_marks,
+    presenter,
 )
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.step_record import StepRecord
@@ -141,7 +141,7 @@ def run(tmp_path: Path) -> RunTrace:
 
 
 def test_every_android_action_has_a_verb() -> None:
-    assert {action.__registry_key__ for action in ACTIONS} <= set(ACTION_VERBS)
+    assert all(presenter(action.__registry_key__) for action in ACTIONS)
 
 
 def test_android_lines_name_the_element_the_step_recorded(run: RunTrace) -> None:

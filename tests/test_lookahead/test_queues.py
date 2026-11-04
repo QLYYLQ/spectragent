@@ -52,7 +52,7 @@ def _image(repository, source: ImageSource) -> bytes:
     """What the viewer serves for an item image (the annotation router's own two reads)."""
     if isinstance(source, ArchiveImage):
         return repository.archive_image(source.run, source.step, source.archiver, source.name)
-    data = repository.screenshot(source.run, source.step, view="browser")
+    data = repository.screenshot(source.run, source.step, view="raw")
     assert data is not None, f"{source.run} step {source.step} has no screenshot"
     return data
 

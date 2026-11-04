@@ -769,7 +769,7 @@ function ImageViewSwitch({ view, setView }) {
     <div className="tabs compact image-switch" aria-label="截图视图">
       {[
         ["agent", "智能体观测"],
-        ["browser", "原始画面 · 不加标记"],
+        ["raw", "原始画面 · 不加标记"],
       ].map(([key, label]) => (
         <button
           key={key}

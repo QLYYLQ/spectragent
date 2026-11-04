@@ -170,7 +170,7 @@ def create_app(
 
     @app.get("/api/screenshot")
     def screenshot(
-        key: str, index: Annotated[int, Query(ge=0)], view: Literal["browser", "agent"] = "browser"
+        key: str, index: Annotated[int, Query(ge=0)], view: Literal["raw", "agent"] = "raw"
     ) -> Response:
         data = repository.screenshot(_key(key), index, view=view)
         if data is None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, model_validator
 from pydantic import Field as PydanticField
@@ -19,6 +19,7 @@ from spectragent.core.capabilities.browser.actions._common import (
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.effects import ScrollEffect
+from spectragent.core.capabilities.browser.presentation import BrowserWords
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import ScrollEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
@@ -33,7 +34,7 @@ _START_HINT = "the pointer moves there, then the wheel turns; never with index"
 
 
 @dataclass
-class ScrollAction(SettleableAction, ActionBase):
+class ScrollAction(BrowserWords, SettleableAction, ActionBase):
     """Scroll with the wheel where the pointer is, inside the element ``index`` names, or at a start point.
 
     With a start point the pointer moves there first, then the wheel turns
@@ -43,6 +44,7 @@ class ScrollAction(SettleableAction, ActionBase):
     whether it reached its edge — measured by the executor around the wheel.
     """
 
+    person_verb: ClassVar[str] = "滚动"
     __registry_key__ = "browser.scroll"
     Effect = ScrollEffect
 

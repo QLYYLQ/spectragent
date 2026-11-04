@@ -13,14 +13,21 @@ every action — its ``Params`` declared, its descriptor rendered by
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Any
+from typing import Annotated, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase, ActionRegistrar
 from spectragent.core.actions.params import TaskClaim
-from spectragent.schemas.action import ActionDescriptor, ActionResult
+from spectragent.core.presentation import (
+    ANSWER_CHARS,
+    ActionPresentation,
+    ElementDescription,
+    Point,
+    clip,
+)
+from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 
 
 class LoopActionBase(ActionBase):
@@ -50,6 +57,8 @@ class DoneAction(LoopActionBase):
     """
 
     __registry_key__ = "loop.done"
+    #: How a person reads it (``core/presentation.py``).
+    person_verb: ClassVar[str] = "完成"
 
     class Params(BaseModel):
         model_config = ConfigDict(extra="forbid")
@@ -72,6 +81,22 @@ class DoneAction(LoopActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return self.describe("Signal that the task is complete.", **context)
+
+    @classmethod
+    def present(
+        cls,
+        action: Action,
+        result: ActionResult | None,
+        *,
+        element: ElementDescription | None,
+        pointer: Point | None,
+    ) -> ActionPresentation:
+        """``完成并回答：…``, or ``结束（报告没有完成任务）`` when the agent claimed failure."""
+        answer = action.params.get("extracted_content")
+        head = "结束（报告没有完成任务）" if action.params.get("success") is False else "完成并回答"
+        if isinstance(answer, str) and answer.strip():
+            return ActionPresentation(None, f"{head}：{clip(answer, ANSWER_CHARS)}")
+        return ActionPresentation(None, head)
 
     async def execute(self, params: dict[str, Any]) -> ActionResult:
         return ActionResult(

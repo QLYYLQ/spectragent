@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
@@ -18,6 +18,7 @@ from spectragent.core.capabilities.browser.actions._common import (
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.effects import SelectionEffect
+from spectragent.core.capabilities.browser.presentation import BrowserWords
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import (
     SelectDropdownEvent,
@@ -29,13 +30,14 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class SelectDropdownAction(SettleableAction, ActionBase):
+class SelectDropdownAction(BrowserWords, SettleableAction, ActionBase):
     """Pick an option from a dropdown by value / visible text / sub-index.
 
     Reports a :class:`SelectionEffect`: the option selected after the action
     (its text withheld for a sensitive control) and whether it changed.
     """
 
+    person_verb: ClassVar[str] = "在下拉框中选择"
     __registry_key__ = "browser.select_dropdown"
     Effect = SelectionEffect
 

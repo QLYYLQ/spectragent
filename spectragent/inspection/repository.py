@@ -15,10 +15,12 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel
 
-from spectragent.core.capabilities.browser.archive.frames import (
-    FrameRecord,
-    before_action_frames,
-    read_frame_image,
+from spectragent.core.archive._registrar import ArchiverRegistrar
+from spectragent.core.presentation import (
+    ArchivedFrame,
+    KeepsActionFrames,
+    LogsReplayDecisions,
+    discover_capabilities,
 )
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.models import TraceConfig
@@ -41,6 +43,7 @@ from spectragent.inspection.marks import (
     addressed_elements,
     before_action_marks,
     default_requests,
+    frame_keepers,
     marks_on,
     observation_marks,
     observation_pointer,
@@ -79,7 +82,7 @@ class RunRepository(Protocol):
     def step_frame_image(self, key: str, index: int, frame_id: str) -> bytes: ...
     def step(self, key: str, index: int, *, include_messages: bool = True) -> dict[str, Any]: ...
     def screenshot(
-        self, key: str, index: int, *, view: Literal["browser", "agent"] = "browser"
+        self, key: str, index: int, *, view: Literal["raw", "agent"] = "raw"
     ) -> bytes | None: ...
     def has_step(self, key: str, index: int) -> bool: ...
     def archive_image(self, key: str, step: int | None, archiver: str, name: str) -> bytes: ...
@@ -137,22 +140,18 @@ def _has_screenshot(entry: Any) -> bool:
     )
 
 
-def _frame_identity(at: int | None, cycle: int, index: int | None) -> str:
-    return f"{at if at is not None else 'trailing'}:{cycle}:{index}"
-
-
-def _action_frames(trace: RunTrace, index: int) -> list[tuple[int | None, FrameRecord]]:
+def _action_frames(trace: RunTrace, index: int) -> list[tuple[KeepsActionFrames, ArchivedFrame]]:
+    """The screens kept before *index*'s actual action calls, each with the archiver that kept it."""
     record = trace.step(index)
     if record is None:
         raise FileNotFoundError(f"Run {trace.run_id} has no committed step {index}")
     spans = record.action_spans
-    return before_action_frames(
-        trace,
-        index,
-        action_times=[(span.started_at, span.ended_at) for span in spans]
-        if spans is not None
-        else None,
-    )
+    times = [(span.started_at, span.ended_at) for span in spans] if spans is not None else None
+    return [
+        (keeper, frame)
+        for keeper in frame_keepers()
+        for frame in keeper.action_frames(trace, index, action_times=times)
+    ]
 
 
 def _verdicts_of(trace: RunTrace) -> tuple[dict[str, Verdict], str | None]:
@@ -206,7 +205,7 @@ def _network_source(config: TraceConfig) -> str | None:
     sources = {
         block["network_source"].get("source_id")
         for block in _mappings(config.resolved)
-        if block.get("capability_id") == "browser" and isinstance(block.get("network_source"), dict)
+        if block.get("capability_id") and isinstance(block.get("network_source"), dict)
     }
     sources &= {"live", "archive"}
     if len(sources) == 1:
@@ -244,20 +243,30 @@ def _strategy(config: TraceConfig) -> dict[str, Any]:
 
 
 def _replay_log(trace: RunTrace) -> dict[str, Any]:
-    from spectragent.core.capabilities.browser.replay.replay_log import iter_decisions
+    """A replay's serving decisions, from the archivers that log them (``LogsReplayDecisions``).
 
-    enabled = bool(
-        trace.config.negotiation
-        and "browser.replay_log" in trace.config.negotiation.active_archivers
-    )
+    Unbound, logged nothing and unreadable are three different answers.
+    """
+    discover_capabilities()
+    active = trace.config.negotiation.active_archivers if trace.config.negotiation else []
+    loggers = [
+        (key, found)
+        for key, found in ArchiverRegistrar.get_all().items()
+        if isinstance(found, LogsReplayDecisions)
+    ]
+    enabled = any(key in active for key, _ in loggers)
     entries: list[dict[str, Any]] = []
-    counts = dict.fromkeys(("hit", "miss", "exhausted", "substituted", "synthetic"), 0)
+    counts = {kind: 0 for _, logger in loggers for kind in logger.decision_kinds}
     try:
-        for step, entry, weight in iter_decisions(trace):
-            if entry.kind not in counts:
-                raise ValueError("A folded replay log entry does not identify its decision kind")
-            entries.append({"step": step, **entry.model_dump(mode="json"), "weight": weight})
-            counts[entry.kind] += weight
+        for _, logger in loggers:
+            for step, entry, weight in logger.replay_decisions(trace):
+                kind = entry.get("kind")
+                if not isinstance(kind, str) or kind not in logger.decision_kinds:
+                    raise ValueError(
+                        "A folded replay log entry does not identify its decision kind"
+                    )
+                entries.append({"step": step, **entry, "weight": weight})
+                counts[kind] += weight
     except (TraceSchemaError, ValueError, KeyError) as exc:
         return {
             "recorded": enabled or bool(entries),
@@ -744,13 +753,13 @@ class _FileRepository:
         try:
             return [
                 {
-                    "id": _frame_identity(at, frame.cycle, frame.action_index),
-                    "action_index": frame.action_index,
+                    "id": frame.id,
+                    "action_index": frame.action_call,
                     "action": frame.action,
                     "kind": frame.kind,
                     "outcome": frame.outcome,
                     "detail": frame.detail,
-                    "has_image": frame.outcome == "captured" and frame.name is not None,
+                    "has_image": frame.has_image,
                     "marks": _json(before_action_marks(trace, key, index, frame)),
                     "pointer": _json(
                         ImagePointer(
@@ -760,7 +769,7 @@ class _FileRepository:
                         )
                     ),
                 }
-                for at, frame in _action_frames(trace, index)
+                for _, frame in _action_frames(trace, index)
             ]
         except (TraceSchemaError, KeyError, ValueError) as exc:
             raise RepositoryError(str(exc)) from exc
@@ -772,16 +781,16 @@ class _FileRepository:
         trace = self._trace(key)
         try:
             matches = [
-                (at, frame)
-                for at, frame in _action_frames(trace, index)
-                if _frame_identity(at, frame.cycle, frame.action_index) == frame_id
+                (keeper, frame)
+                for keeper, frame in _action_frames(trace, index)
+                if frame.id == frame_id
             ]
             if len(matches) != 1:
                 raise FileNotFoundError(f"第 {index} 步没有唯一匹配的动作前截图")
-            at, frame = matches[0]
+            keeper, frame = matches[0]
             if frame.outcome != "captured":
                 raise FileNotFoundError(f"这张动作前截图未采集成功：{frame.outcome}")
-            return read_frame_image(trace, at, frame)
+            return keeper.frame_image(trace, frame)
         except (TraceSchemaError, KeyError, ValueError) as exc:
             raise RepositoryError(str(exc)) from exc
 
@@ -831,11 +840,11 @@ class _FileRepository:
             raise RepositoryError(str(exc)) from exc
 
     def screenshot(
-        self, key: str, index: int, *, view: Literal["browser", "agent"] = "browser"
+        self, key: str, index: int, *, view: Literal["raw", "agent"] = "raw"
     ) -> bytes | None:
         try:
             trace = self._trace(key)
-            if view == "browser":
+            if view == "raw":
                 return trace.screenshot(index)
             if view != "agent":
                 raise RepositoryError(f"Unknown screenshot view: {view}")

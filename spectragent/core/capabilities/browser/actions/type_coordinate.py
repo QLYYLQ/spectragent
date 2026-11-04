@@ -31,7 +31,7 @@ agent declares no grid is not offered it
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, Self
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, model_validator
 from pydantic import Field as PydanticField
@@ -45,6 +45,7 @@ from spectragent.core.capabilities.browser.actions._common import (
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.effects import TextInputEffect
+from spectragent.core.capabilities.browser.presentation import BrowserWords
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import (
     TypeAtCoordinateEvent,
@@ -56,7 +57,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class TypeCoordinateAction(SettleableAction, ActionBase):
+class TypeCoordinateAction(BrowserWords, SettleableAction, ActionBase):
     """Type text into a text field, clicking a point of the viewport first when given one.
 
     The point is in **CSS pixels of the page viewport**, the same space as
@@ -65,6 +66,7 @@ class TypeCoordinateAction(SettleableAction, ActionBase):
     converts before emitting this action.
     """
 
+    person_verb: ClassVar[str] = "输入"
     __registry_key__ = "browser.type_coordinate"
 
     #: The control the text went into, whether its value changed (never the

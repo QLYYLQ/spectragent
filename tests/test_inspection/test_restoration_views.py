@@ -60,7 +60,7 @@ def test_image_view_matches_model_and_preserves_capture(tmp_path, cursor):
     wal.init_run(TraceConfig())
     wal.commit_step(0, StepRecord(step=0), fragments=[encode_shot(fragment)])
     client = TestClient(create_app(tmp_path), base_url="http://127.0.0.1:8765")
-    raw = client.get("/api/screenshot", params={"key": "run", "index": 0, "view": "browser"})
+    raw = client.get("/api/screenshot", params={"key": "run", "index": 0, "view": "raw"})
     model = client.get("/api/screenshot", params={"key": "run", "index": 0, "view": "agent"})
     assert raw.status_code == model.status_code == 200
     assert raw.content == fragment.image_bytes == RunTrace(wal.run_dir).screenshot(0)

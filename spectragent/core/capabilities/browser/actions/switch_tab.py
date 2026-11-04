@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
@@ -13,6 +13,7 @@ from spectragent.core.capabilities.browser.actions._browser_commands import swit
 from spectragent.core.capabilities.browser.actions._common import effect_from
 from spectragent.core.capabilities.browser.effect_probes import ProbeBudget
 from spectragent.core.capabilities.browser.effects import TabSwitchEffect
+from spectragent.core.capabilities.browser.presentation import BrowserWords
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
 if TYPE_CHECKING:
@@ -20,7 +21,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class SwitchTabAction(ActionBase):
+class SwitchTabAction(BrowserWords, ActionBase):
     """Switch the active tab by target_id (``None`` = most recent).
 
     Delegates to :meth:`BrowserCapability.switch_tab` (through
@@ -40,6 +41,7 @@ class SwitchTabAction(ActionBase):
     leaves its fact unknown and never changes the outcome.
     """
 
+    person_verb: ClassVar[str] = "切换标签页"
     __registry_key__ = "browser.switch_tab"
     Effect = TabSwitchEffect
 
