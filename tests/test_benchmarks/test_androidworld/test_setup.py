@@ -1232,6 +1232,88 @@ async def test_stop_is_safe_before_a_start_and_twice(root: Path, tmp_path: Path)
     assert [path for _, path, _ in _calls(root)].count("/task/tear_down") == 1
 
 
+# ── one device for several tasks (§4.10.1 "环境跨任务复用") ─────────
+
+
+def test_it_declares_that_it_resets_the_device_between_tasks() -> None:
+    assert AndroidWorldSetup().resets_between_tasks
+
+
+async def test_a_kept_service_serves_the_next_task_after_androidworlds_reset(
+    root: Path, tmp_path: Path
+) -> None:
+    """One service for two tasks, as AndroidWorld's own runner keeps one environment: the next
+    task's component takes it instead of starting one, which would take every app's snapshot
+    again from the first task's leftovers."""
+    goals: list[JsonValue] = [{"goal": "Turn brightness to the max value."}, {"goal": _ASKS_GOAL}]
+    write_behaviour(root, {"/task/goal": {"json_in_turn": goals}})
+    first = _setup(root)
+    await first.start(_device(tmp_path), _task())
+    kept = await first.stop(keep=True)
+    started = service(root)
+    assert kept is not None and not gone(started["pid"]), "still running for the next task"
+
+    second = _setup(root)
+    await second.start(_device(tmp_path), _asking_task(), kept=kept)
+    await second.stop()
+
+    assert service(root) == started, "no second service was started"
+    brightness = {"task_type": "SystemBrightnessMax", "task_idx": "0"}
+    asks = {"task_type": _ASKS, "task_idx": "0"}
+    assert [call for call in _calls(root) if call[1] != "/health"] == [
+        ("GET", "/suite/reinitialize", {"task_family": "android", "n_task_combinations": "1", "seed": "42"}),
+        ("GET", "/task/goal", brightness),
+        ("POST", "/task/initialize", brightness),
+        ("POST", "/reset", {"go_home": "true"}),
+        ("POST", "/task/tear_down", brightness),
+        ("GET", "/suite/reinitialize", {"task_family": "information_retrieval", "n_task_combinations": "1", "seed": "42"}),
+        ("GET", "/task/goal", asks),
+        ("POST", "/task/initialize", asks),
+        ("POST", "/reset", {"go_home": "true"}),
+        ("POST", "/task/tear_down", asks),
+    ]  # fmt: skip
+    assert await _service_is_gone(root)
+
+
+async def test_a_failed_reset_stops_the_service_and_is_raised(root: Path, tmp_path: Path) -> None:
+    write_behaviour(root, {"/task/tear_down": {"status": 500}})
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _task())
+
+    with pytest.raises(AndroidWorldError, match="/task/tear_down answered HTTP 500"):
+        await setup.stop(keep=True)
+
+    assert await _service_is_gone(root)
+    assert await setup.stop() is None, "nothing left to stop"
+
+
+async def test_a_service_with_no_task_initialized_is_never_kept(root: Path, tmp_path: Path) -> None:
+    write_behaviour(root, {"/task/initialize": {"status": 500}})
+    setup = _setup(root)
+    with pytest.raises(AndroidWorldError, match="/task/initialize answered HTTP 500"):
+        await setup.start(_device(tmp_path), _task())
+
+    with pytest.raises(AndroidWorldError, match="no AndroidWorld task was initialized"):
+        await setup.stop(keep=True)
+
+    assert await _service_is_gone(root)
+
+
+async def test_a_kept_service_is_the_components_even_when_its_task_is_refused(
+    root: Path, tmp_path: Path
+) -> None:
+    first = _setup(root)
+    await first.start(_device(tmp_path), _task())
+    kept = await first.stop(keep=True)
+
+    second = _setup(root)
+    with pytest.raises(AndroidWorldSetupError, match="is not an AndroidWorld task"):
+        await second.start(_device(tmp_path), {"not": "a task"}, kept=kept)
+    await second.stop()
+
+    assert await _service_is_gone(root)
+
+
 async def test_a_score_before_any_task_is_an_ordinary_error(root: Path) -> None:
     with pytest.raises(AndroidWorldError, match="no AndroidWorld task was initialized"):
         await _judged(_setup(root), None)
