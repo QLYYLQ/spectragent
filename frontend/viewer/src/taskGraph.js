@@ -6,26 +6,14 @@
  * turns that placement and each run's committed steps into rows.
  */
 
+import { reasonLabel } from "./evidence.js";
+
 /** Branch rows an opened fork point lists at a time. */
 export const MEMBERS_PER_PAGE = 20;
 /** Lane colours cycle through this many CSS variables (--lane-0 …). */
 export const LANE_COLORS = 6;
 
 const DONE = { done: "已完成", max_steps: "步数用完", error: "出错", timeout: "超时", cancelled: "已取消", no_result: "没有结果" };
-const REASONS = {
-  foreground_mismatch: "前台应用不一致",
-  clock_difference: "设备时钟不一致",
-  ui_tree_mismatch: "界面树不一致",
-  keyboard_focus_mismatch: "键盘或焦点不一致",
-  screenshot_distance: "截图差异超限",
-  document_miss: "页面没有回放命中",
-  url_mismatch: "网址不一致",
-  signature_mismatch: "页面结构不一致",
-  media_mismatch: "媒体状态不一致",
-  retarget_not_found: "找不到原动作的目标",
-  retarget_ambiguous: "原动作的目标不唯一",
-  action_failed: "动作结果不同",
-};
 const STATUS = {
   succeeded: ["ok", "✓ 成功"],
   failed: ["bad", "✗ 失败"],
@@ -34,7 +22,6 @@ const STATUS = {
 };
 
 export const endLabel = (value) => DONE[value] || value || "没有结果";
-export const reasonLabel = (value) => REASONS[value] || String(value).replaceAll("_", " ");
 export const callText = (calls) => (calls == null ? "未统计调用" : `${calls} 次调用`);
 
 /** The task list: rows grouped by the task key the read side gave each run, in list order. */

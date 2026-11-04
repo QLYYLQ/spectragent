@@ -15,6 +15,8 @@ import {
   gapLabel,
   modelCallTitle,
   decisionAnswerRows,
+  notShownCapabilities,
+  reasonLabel,
 } from "./evidence.js";
 import {
   number,
@@ -817,8 +819,9 @@ function ObservationImage({ runKey, step, fragments }) {
   );
 }
 
-function GapSummary({ gap, everywhere = [] }) {
+function GapSummary({ gap, everywhere = [], reasons = [] }) {
   if (!gap) return null;
+  const hidden = notShownCapabilities(gap);
   return (
     <div className={`gap-summary ${gap.differences.length ? "has-gap" : ""}`}>
       <div className="section-heading">
@@ -827,12 +830,20 @@ function GapSummary({ gap, everywhere = [] }) {
           校验 <Badge value={gap.verdict} />
         </span>
       </div>
+      {reasons.length > 0 && (
+        <p className="small">没有通过的检查：{reasons.map(reasonLabel).join("、")}</p>
+      )}
       {gap.differences.length > 0 && (
         <ul>
           {gap.differences.map((item) => (
             <li key={item}>{item}</li>
           ))}
         </ul>
+      )}
+      {hidden.length > 0 && (
+        <p className="muted small">
+          {hidden.join("、")} 的恢复证据由它自己的检查判定，这一视图不读它的测量，不说有没有测得差异；它的原始测量在下面的“恢复检查”记录里。
+        </p>
       )}
       {gap.unmeasured.length > 0 && (
         <details>
@@ -885,7 +896,7 @@ function RestorationComparison({ step, runKey, index, everywhere }) {
           ? "这一恢复步没有做新的策略决策。"
           : "在检查点上，新策略总是使用实际恢复出的观测。"}
       </p>
-      <GapSummary gap={step.gap} everywhere={everywhere} />
+      <GapSummary gap={step.gap} everywhere={everywhere} reasons={check?.reasons || []} />
       <div className="image-tools">
         <ImageViewSwitch view={view} setView={setView} />
         <MarkToggle show={showMarks} onChange={setShowMarks} keycap={false} />
