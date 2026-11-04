@@ -42,7 +42,7 @@ from collections import Counter
 from collections.abc import Mapping
 from typing import Any, Final
 
-from PIL import ImageDraw
+from PIL import Image, ImageDraw
 
 from spectragent.core.actions.params import element_params
 from spectragent.core.capabilities.android.device.forest import (
@@ -323,7 +323,7 @@ def _tree_comparison(
     return lost.total(), gained.total(), named
 
 
-def _paint_out(image: Any, box: Box | None) -> Any:
+def _paint_out(image: Image.Image, box: Box | None) -> Image.Image:
     if box is None:
         return image
     left, top, right, bottom = box
