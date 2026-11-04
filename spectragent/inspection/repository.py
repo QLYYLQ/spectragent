@@ -44,6 +44,7 @@ from spectragent.inspection.restoration import (
     unmeasured_everywhere,
 )
 from spectragent.schemas.observation.image import image_media_type, read_model_image
+from spectragent.schemas.task import REPLAY_ARCHIVE_KEY
 from spectragent.schemas.verdict import Verdict
 
 _IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
@@ -178,11 +179,13 @@ def _mappings(value: Any) -> Iterator[dict[str, Any]]:
 
 
 def _replay_archive(config: TraceConfig) -> str | None:
+    """The recorded run this one replayed: its setup context's ``replay_archive``.
+
+    The framework's own key (``schemas/task.py``), whichever capability read
+    it; the same rule by which the branch loader refuses a replay run.
+    """
     context = config.task_setup.context if config.task_setup else {}
-    value = context.get("replay_archive")
-    if not isinstance(value, str):
-        browser = context.get("browser", {})
-        value = browser.get("replay_archive") if isinstance(browser, dict) else None
+    value = context.get(REPLAY_ARCHIVE_KEY)
     return value if isinstance(value, str) else None
 
 
@@ -200,10 +203,16 @@ def _network_source(config: TraceConfig) -> str | None:
 
 
 def _execution_kind(config: TraceConfig) -> str:
-    network = _network_source(config)
+    """Live, a replay, a branch, or a branch that replays: recorded facts only.
+
+    Read from the task's recorded ``replay_archive`` and the run's branch
+    provenance, so it needs no capability's knowledge: a run that read no
+    recorded run is live, whatever its environment.
+    """
+    replays = _replay_archive(config) is not None
     if config.branch is not None:
-        return "branch_replay" if network == "archive" else "branch"
-    return "replay" if network == "archive" else "live" if network == "live" else "unknown"
+        return "branch_replay" if replays else "branch"
+    return "replay" if replays else "live"
 
 
 def _strategy(config: TraceConfig) -> dict[str, Any]:

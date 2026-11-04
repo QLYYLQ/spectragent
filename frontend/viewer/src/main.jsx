@@ -341,7 +341,7 @@ function RunList({ revision, selected, setSelected, workspace }) {
             onChange={(event) => setExecution(event.target.value)}
           >
             <option value="">全部运行方式</option>
-            {["live", "replay", "branch", "branch_replay", "unknown"].map(
+            {["live", "replay", "branch", "branch_replay"].map(
               (value) => (
                 <option key={value} value={value}>
                   {statusLabel(value)}
