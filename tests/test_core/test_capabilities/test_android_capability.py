@@ -64,6 +64,7 @@ from spectragent.core.capabilities.android.observations import (
     AndroidPlatformObs,
     AndroidScreenshotObs,
     AndroidUITreeObs,
+    DeviceAtCapture,
 )
 from spectragent.core.capabilities.android.session import CaptureError
 from spectragent.core.capabilities.android.settle import ScreenPoll
@@ -150,10 +151,12 @@ async def test_one_capture_builds_every_fragment_from_one_read_of_each_source() 
         }
 
         assert sorted(_services(adb)[before:]) == [
+            "date +%s%3N",
             "dumpsys window",
             "settings get secure default_input_method",
         ]
         assert phone.helper_calls("screenshot") == shots + 1
+        clock = phone.now_ms
 
     screenshot = fragments[SCREENSHOT]
     assert isinstance(screenshot, AndroidScreenshotObs) and isinstance(
@@ -167,12 +170,23 @@ async def test_one_capture_builds_every_fragment_from_one_read_of_each_source() 
         17,
         85,
     )
-    assert fragments[FOREGROUND_APP] == AndroidForegroundAppObs(
-        package="com.android.settings",
-        activity="com.android.settings.Settings",
-        window="com.android.settings/com.android.settings.Settings",
-        captured_at=fragments[FOREGROUND_APP].captured_at,
+    front = fragments[FOREGROUND_APP]
+    assert isinstance(front, AndroidForegroundAppObs)
+    assert (front.package, front.activity, front.window) == (
+        "com.android.settings",
+        "com.android.settings.Settings",
+        "com.android.settings/com.android.settings.Settings",
     )
+    # The device record rides on every fragment of the capture: the clock read
+    # beside the sources, the app from the foreground fragment's own reading.
+    assert isinstance(screenshot.device, DeviceAtCapture)
+    assert screenshot.device == front.device
+    assert (screenshot.device.package, screenshot.device.activity, screenshot.device.window) == (
+        front.package,
+        front.activity,
+        front.window,
+    )
+    assert phone.clock_ms <= screenshot.device.clock_ms <= clock
     platform = fragments[PLATFORM]
     assert isinstance(platform, AndroidPlatformObs)
     assert (
@@ -294,18 +308,38 @@ def test_the_platform_names_a_closed_set_of_operating_systems() -> None:
     assert typing.get_args(annotation) == ("android",)
 
 
-async def test_a_capture_reads_only_what_the_run_negotiated() -> None:
-    phone = ScriptedPhone()
+async def test_a_capture_reads_only_what_the_run_negotiated_and_the_device_record() -> None:
+    """Besides the negotiated sources, only the clock and the app in front, which the recording keeps."""
+    phone = ScriptedPhone(focused="com.android.settings/.Settings")
     async with (
         phone_server(phone) as adb,
         android_capability(adb, fragments={SCREENSHOT}) as capability,
     ):
         before, shots = len(adb.requests), phone.helper_calls("screenshot")
         await capability.begin_observation(1)
-        await capability.resolve_fragment(SCREENSHOT)
+        screenshot = await capability.resolve_fragment(SCREENSHOT)
 
-        assert _services(adb)[before:] == []
+        assert sorted(_services(adb)[before:]) == ["date +%s%3N", "dumpsys window"]
         assert phone.helper_calls("screenshot") == shots + 1
+    assert isinstance(screenshot, AndroidScreenshotObs) and screenshot.device is not None
+    assert (screenshot.device.package, screenshot.device.activity) == (
+        "com.android.settings",
+        "com.android.settings.Settings",
+    )
+
+
+async def test_a_device_record_that_cannot_be_read_costs_the_capture_nothing() -> None:
+    phone = ScriptedPhone(clock_fails=True)
+    async with (
+        phone_server(phone) as adb,
+        android_capability(adb, fragments={SCREENSHOT}) as capability,
+    ):
+        await capability.begin_observation(1)
+        screenshot = await capability.resolve_fragment(SCREENSHOT)
+
+    assert isinstance(screenshot, AndroidScreenshotObs) and screenshot.image_bytes
+    assert screenshot.device is None
+    assert "device" in screenshot.trace_json_exclude(), "no record is written, not an empty one"
 
 
 async def test_the_service_takes_the_screenshots_where_the_helper_cannot() -> None:

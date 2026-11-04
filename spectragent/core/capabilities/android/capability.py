@@ -39,7 +39,10 @@ queue: wait until the screen is still (``settle.py``), then ask every
 negotiated source at once, each within its own timeout (the screenshot, the
 foreground app, the current input method, the UI tree), and build every
 negotiated fragment from that one capture; the tree is cleaned once every
-source answered, against the screen size the capture's screenshot measured. A
+source answered, against the screen size the capture's screenshot measured.
+Beside the sources the capture reads the device's clock and the app in front,
+which ride on every fragment of the capture (``device``) for the recording; a
+failed read leaves the record out and fails nothing. A
 source that fails fails the whole capture, once: the error is kept for the
 rest of the cycle and raised for every fragment asked for. The next cycle
 captures again. Only the negotiated fragments are captured, so a run whose
@@ -96,6 +99,16 @@ kept running on it. Teardown keeps the device for the next task, instead of
 releasing it, only when the handover says keep, setup completed, and the setup
 component's reset, the queue's drain and the device side's stop all succeeded
 (:class:`KeptDevice`).
+
+**A branch run restores a recorded run here** (``RestorationSupport``,
+``RestorationAlignment``, §4.9; §11.2 "分支回放"): ``retarget`` re-finds a
+recorded element index in the restored tree, ``verify_restoration`` compares a
+restored screen with the recorded one as Android's own evidence
+(``restoration.py``, ``restoration_evidence.py``), and
+``align_next_observation`` has the next capture pin the device clock to the
+recorded capture's once the screen is still. ``animation_scale`` turns
+animations off at setup, so a recording and its branches reach each screen
+the same way.
 
 **Archivers** (``archive/``, the archive axis of §4.5) are bound before setup
 and chosen only by the trace hook's ``archive`` list. Setup assembles the
@@ -157,6 +170,7 @@ from spectragent.core.capabilities.android.bridge import (
     AdbQueries,
     DeviceBridge,
     DeviceInput,
+    ForegroundApp,
     ProgramScreen,
 )
 from spectragent.core.capabilities.android.device.apk import ServiceApk
@@ -186,6 +200,16 @@ from spectragent.core.capabilities.android.observations import (
     AndroidPlatformObs,
     AndroidScreenshotObs,
     AndroidUITreeObs,
+    DeviceAtCapture,
+)
+from spectragent.core.capabilities.android.restoration import (
+    device_record,
+    measure,
+    retarget_action,
+)
+from spectragent.core.capabilities.android.restoration_evidence import (
+    AndroidRestorationEvidence,
+    ClockAlignment,
 )
 from spectragent.core.capabilities.android.session import (
     DeviceBusyError,
@@ -218,6 +242,7 @@ from spectragent.core.trace.redaction import trace_safe
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.capture_state import SettleState
+from spectragent.schemas.restoration import Retarget
 from spectragent.schemas.verdict import Judgment
 
 if TYPE_CHECKING:
@@ -251,6 +276,13 @@ class _Capture:
     cycle: int
     fragments: dict[str, FragmentBase] | None = None
     error: Exception | None = None
+
+
+@dataclass(frozen=True)
+class _ClockRequest:
+    """The next capture pins the device clock to ``target_ms``; ``None``: the recording has no clock."""
+
+    target_ms: int | None
 
 
 class AndroidCapability(_AndroidReceptors, CapabilityBase):
@@ -293,6 +325,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         },
     }
 
+    #: The evidence ``verify_restoration`` returns (``RestorationSupport``, §4.9).
+    RestorationEvidence = AndroidRestorationEvidence
+
     backend: BaseAndroidProvider  # type: ignore[misc]
     tap_injector: AndroidTapInjector  # type: ignore[misc]
     typing_backend: AndroidTypingBackend  # type: ignore[misc]
@@ -310,6 +345,10 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     action_timeout_s: float
     queue_wait_s: float
     service_start_timeout_s: float
+    animation_scale: float | None
+    retarget_tolerance_px: int
+    screenshot_max_distance: int
+    clock_max_difference_s: float
 
     _actions_by_name: dict[str, ActionBase]
     _apk: ServiceApk | None
@@ -353,6 +392,11 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     _carried: KeptEnvironment | None
     #: Whether setup completed, so teardown may keep the device.
     _ready: bool
+    #: The clock the next capture pins the device to (``align_next_observation``);
+    #: ``None``: no alignment asked for. Taken by that capture.
+    _clock_request: _ClockRequest | None
+    #: What the last pinning did, until ``verify_restoration`` reports it.
+    _clock_alignment: ClockAlignment | None
 
     def __init__(
         self,
@@ -481,6 +525,59 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 ),
             ),
         ] = 60.0,
+        animation_scale: Annotated[
+            float | None,
+            PydanticField(
+                ge=0.0,
+                description=(
+                    "The device's window, transition and animator duration scales, set at "
+                    "setup. 0 turns animations off, as AndroidWorld's Docker image does, so a "
+                    "screen reaches its final state at once; a recording and the branch runs "
+                    "from it should set the same. null (the default) leaves the device's own."
+                ),
+            ),
+        ] = None,
+        retarget_tolerance_px: Annotated[
+            int,
+            PydanticField(
+                ge=0,
+                description=(
+                    "Checkpoint restoration (branch runs): how far, in screen pixels, each "
+                    "edge of a restored element may lie from the recorded element's for it "
+                    "to be a candidate when a recorded element index is re-found. Candidates "
+                    "are then confirmed by class, resource id, text and description. Read "
+                    "only by a restorer; an ordinary run never uses it."
+                ),
+            ),
+        ] = 2,
+        screenshot_max_distance: Annotated[
+            int,
+            PydanticField(
+                ge=0,
+                le=64,
+                description=(
+                    "Checkpoint restoration (branch runs): the largest Hamming distance "
+                    "between the recorded and restored screenshots' 64-bit difference hashes, "
+                    "the status bar painted out of both, that still passes the restoration "
+                    "check. Recorded with each restoration measurement. Read only by a "
+                    "restorer; an ordinary run never uses it."
+                ),
+            ),
+        ] = 5,
+        clock_max_difference_s: Annotated[
+            float,
+            PydanticField(
+                ge=0.0,
+                description=(
+                    "Checkpoint restoration (branch runs): how far, in seconds, the device "
+                    "clock of a restored capture may lie from the recorded capture's and "
+                    "still pass the restoration check. Each restored capture pins the clock "
+                    "to the recorded one once the screen is still, then lets the screen settle "
+                    "again, so the clocks differ by about that second wait. Recorded with "
+                    "each restoration measurement. Read only by a restorer."
+                ),
+            ),
+        ] = 2.0,
         actions: Annotated[
             list[ActionBase] | None,
             PydanticField(
@@ -519,6 +616,10 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self.action_timeout_s = action_timeout_s
         self.queue_wait_s = queue_wait_s
         self.service_start_timeout_s = service_start_timeout_s
+        self.animation_scale = animation_scale
+        self.retarget_tolerance_px = retarget_tolerance_px
+        self.screenshot_max_distance = screenshot_max_distance
+        self.clock_max_difference_s = clock_max_difference_s
         self._actions_by_name = {}
         self._apk = None
         self._session = None
@@ -545,6 +646,8 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._owner = None
         self._carried = None
         self._ready = False
+        self._clock_request = None
+        self._clock_alignment = None
         self.actions = actions
         self.ui_tree_source = default_ui_tree_source()
 
@@ -805,6 +908,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._ui_tree, self._actions_since_tree = None, 0
         self._polled_package = self._acted_at = None
         self._launcher_apps = None
+        self._clock_request = self._clock_alignment = None
         self._check(
             {"oracle_task": oracle_task, "start_app": start_app}, component, self._live_verifiers
         )
@@ -835,13 +939,15 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             async def read_facts() -> ScreenshotProducer:
                 self._screen_size = await queries.screen_size()
                 self._fingerprint = await queries.fingerprint()
+                if self.animation_scale is not None:
+                    await queries.set_animation_scale(self.animation_scale)
                 return await _fastest_screen(side)
 
             producer = await device.run(
                 read_facts,
                 what="reading the device's facts",
                 wait_s=self.queue_wait_s,
-                run_s=3 * self.query_timeout_s + self.screenshot_timeout_s,
+                run_s=6 * self.query_timeout_s + self.screenshot_timeout_s,
             )
             if self._reads_events:
                 self._events = await side.service.events()
@@ -873,6 +979,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 apps=queries,
                 launcher=queries,
                 facts=queries,
+                clock=queries,
             )
             self._device = device
             if start_app is not None:
@@ -1108,6 +1215,65 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     def is_alive(self) -> bool:
         return self._device is not None
 
+    # ── Checkpoint restoration (RestorationSupport, RestorationAlignment, §4.9 / §11.2) ──
+
+    async def retarget(self, action: Action, recorded: Any, restored: Any) -> Retarget:
+        """How a recorded ``android.*`` action runs on this restored screen.
+
+        An element index is re-found by its bounds, class, resource id, text and
+        description; everything else runs as recorded
+        (:func:`~spectragent.core.capabilities.android.restoration.retarget_action`).
+        Computes only: the restorer executes the answer through ``guarded_act``.
+        """
+        return retarget_action(
+            action,
+            recorded,
+            restored,
+            actions=self._actions_by_name,
+            tolerance_px=self.retarget_tolerance_px,
+        )
+
+    async def verify_restoration(self, recorded: Any, restored: Any) -> AndroidRestorationEvidence:
+        """How far the restored observation is from the recorded one.
+
+        The app in front, the device clocks, the UI tree's elements, the
+        keyboard and the input focus, and the screenshot distance are read
+        from the two observations
+        (:func:`~spectragent.core.capabilities.android.restoration.measure`);
+        the clock pinning done since the previous call is taken with them, so
+        a restorer measures each restored observation exactly once. A pinning
+        asked for that no capture reached is reported as failed. The evidence
+        records ``screenshot_max_distance`` and ``clock_max_difference_s``,
+        the limits its checks apply.
+        """
+        alignment, self._clock_alignment = self._clock_alignment, None
+        unused, self._clock_request = self._clock_request, None
+        if unused is not None:
+            alignment = ClockAlignment(
+                outcome="failed",
+                target_ms=unused.target_ms,
+                detail="no capture reached the pinning: the restored observation failed first",
+            )
+        return measure(
+            recorded,
+            restored,
+            alignment=alignment,
+            screenshot_max_distance=self.screenshot_max_distance,
+            clock_max_difference_s=self.clock_max_difference_s,
+        )
+
+    async def align_next_observation(self, recorded: Any) -> None:
+        """Pin the device clock to *recorded*'s capture inside the next capture.
+
+        Only the request is kept here; the device is not touched. The next
+        capture sets the clock once the screen is still and waits for a still
+        screen again before its sources (:meth:`_capture_job`), and the next
+        :meth:`verify_restoration` reports what it did. The request belongs to
+        that one capture: a later one never pins.
+        """
+        record = device_record(recorded)
+        self._clock_request = _ClockRequest(record.clock_ms if record is not None else None)
+
     # ── archive (§4.5, §4.9) ──────────────────────────────────────────
 
     def bind_archivers(self, archivers: Sequence[ArchiverBase]) -> None:
@@ -1285,6 +1451,8 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             + sources_s
             + 1
         )
+        if self._clock_request is not None:  # the pinning, and the wait after it
+            limit += self.settle_max_wait_s + 4 * self.query_timeout_s
         return await device.run(
             lambda: self._capture_job(cycle), what="capture", wait_s=self.queue_wait_s, run_s=limit
         )
@@ -1304,7 +1472,15 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         within that limit, and is taken again; otherwise the wait's record
         says ``app_window``. A tree asked for the archive alone never decides
         it: what a run records does not change what it sees. Every fragment
-        of the capture carries the wait's record (``observations.py``).
+        of the capture carries the wait's record and the device's
+        (``observations.py``): the device's clock and the app in front, read
+        beside the sources, never failing the capture.
+
+        A restored observation (``align_next_observation``) pins the device
+        clock to the recorded capture's once the screen is still, then waits
+        for a still screen again, so what shows the time is drawn anew,
+        before the sources are asked; the record of that wait is the first
+        one's, the wait the recording took.
         """
         await self._keep_service()
         wanted = self.provided_fragments
@@ -1319,12 +1495,24 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             sources[UI_TREE] = Source(self._read_tree, self.ui_tree_timeout_s)
         clock = asyncio.get_running_loop()
         started = clock.time()
+        pin, self._clock_request = self._clock_request, None
         while True:
             settle = await self._settle(started)
-            if UI_TREE in wanted or not self._archive_needs_tree:
-                answers, for_archive = await fan_out(sources), None
-            else:
-                answers, for_archive = await self._fan_out_beside_a_tree(sources)
+            if pin is not None:
+                self._clock_alignment = await self._pin_clock(pin)
+                pin = None
+                if settle is not None:
+                    await self._settle()
+            fetched, device = await asyncio.gather(
+                self._ask_sources(sources),
+                self._device_now(foreground=FOREGROUND_APP not in wanted),
+                return_exceptions=True,
+            )
+            if isinstance(fetched, BaseException):
+                raise fetched
+            if isinstance(device, BaseException):
+                raise device  # cancelled: ``_device_now`` returns every other failure
+            answers, for_archive = fetched
             seen = answers.get(UI_TREE)
             if settle is None or not isinstance(seen, TreeCapture) or shows_an_app(seen.forest):
                 break
@@ -1360,12 +1548,73 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             )
         elif for_archive is not None:
             tree = MissingTree(cycle=cycle, error=for_archive)
+        front = fragments.get(FOREGROUND_APP)
+        if device is not None and isinstance(front, AndroidForegroundAppObs):
+            device = device.model_copy(
+                update={
+                    "package": front.package,
+                    "activity": front.activity,
+                    "window": front.window,
+                }
+            )
         for fragment in fragments.values():
             if isinstance(fragment, AndroidCaptureFragment):
-                fragment.settle = settle
+                fragment.settle, fragment.device = settle, device
         if CAPTURE_STATE in wanted:
             fragments[CAPTURE_STATE] = AndroidCaptureStateObs(settle=settle)
         return fragments, tree
+
+    async def _ask_sources(
+        self, sources: Mapping[str, Source[FragmentBase | TreeCapture]]
+    ) -> tuple[dict[str, FragmentBase | TreeCapture], TreeCapture | Exception | None]:
+        """Every source's answer, and the tree asked for the archive alone when one is (else ``None``)."""
+        if UI_TREE in sources or not self._archive_needs_tree:
+            return await fan_out(sources), None
+        return await self._fan_out_beside_a_tree(sources)
+
+    async def _device_now(self, *, foreground: bool) -> DeviceAtCapture | None:
+        """The device's clock, and with *foreground* the app in front, each within ``query_timeout_s``.
+
+        ``None``, logged, when either read fails: the record is the recording's,
+        and its loss never costs the agent the observation. Without
+        *foreground* the app is filled in from the capture's own
+        ``android.foreground_app``.
+        """
+        bridge, limit = self.bridge, self.query_timeout_s
+
+        async def front() -> ForegroundApp | None:
+            return await ask(Source(bridge.apps.foreground, limit)) if foreground else None
+
+        clock_ms, app = await asyncio.gather(
+            ask(Source(bridge.clock.now_ms, limit)), front(), return_exceptions=True
+        )
+        for answer in (clock_ms, app):
+            if isinstance(answer, Exception):
+                logger.warning("android: the capture's device record was not read: %s", answer)
+                return None
+            if isinstance(answer, BaseException):
+                raise answer
+        assert isinstance(clock_ms, int)
+        if not isinstance(app, ForegroundApp):
+            return DeviceAtCapture(clock_ms=clock_ms)
+        return DeviceAtCapture(
+            clock_ms=clock_ms, package=app.package, activity=app.activity, window=app.window
+        )
+
+    async def _pin_clock(self, request: _ClockRequest) -> ClockAlignment:
+        """Set the device clock to the recorded capture's, as asked (``align_next_observation``)."""
+        target = request.target_ms
+        if target is None:
+            return ClockAlignment(
+                outcome="unknown", detail="the recorded capture has no device clock to pin to"
+            )
+        try:
+            await ask(Source(lambda: self.bridge.clock.set_ms(target), self.query_timeout_s))
+        except Exception as exc:
+            return ClockAlignment(
+                outcome="failed", target_ms=target, detail=f"{type(exc).__name__}: {exc}"
+            )
+        return ClockAlignment(outcome="aligned", target_ms=target)
 
     async def _fan_out_beside_a_tree(
         self, sources: Mapping[str, Source[FragmentBase | TreeCapture]]

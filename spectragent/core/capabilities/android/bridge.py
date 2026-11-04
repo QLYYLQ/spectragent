@@ -4,8 +4,9 @@
 contracts as Protocols, and the layers below are their implementations. The
 capability reaches a device only through :class:`DeviceBridge`: the screen
 (:class:`ScreenCapture`), input (:class:`InputInjection`), the foreground app
-(:class:`ForegroundApps`), launching apps (:class:`AppLauncher`) and the
-device's measured facts (:class:`DeviceFacts`).
+(:class:`ForegroundApps`), launching apps (:class:`AppLauncher`), the
+device's measured facts (:class:`DeviceFacts`) and its wall clock
+(:class:`DeviceClock`).
 
 Two sides implement them.
 
@@ -19,11 +20,13 @@ Two sides implement them.
   so a service channel it replaced (``ensure_bound``) is the one used next.
 - **adb's own commands**, for what the window manager, the package manager and
   the settings report, and for starting apps (:class:`AdbQueries`):
-  ``dumpsys``, ``pm``, ``cmd package``, ``am``, ``wm``, ``getprop`` and
-  ``settings``, each one ``shell,v2`` round trip over the host transport
+  ``dumpsys``, ``pm``, ``cmd package``, ``am``, ``wm``, ``getprop``,
+  ``settings``, ``date`` and ``cmd alarm``, each one ``shell,v2`` round trip over the host transport
   (``adb.py``). Medians measured on the emulator (API 33, 2026-11-01):
   ``dumpsys window`` 18 ms, ``getprop`` 8 ms, ``dumpsys input_method`` about
-  0.1 s (550 KB, most of it the keyboard's own state). The device side replaced
+  0.1 s (550 KB, most of it the keyboard's own state); ``date +%s%3N`` 12-27 ms
+  and ``cmd alarm set-time`` 14-34 ms, as the shell user, no root (2026-11-04,
+  toybox 0.8.6). The device side replaced
   ``screencap`` (about 0.7 s, against 0.12 s from the helper) and ``input``;
   ``uiautomator dump`` is never run here: it unbinds every accessibility
   service while it runs, ours included.
@@ -89,6 +92,13 @@ _SERVED_CONNECTION = re.compile(
 #: method starts or restarts input for the view with focus (measured on API 33).
 _START_INPUT = re.compile(r"^ +StartInput #(?P<number>\d+):$", re.MULTILINE)
 _FRAMES = re.compile(r"Total frames rendered: (?P<frames>\d+)")
+#: The global settings that scale every animation's duration, as AndroidWorld's
+#: Docker image sets them to 0 (``docker_setup/start_emu_headless.sh``).
+ANIMATION_SCALES = (
+    "window_animation_scale",
+    "transition_animation_scale",
+    "animator_duration_scale",
+)
 _SIZE = re.compile(r"(?P<kind>Physical|Override) size: (?P<width>\d+)x(?P<height>\d+)")
 
 
@@ -233,6 +243,19 @@ class DeviceFacts(Protocol):
     async def input_method(self) -> str | None: ...
 
 
+@runtime_checkable
+class DeviceClock(Protocol):
+    """The device's wall clock: read with every capture, set when a restored observation is aligned."""
+
+    async def now_ms(self) -> int:
+        """The device's wall clock, in ms since the epoch."""
+        ...
+
+    async def set_ms(self, epoch_ms: int) -> None:
+        """Set the device's wall clock to *epoch_ms*, ms since the epoch."""
+        ...
+
+
 @dataclass(frozen=True)
 class DeviceBridge:
     """Everything the capability asks of one device, one implementation per role."""
@@ -242,6 +265,7 @@ class DeviceBridge:
     apps: ForegroundApps
     launcher: AppLauncher
     facts: DeviceFacts
+    clock: DeviceClock
 
 
 @dataclass(frozen=True)
@@ -366,6 +390,22 @@ class AdbQueries:
         result = await self._run("settings get secure default_input_method")
         value = result.stdout.decode().strip()
         return value if result.exit_code == 0 and value not in ("", "null") else None
+
+    async def now_ms(self) -> int:
+        reported = (await self._check("date +%s%3N")).decode(errors="replace").strip()
+        if not reported.isdigit():
+            raise BridgeError(f"date reported no time in ms: {reported!r}")
+        return int(reported)
+
+    async def set_ms(self, epoch_ms: int) -> None:
+        if epoch_ms < 0:
+            raise ValueError(f"not a time since the epoch: {epoch_ms}")
+        await self._check(f"cmd alarm set-time {int(epoch_ms)}")
+
+    async def set_animation_scale(self, scale: float) -> None:
+        """Set the window, transition and animator duration scales to *scale* (0: no animations)."""
+        for setting in ANIMATION_SCALES:
+            await self._check(f"settings put global {setting} {scale:g}")
 
     async def _run(self, command: str) -> ShellResult:
         return await self._client.shell(self._serial, command)
