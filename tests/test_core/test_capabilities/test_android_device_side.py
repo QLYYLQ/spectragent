@@ -254,6 +254,11 @@ async def test_a_service_that_is_never_unbound_fails_stop_within_its_limit(
         device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
         with pytest.raises(DeviceSideError, match="or it was not unbound"):
             await device.stop()
+        # The helper's stdin was closed; it exits on its own time, past the patched step.
+        for _ in range(200):
+            if side.helper_exits:
+                break
+            await asyncio.sleep(0.01)
 
     assert side.enabled is None and side.helper_exits == 1, "everything else was stopped"
 
