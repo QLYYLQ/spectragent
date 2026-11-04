@@ -963,6 +963,38 @@ def test_m3a_on_androidworld_writes_its_official_values_and_none_the_benchmark_s
     assert (scroll.swipe_to, scroll.duration_ms) == ("target_edge", 300)
 
 
+def test_a_subset_given_to_the_template_is_the_one_the_benchmark_supplies_for(
+    composer, tmp_path, capsys
+):
+    """``--subset`` reaches the benchmark block as ``run`` writes it: MiniWoB++ waits up to 2 s."""
+    from tests._helpers.benchmark_data import androidworld_data, androidworld_task
+
+    click = androidworld_task(
+        "click-button",
+        family="miniwob",
+        goal="Follow the instructions shown on the top of the screen.",
+        goal_at_initialize="made",
+    )
+    shipped = yaml.safe_load(Path("configs/benchmarks/androidworld.yaml").read_text())
+    data = androidworld_data(tmp_path / "data", miniwob=[click])
+    shipped["benchmark"][0]["task_loader"]["data_dir"] = str(data)
+    benchmark = tmp_path / "androidworld.yaml"
+    benchmark.write_text(yaml.safe_dump(shipped))
+
+    def template(subset: str | None) -> str:
+        choices = TemplateChoices(agent="m3a", model="m", benchmark=str(benchmark), subset=subset)
+        return render_config_template(choices, composer=composer)
+
+    miniwob = template("miniwob")
+    assert "# settle_max_wait_s: 2.0, from the benchmark androidworld, computed in code" in miniwob
+    assert f"--benchmark {benchmark} --subset miniwob" in miniwob
+    assert "# settle_max_wait_s: 6.0, from the benchmark androidworld" in template(None)
+    with pytest.raises(ValueError, match="give --benchmark with it"):
+        render_config_template(TemplateChoices(model="m", subset="miniwob"), composer=composer)
+    assert main(["config", "template", "--model", "m", "--subset", "miniwob", "--json"]) == 2
+    assert "give --benchmark" in json.loads(capsys.readouterr().out)["error"]["message"]
+
+
 def test_a_run_that_writes_a_benchmark_setting_differently_is_refused(composer, tmp_path):
     benchmark = str(_shipped_androidworld(tmp_path))
     raw = yaml.safe_load(

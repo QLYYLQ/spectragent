@@ -639,6 +639,11 @@ def create_app() -> typer.Typer:
             help="A benchmark (shipped alias or benchmark YAML path), composed with the template "
             "as a run composes it; the capability settings it supplies are left out of the YAML.",
         ),
+        subset: str | None = typer.Option(
+            None,
+            help="The subset of --benchmark, written into its task loader before the template "
+            "is composed, as bench and run write it: what the benchmark supplies can depend on it.",
+        ),
         record: Annotated[
             list[str] | None,
             typer.Option(
@@ -682,6 +687,7 @@ def create_app() -> typer.Typer:
                     recording=tuple(record) if record is not None else None,
                     capability_flags=_given_flags(ctx, _TEMPLATE_FLAGS),
                     benchmark=benchmark,
+                    subset=subset,
                 ),
                 raw,
             )

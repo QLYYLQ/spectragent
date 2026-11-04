@@ -80,6 +80,8 @@ class TemplateChoices:
     capability_flags: Mapping[str, str] = field(default_factory=dict)
     #: ``--benchmark``: a shipped alias or the path of a benchmark YAML.
     benchmark: str | None = None
+    #: ``--subset``: written into the benchmark's task loader before it is composed.
+    subset: str | None = None
 
 
 @dataclass(frozen=True)
@@ -121,8 +123,12 @@ def render_config_template(
     """
     composer = composer or ConfigComposer.for_every_package()
     catalog = composer.catalog
+    if choices.subset is not None and choices.benchmark is None:
+        raise ValueError("--subset selects a benchmark's tasks: give --benchmark with it")
     benchmarks = (
-        [read_benchmark_with_data(choices.benchmark)] if choices.benchmark is not None else []
+        [read_benchmark_with_data(choices.benchmark, subset=choices.subset)]
+        if choices.benchmark is not None
+        else []
     )
     origins: dict[TemplatePath, str] = {}
     if source is None:
@@ -175,9 +181,11 @@ def render_config_template(
         "# metrics records reported tokens, call counts and timings, not monetary cost.",
     ]
     if benchmarks:
+        selection = f"--benchmark {choices.benchmark}" + (
+            f" --subset {choices.subset}" if choices.subset is not None else ""
+        )
         header += [
-            f"# Use it with --benchmark {choices.benchmark}: the capability settings that "
-            "benchmark supplies",
+            f"# Use it with {selection}: the capability settings that benchmark supplies",
             "# are left out, each named in a comment where it would sit.",
         ]
     return "\n".join([*header, "", *_render_mapping(expanded, (), comments, 0)]) + "\n"
