@@ -290,7 +290,9 @@ class FakeDeviceSide:
       added, which unbinds the service: at once, or with
       *unbinds_after_reads*, only once the provider's health has been read
       that many times since, the service listening and answering until then,
-      as the system unbinds it a moment after the setting changed;
+      as the system unbinds it a moment after the setting changed. Another
+      program may write the setting over (:meth:`write_setting`), which
+      unbinds it the same way;
     - :meth:`force_stop` does what ``am force-stop`` of the package does: the
       service leaves the setting and its process, token and socket go. With
       *crashes_on_force_stop*, the system also holds it as crashed, as API 30
@@ -511,11 +513,22 @@ class FakeDeviceSide:
         entries = self.enabled.split(":") if self.enabled else []
         kept = [entry for entry in entries if entry != SERVICE_COMPONENT]
         self.enabled = ":".join(kept) or None
+        self._unbind_soon()
+        return len(kept) != len(entries)
+
+    def write_setting(self, value: str | None) -> None:
+        """Another program writes the setting over, as AndroidWorld's android_env writes its
+        forwarder; a service it no longer lists is unbound as :meth:`_disable` unbinds it."""
+        self.enabled = value
+        if SERVICE_COMPONENT not in (value or "").split(":"):
+            self._unbind_soon()
+
+    def _unbind_soon(self) -> None:
+        """Unbound at once, or after *unbinds_after_reads* health reads; one already under way goes on."""
         if self._unbinds_after_reads and self.bound:
-            self._unbinding = self._unbinds_after_reads
+            self._unbinding = self._unbinding or self._unbinds_after_reads
         else:
             self._unbind()
-        return len(kept) != len(entries)
 
     def _unbind(self) -> None:
         self.bound = False

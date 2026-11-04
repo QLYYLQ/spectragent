@@ -38,6 +38,7 @@ from spectragent.core.capabilities.android.capability import (
     KeptDevice,
     device_identity,
 )
+from spectragent.core.capabilities.android.device import lifecycle
 from spectragent.core.capabilities.android.device.apk import (
     TEST_KEY_CERTIFICATE_SHA256,
     ServiceApkError,
@@ -1007,6 +1008,25 @@ async def test_a_failed_reset_releases_the_device_with_a_warning(
     assert setup.calls[-2:] == ["stop and keep", "provider closed"]
     assert "the device is not kept for the next task" in caplog.text
     assert "the reset failed" in caplog.text
+
+
+async def test_a_device_side_that_does_not_stop_cleanly_releases_the_device(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Our service never reports itself unbound, so the device side's stop fails within its limit:
+    the device is released, not kept."""
+    monkeypatch.setattr(lifecycle, "_STOP_STEP_S", 0.2)
+    async with phone_server(ScriptedPhone(unbinds_after_reads=10**6)) as adb:
+        setup = _RecordingSetup()
+        handover = EnvironmentHandover(kept={}, keep=True)
+        capability, provider = _set_up_for(tmp_path, adb, setup, handover)
+        await capability.setup(oracle_task={"task": 1})
+        await capability.teardown()
+
+    assert handover.handed_over == {}
+    assert setup.calls[-3:] == ["stop and keep", "setup state closed", "provider closed"]
+    assert provider.closed == ["fake-session"]
+    assert "stopping the device side" in caplog.text
 
 
 async def test_a_task_whose_setup_failed_on_a_kept_device_releases_it(tmp_path: Path) -> None:

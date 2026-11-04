@@ -230,6 +230,34 @@ async def test_stop_returns_once_the_service_is_unbound_so_a_next_start_reaches_
     assert side.enabled is None and not side.bound
 
 
+async def test_stop_waits_for_the_unbind_after_another_program_wrote_the_setting_over(
+    apk: ServiceApk,
+) -> None:
+    """AndroidWorld's android_env writes its forwarder over the whole setting when it rebuilds its
+    controller: the take-out then changes nothing, and the service is still going away."""
+    side = FakeDeviceSide(unbinds_after_reads=3)
+    async with _phone(side) as (_, client):
+        device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
+        side.write_setting(TALKBACK)
+        await device.stop()
+
+    assert not side.bound, "stop waited for the unbind"
+    assert side.enabled == TALKBACK
+
+
+async def test_a_service_that_is_never_unbound_fails_stop_within_its_limit(
+    apk: ServiceApk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(lifecycle, "_STOP_STEP_S", 0.2)
+    side = FakeDeviceSide(unbinds_after_reads=10**6)
+    async with _phone(side) as (_, client):
+        device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
+        with pytest.raises(DeviceSideError, match="or it was not unbound"):
+            await device.stop()
+
+    assert side.enabled is None and side.helper_exits == 1, "everything else was stopped"
+
+
 async def test_a_service_enabled_before_the_run_stays_enabled(apk: ServiceApk) -> None:
     side = FakeDeviceSide(enabled=SERVICE_COMPONENT)
     async with _phone(side) as (_, client):
