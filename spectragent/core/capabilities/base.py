@@ -25,6 +25,7 @@ from spectragent.schemas.verdict import Judgment
 if TYPE_CHECKING:
     from spectragent.benchmarks._setup_registrar import BenchmarkSetup
     from spectragent.core.archive._registrar import ArchiverBase
+    from spectragent.core.environment_reuse import EnvironmentHandover
     from spectragent.verifiers.base import LiveVerifier
 
 
@@ -571,6 +572,44 @@ class EpisodeEnd(Protocol):
 
         Asked after every step, so a task whose benchmark ends no episode
         answers without touching the environment. Reads only: changes nothing.
+        """
+        ...
+
+
+@runtime_checkable
+class ReusableEnvironment(Protocol):
+    """Optional: what this capability brings up carries one task's state into the next, and it can
+    set a later task up on it.
+
+    A device, later a container: by default every task gets a new one. A sweep
+    sets the next task up on the same one only when its identity is the same
+    and the benchmark's setup component this capability hosts declares that it
+    resets the state between tasks (``docs/architecture_design.md`` §4.10.1
+    "环境跨任务复用"; ``core/environment_reuse.py``). The environment routes
+    both calls (``Environment.environment_identities``,
+    ``Environment.bind_handover``). Not part of :class:`BaseCapability`;
+    ``CapabilityBase`` gives no default. A browser context, new and isolated
+    for every task, carries nothing over and is not this (§4.9.x).
+    """
+
+    def environment_identity(self, setup: BenchmarkSetup | None) -> str:
+        """What this capability's setup brings up, with *setup* the component about to be bound.
+
+        Two tasks may share one only when this is the same for both: the
+        image, the provider's settings, what the component needs of it.
+        Reads configuration only.
+        """
+        ...
+
+    def bind_handover(self, handover: EnvironmentHandover | None) -> None:
+        """From the next setup on, take the environment from *handover* or bring up a new one.
+
+        Setup takes what *handover* holds for this ``capability_id``, else
+        brings up a new one. Teardown hands it over instead of releasing it
+        when *handover* says keep and the task ended cleanly: setup completed,
+        and everything that ended the task, the setup component's reset
+        included, succeeded. ``None``: no handover, as without this Protocol.
+        Acquires nothing.
         """
         ...
 

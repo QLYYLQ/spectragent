@@ -222,6 +222,9 @@ class ScriptedPhone:
         typing_fails: The error code the helper's ``type_text`` answers with
             from now on (``typed_partly``: a key failed after others went
             in); ``None``: it types.
+        unbinds_after_reads: How many reads of the bootstrap provider's health
+            the service stays bound after it left the setting
+            (:class:`FakeDeviceSide`); 0: at once.
         inputs: Every input the device side received, in order, setup's test
             tap first: ``"<program> stroke (x,y)@t ..."``, ``"helper key
             KEYCODE_..."``, ``"helper type_text '...' replace|at the cursor"``,
@@ -260,6 +263,7 @@ class ScriptedPhone:
     tree_reads: list[JsonValue] = field(default_factory=list)
     tree_delay_s: float = 0.0
     typing_fails: str | None = None
+    unbinds_after_reads: int = 0
     inputs: list[str] = field(default_factory=list)
     side: FakeDeviceSide = field(init=False)
     _booted: float = field(init=False, default_factory=time.monotonic)
@@ -267,6 +271,7 @@ class ScriptedPhone:
     def __post_init__(self) -> None:
         self.side = FakeDeviceSide(
             sdk_int=self.sdk_int,
+            unbinds_after_reads=self.unbinds_after_reads,
             service_methods={
                 "ping": self._service_ping,
                 "screenshot": self._screenshot("accessibility_service"),

@@ -287,7 +287,12 @@ class FakeDeviceSide:
       the service vanishes from the setting again and never listens, as
       Android 14 drops a service it refuses. The helper remembers whether it
       wrote the setting, and its ``disable_service`` takes out only what it
-      added, which unbinds the service;
+      added, which unbinds the service: at once, or with
+      *unbinds_after_reads*, only once the provider's health has been read
+      that many times since, the service listening and answering until then,
+      as the system unbinds it a moment after the setting changed. Another
+      program may write the setting over (:meth:`write_setting`), which
+      unbinds it the same way;
     - :meth:`force_stop` does what ``am force-stop`` of the package does: the
       service leaves the setting and its process, token and socket go. With
       *crashes_on_force_stop*, the system also holds it as crashed, as API 30
@@ -310,6 +315,7 @@ class FakeDeviceSide:
         lose_token_once: bool = False,
         token_write_throws: bool = False,
         crashes_on_force_stop: bool = False,
+        unbinds_after_reads: int = 0,
         sdk_int: int = 33,
         service_methods: Mapping[str, Method] | None = None,
         helper_methods: Mapping[str, Method] | None = None,
@@ -354,6 +360,9 @@ class FakeDeviceSide:
         self._crashes_on_force_stop = crashes_on_force_stop
         #: Whether the system holds the service as crashed, and so binds it in no case.
         self.crashed = False
+        self._unbinds_after_reads = unbinds_after_reads
+        #: Health reads left before a service taken out of the setting is unbound.
+        self._unbinding = 0
 
     def force_stop(self) -> None:
         """``am force-stop org.spectragent.device``: unbound, out of the setting, its token gone."""
@@ -401,6 +410,10 @@ class FakeDeviceSide:
         method = words[words.index("--method") + 1]
         if method != "health":
             return _thrown(f"java.lang.IllegalArgumentException: no method {method}")
+        if self._unbinding:
+            self._unbinding -= 1
+            if not self._unbinding:
+                self._unbind()
         health = {
             "protocol": PROTOCOL_VERSION,
             "package": "org.spectragent.device",
@@ -500,9 +513,26 @@ class FakeDeviceSide:
         entries = self.enabled.split(":") if self.enabled else []
         kept = [entry for entry in entries if entry != SERVICE_COMPONENT]
         self.enabled = ":".join(kept) or None
+        self._unbind_soon()
+        return len(kept) != len(entries)
+
+    def write_setting(self, value: str | None) -> None:
+        """Another program writes the setting over, as AndroidWorld's android_env writes its
+        forwarder; a service it no longer lists is unbound as :meth:`_disable` unbinds it."""
+        self.enabled = value
+        if SERVICE_COMPONENT not in (value or "").split(":"):
+            self._unbind_soon()
+
+    def _unbind_soon(self) -> None:
+        """Unbound at once, or after *unbinds_after_reads* health reads; one already under way goes on."""
+        if self._unbinds_after_reads and self.bound:
+            self._unbinding = self._unbinding or self._unbinds_after_reads
+        else:
+            self._unbind()
+
+    def _unbind(self) -> None:
         self.bound = False
         self.service.hang_up()
-        return len(kept) != len(entries)
 
     async def _service_ping(self, params: JsonObject) -> Answer:
         return Answer({"uptime_ms": 1000, "next_seq": 0})

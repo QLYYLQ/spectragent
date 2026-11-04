@@ -17,7 +17,17 @@ down, within the section's four hard constraints:
    enable was sent, so a start cut short while enabling, or an enable that
    failed after its write, still leaves the setting as it found it. The
    helper's connection answers in order, so the take-out runs after an enable
-   still in flight;
+   still in flight. The system unbinds the service a moment after the setting
+   stops listing it, so whenever the setting no longer lists it after the
+   take-out, ``stop`` waits until the app's process saw it unbound (the
+   bootstrap provider's health): a device side started right after on the same
+   device, as when a sweep keeps the device for its next task, would otherwise
+   reach the instance going away, whose socket closes under it. That covers a
+   setting another program wrote over: AndroidWorld's android_env writes its
+   forwarder over the whole setting whenever it builds its controller
+   (``A11yGrpcWrapper``), which its ``refresh_env`` does after a failed tree
+   read, so the take-out may find our entry gone already. A service listed
+   before the run stays listed and bound, and nothing waits for it;
 4. binding is confirmed by a ping on the service's socket, never by reading the
    setting again: Android 14 and later drop a service they refuse from the
    setting without an error.
@@ -87,6 +97,11 @@ _BUNDLE = re.compile(r"Bundle\[\{json=(\{.*\})\}\]", re.DOTALL)
 #: ``content`` catches whatever the provider throws, prints this and the stack trace on stderr,
 #: and still exits 0 (AOSP ``Content.java``; seen on API 30, 31 and 33).
 _PROVIDER_ERROR = b"Error while accessing provider"
+
+
+def _lists_the_service(setting: str | None) -> bool:
+    """Whether *setting*, ``enabled_accessibility_services``, lists our service (short or in full)."""
+    return any(entry.partition("/")[0] == PACKAGE for entry in (setting or "").split(":"))
 
 
 class DeviceSideError(RuntimeError):
@@ -234,13 +249,15 @@ class DeviceSide:
         return True
 
     async def stop(self) -> None:
-        """Close both channels, take the service out of the setting if the helper put it there, end the helper.
+        """Close both channels, take the service out of the setting if the helper put it there and
+        wait until it is unbound, end the helper.
 
         Never force-stops our package. Safe to repeat.
 
         Raises:
             DeviceSideError: The service could not be taken out of the
-                setting; everything else was stopped anyway.
+                setting, or was not unbound in time; everything else was
+                stopped anyway.
         """
         failure: Exception | None = None
         if self._service is not None:
@@ -249,9 +266,10 @@ class DeviceSide:
         if self._enable_sent and self._helper is not None:
             try:
                 async with asyncio.timeout(_STOP_STEP_S):
-                    await self._helper.disable_service()
+                    if not _lists_the_service((await self._helper.disable_service()).current):
+                        await self._until_unbound()
                 self._enable_sent = False
-            except (ChannelError, OSError, TimeoutError) as exc:
+            except (ChannelError, OSError, TimeoutError, AdbError, DeviceSideError) as exc:
                 failure = exc
         if self._helper is not None:
             await self._helper.close()
@@ -265,8 +283,13 @@ class DeviceSide:
         if failure is not None:
             raise DeviceSideError(
                 f"could not take {PACKAGE}'s service out of enabled_accessibility_services on "
-                f"{self.serial}: {failure}"
+                f"{self.serial}, or it was not unbound: {failure}"
             ) from failure
+
+    async def _until_unbound(self) -> None:
+        """Wait until the app's process saw the service unbound, as its bootstrap provider reports."""
+        while (await self.health()).service_connected:
+            await asyncio.sleep(_POLL_S)
 
     async def health(self) -> ProviderHealth:
         """The bootstrap provider's report, which it gives while the service's socket is down."""

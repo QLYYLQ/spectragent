@@ -155,6 +155,9 @@ class StageSpec(_Spec):
     #: it (``False``: ``--no-eval``); each verdict goes into its run's store. A
     #: branch stage's runs are each judged by its source run's benchmark's.
     evaluate: bool = False
+    #: Whether a task may run on the environment the task before it kept
+    #: (``--reuse-environment``); ``False``: every task gets a new one.
+    reuse_environment: bool = False
 
 
 class ExportStageSpec(_Spec):
@@ -746,6 +749,8 @@ def _run_stage(
     ]
     if stage_spec.verify_timeout is not None:
         argv += ["--verify-timeout", f"{stage_spec.verify_timeout:g}"]
+    if stage_spec.reuse_environment:
+        argv.append("--reuse-environment")
     if branches is not None:
         branches_path, branches_raw = branches
         _write_yaml(branches_path, branches_raw)

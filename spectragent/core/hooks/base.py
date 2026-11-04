@@ -99,6 +99,7 @@ class RuntimeHook(Protocol):
         action_space: ActionSpace,
         step_budget: int | None,
         task_text_setter: str | None,
+        earlier_tasks_on_environment: int,
         agent_id: str,
         loop_id: str,
         env_type: str,
@@ -175,6 +176,10 @@ class RuntimeHook(Protocol):
           The completed text arrives after setup through
           ``Environment.task_text_from_setup``, which a recorder intercepts.
           Per task, like ``task_setup``.
+        - ``earlier_tasks_on_environment``: how many tasks this run's
+          environment served before it, kept by a sweep from its earlier
+          tasks (``docs/architecture_design.md`` §4.10.1); 0 for a new
+          environment. Per task, like ``task_setup``.
         - ``config_source``: the source YAML path and consumed-byte digest supplied
           by the caller, or ``None`` when its source is unknown. It is provenance,
           not effective configuration; no hook derives it from resolved settings.
