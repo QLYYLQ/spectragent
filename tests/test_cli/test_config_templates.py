@@ -8,15 +8,16 @@ every capability setting the benchmark supplies, naming each where it would sit.
 
 import copy
 import json
+from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Annotated, Protocol, runtime_checkable
+from typing import Annotated, Any, ClassVar, Protocol, runtime_checkable
 
 import pytest
 import yaml
 from conscribe import create_registrar
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, JsonValue, ValidationError
 
 from spectragent.agents.browser_use.dom import BrowserUseDomAgent
 from spectragent.agents.m3a.agent import M3AAgent
@@ -27,7 +28,12 @@ from spectragent.benchmarks.selection import BenchmarkSelectionError, read_bench
 from spectragent.cli import main
 from spectragent.cli.config_templates import TemplateChoices, render_config_template
 from spectragent.core.composer import ConfigComposer, UnresolvedWiringError
-from spectragent.core.registries import TemplateFlag, capability_declarations, template_flags
+from spectragent.core.registries import (
+    TemplateFlag,
+    capability_declarations,
+    collect_registrars,
+    template_flags,
+)
 from spectragent.core.runtime import AgentRuntime
 from tests._helpers.android_device import fake_service_apk
 
@@ -472,13 +478,12 @@ def test_m3a_starts_from_the_run_settings_its_own_prepare_requires(composer, tmp
     )
     agent = raw["agent"][0]
     for receptor, start in M3AAgent.__template_block__.items():
+        assert isinstance(start, dict)
         assert {key: agent[receptor][key] for key in start} == start, receptor
     assert agent["agent_loop"]["cut_off_reply"] == "read_as_is"
-    # With the APK placeholder replaced, M3A's own refusals pass.
+    # With the APK placeholder replaced, prepare() passes M3A's own run-settings check.
     raw["environment"][0]["capabilities"][0]["service_apk"] = str(fake_service_apk(tmp_path))
-    runtime = AgentRuntime.for_agent(composer.compose(raw), "main")
-    runtime.prepare()
-    runtime.seed_messages("Turn wifi off.")
+    AgentRuntime.for_agent(composer.compose(raw), "main").prepare()
     # Naming the declared Loop keeps its values; another Loop would reset them.
     again = yaml.safe_load(
         render_config_template(
@@ -486,6 +491,33 @@ def test_m3a_starts_from_the_run_settings_its_own_prepare_requires(composer, tmp
         )
     )
     assert again["agent"][0]["agent_loop"] == agent["agent_loop"]
+
+
+def test_an_agents_declared_loop_stands_where_its_wiring_refuses_the_frameworks():
+    from spectragent.agents.ui_tars.agent import UITarsAgent
+    from spectragent.core.loops.react import ReactLoop
+
+    class SecondReact(ReactLoop):
+        __registry_key__ = "second_react"
+
+    class PinnedLoopAgent(UITarsAgent):
+        __registry_key__ = "pinned_loop"
+        __wiring__: ClassVar[dict[str, Any]] = {
+            "agent_loop": ("agent_loop", ["branch", "second_react"])
+        }
+        __template_block__: ClassVar[Mapping[str, JsonValue]] = {
+            "agent_loop": {"loop_id": "second_react"}
+        }
+
+    # Built after the two registrations, without discovery.
+    composer = ConfigComposer(registrars=collect_registrars())
+    raw = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="pinned_loop", environment="browser", model="m"),
+            composer=composer,
+        )
+    )
+    assert raw["agent"][0]["agent_loop"]["loop_id"] == "second_react"
 
 
 def test_an_agent_without_declared_values_starts_from_the_frameworks_choices(composer):
@@ -545,6 +577,7 @@ def test_changing_environment_and_agent_restarts_what_the_new_wiring_does_not_ta
     agent = expanded["agent"][0]
     # Simple memory is not M3A's: it restarts from M3A's own starting values.
     start = M3AAgent.__template_block__["memory"]
+    assert isinstance(start, dict)
     assert {key: agent["memory"][key] for key in start} == start
     assert agent["llm"]["model"] == "chosen-model", "a receptor the new agent takes is kept"
     # The skeleton's ReAct Loop is M3A's too: its written values win.

@@ -52,8 +52,10 @@ TemplatePath = tuple[str | int, ...]
 
 #: The agent a new template starts with; its wiring picks the environment.
 STARTING_AGENT = "browser_use.dom"
-#: Where a new template starts the agent's receptors, by receptor. An agent
-#: whose wiring takes one other key gets that key (M3A's memory).
+#: Where a new template starts an agent's receptors, by receptor, when the
+#: agent declares no starting value of its own (``__template_block__``). An
+#: agent whose wiring does not take the key here but takes exactly one other
+#: gets that one.
 STARTING_RECEPTORS = MappingProxyType(
     {"agent_loop": "react", "llm": "openai.direct", "memory": "simple"}
 )
@@ -355,10 +357,15 @@ def _new_template(
         **_declared_block(agent_cls),
     }
     for receptor in wiring_slots(agent_cls).values():
-        if receptor.name in STARTING_RECEPTORS and receptor.slot is not None:
-            agent.setdefault(
-                receptor.name,
-                _selector(catalog, receptor.spec.registry_name, _starting_key(agent_cls, receptor)),
+        # Only a receptor the agent declares nothing for falls back: the
+        # framework's key may be one its wiring refuses.
+        if (
+            receptor.name in STARTING_RECEPTORS
+            and receptor.slot is not None
+            and receptor.name not in agent
+        ):
+            agent[receptor.name] = _selector(
+                catalog, receptor.spec.registry_name, _starting_key(agent_cls, receptor)
             )
     loop_key = choices.loop or _key_of(catalog, "agent_loop", agent.get("agent_loop"))
     environment_key = choices.environment or _environment_for(catalog, agent_key, loop_key)
@@ -405,9 +412,10 @@ def _new_template(
     return raw
 
 
-def _declared_block(owner: type) -> dict[str, Any]:
+def _declared_block(owner: type) -> dict[str, JsonValue]:
     """*owner*'s own template starting values (an agent's ``__template_block__``), a fresh copy."""
-    return copy.deepcopy(dict(getattr(owner, "__template_block__", {})))
+    declared: Mapping[str, JsonValue] = getattr(owner, "__template_block__", {})
+    return copy.deepcopy(dict(declared))
 
 
 def _key_of(catalog: ConfigurationCatalog, layer: str, block: object) -> str:
@@ -725,11 +733,15 @@ def _expand_model(
     result: dict[str, Any] = {}
     fields = type(model).model_fields
     constants = _constant_fields(type(model)) if definition else {}
-    ordered = (
-        sorted(fields, key=lambda name: (fields[name].alias or name) not in constants)
-        if path
-        else root_fields
-    )
+
+    def rank(name: str) -> int:
+        """A block's own fixed name first, then nested selectors (``provider``), then the rest."""
+        key = fields[name].alias or name
+        if key not in constants:
+            return 2
+        return 1 if isinstance(constants[key], dict) else 0
+
+    ordered = sorted(fields, key=rank) if path else root_fields
     for name in ordered:
         info = fields[name]
         key = info.alias or name
