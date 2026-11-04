@@ -272,3 +272,20 @@ def test_the_task_graph_endpoint_keeps_a_filtered_source_as_context(root: Path) 
     gone = client.get("/api/task-graph", params={"task": ['["x", "", "1"]', TASK]})
     assert [graph["task"]["key"] for graph in gone.json()] == [TASK]
     assert client.get("/api/task-graph").status_code == 422
+
+
+def test_a_filtered_out_source_still_gives_its_branch_a_task(tmp_path: Path) -> None:
+    """A source with no recorded benchmark, and a branch of it: the list and the graph agree."""
+    _record(tmp_path, "live", TraceConfig(task_id="118"), [step_record(i) for i in range(3)])
+    lost = _provenance("live", 1).model_copy(update={"source_benchmark": ""})
+    restored = step_record(0).model_copy(
+        update={"origin": "restored", "restoration": _check(0, "ok")}
+    )
+    branch = TraceConfig(branch=lost, resolved={"variant": "branch"})
+    _record(tmp_path, "branch", branch, [restored, step_record(1)])
+    branch_hash = RunTrace(tmp_path / "branch").manifest.config_hash
+    client = TestClient(create_app(tmp_path, config_hash=branch_hash), base_url="http://127.0.0.1")
+    (row,) = client.get("/api/runs").json()
+    assert row["task_key"] == "run:live"
+    (graph,) = client.get("/api/task-graph", params={"task": row["task_key"]}).json()
+    assert [line["key"] for line in graph["lines"]] == ["live", "branch"]

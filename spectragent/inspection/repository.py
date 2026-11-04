@@ -419,11 +419,14 @@ class _FileRepository:
         """Every run row under the root with its source resolved and its task key.
 
         Rows the configuration filters leave out are dropped, or kept marked
-        ``context`` with *outside_filters*. Unreadable runs are rows too.
+        ``context`` with *outside_filters*. Unreadable runs are rows too. A
+        branch's source and its task are resolved against every readable run
+        under the root, never against the filter: a filtered-out run still
+        lends its identity, so the list and the task graph agree.
         """
-        rows = []
-        # Every readable run under the root, filtered or not: a branch's
-        # source is resolved against the root, never against the filter.
+        rows: list[dict[str, Any]] = []
+        # Identities of the readable runs the filters leave out, for resolution only.
+        others: list[dict[str, Any]] = []
         keys_by_run_id: dict[str, list[str]] = {}
         for directory, files in self._directories():
             if "manifest.json" not in files or self._kind(directory / "manifest.json") == "dataset":
@@ -436,6 +439,11 @@ class _FileRepository:
                     rows.append(_summary(trace, key))
                 elif outside_filters:
                     rows.append({**_summary(trace, key), "context": True})
+                else:
+                    config = trace.config
+                    others.append(
+                        {"key": key, "task_key": task_key(config), "branch": _json(config.branch)}
+                    )
             except (RepositoryError, TraceSchemaError, OSError) as exc:
                 if self.config_source is not None or self.config_hash is not None:
                     # No readable identity means no evidence of membership.
@@ -449,7 +457,7 @@ class _FileRepository:
                         "verdicts": [],
                     }
                 )
-        for row in rows:
+        for row in rows + others:
             if row.get("branch"):
                 # The same resolution ``run`` reports, from the same scan.
                 candidates = keys_by_run_id.get(row["branch"]["source_run_id"], [])
@@ -457,7 +465,7 @@ class _FileRepository:
                 row["source_resolution"] = (
                     "found" if len(candidates) == 1 else "ambiguous" if candidates else "missing"
                 )
-        task_keys(rows)
+        task_keys(rows + others)
         return rows
 
     def list_runs(self, search: str = "") -> list[dict[str, Any]]:
