@@ -563,7 +563,7 @@ UI-TARS 要求现有 `loop.history`，每轮只把其中上一批动作及逐项
   - **编号 0**：`scroll` 的 `index` 为 0 时滚元素 0；AndroidWorld 的 `if action.index:` 把 0 当成没给编号，滚整个屏幕。
   - **编号指名的元素**：编号指名 agent 看到的那棵树里的元素，动作作用在那个元素当时的位置（用户 2026-11-01 的裁决，§11.2 "动作"）；AndroidWorld 在执行之前再读一次元素列表（`env/interface.py` 的 `AsyncAndroidEnv.execute_action`），按同一个编号取新列表里的元素：agent 看过之后界面变了，取到的就是另一个元素，新列表短了就执行失败。
   - **输入要有文本框获得焦点**：`type` 点按元素之后、不给点的 `type_coordinate` 直接，都只在有文本框有焦点时输入（capability 的焦点规则，§4.9 "相对名就是参数契约"）；AndroidWorld 不管有没有框获得焦点都输入。
-  - **输入被拒就不按回车**：`input_text` 是 `type`（或不给点的 `type_coordinate`）再接 `press_key` `enter`，输入被焦点规则拒绝时，这一步停在失败的输入上，回车不按（上文"一步里有动作失败，这一步就停下"）；AndroidWorld 的 `input_text`（`env/actuation.py` 第 74–105 行）点按、输入，然后不论文字进没进去都按回车。这一处对我们有利：2026-11-04 的 MiniWoB 回归里，`choose-date`、`choose-date-easy`、`choose-date-medium` 往只读的日期框里输入被拒，回车也就没按到打开的日期选择器上。
+  - **输入失败就不按回车**：`input_text` 是 `type`（或不给点的 `type_coordinate`）再接 `press_key` `enter`，输入失败时（被焦点规则拒绝，或因别的原因失败，比如键入后端在设备上拒绝），这一步停在失败的输入上，回车不按（上文"一步里有动作失败，这一步就停下"）；AndroidWorld 的 `input_text`（`env/actuation.py` 第 74–105 行）点按、输入，然后不论文字进没进去都按回车。这一处对我们有利：2026-11-04 的 MiniWoB 回归里，`choose-date`、`choose-date-easy`、`choose-date-medium` 往只读的日期框里输入被拒，回车也就没按到打开的日期选择器上。
   - **执行之前拒绝**，用 M3A 的 `Can not parse the output to a valid action. …`：提示词没教的动作类型（`double_tap`、`swipe`、`unknown`；AndroidWorld 执行它们，`unknown` 什么也不做）；`input_text` 没有文字、`scroll` 没有方向（AndroidWorld 什么也不做，照常写小结）；`click`、`long_press` 既没编号也没点，`open_app` 没有 app 名（AndroidWorld 执行时失败）。
   - **执行失败的动作**写 `Action selected: <动作>. The action failed: <错误>`，错误是 capability 的原话（上一条"历史与每步小结"）；AndroidWorld 执行时失败的动作不写进历史，编号超出元素列表时在执行之前用它自己的一句话拒绝。
   - **`answer` 结束 run**，文字是答案；AndroidWorld 记下答案、接着跑到 `status`，M3A 照提示词在回答之后再写的 `status` 因此没有机会。信息检索任务按这个答案判分（§4.2 "交给裁判的只有 run 的最终答案"）。

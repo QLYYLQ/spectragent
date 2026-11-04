@@ -91,11 +91,12 @@ history says the same (``agent.py``).
   types only into a text field that has focus (the capability's focus rule,
   ``docs/architecture_design.md`` §4.9). AndroidWorld types whether or not a
   field took focus.
-- *A refused type skips the Enter.* ``input_text`` is ``type`` (or
+- *A failed type skips the Enter.* ``input_text`` is ``type`` (or
   ``type_coordinate`` without a point) and then ``press_key`` ``enter``; when
-  the focus rule refuses the typing, the step stops there and the Enter is
-  not pressed (``docs/architecture_design.md`` §4.1: a failed action stops
-  its step). AndroidWorld's ``input_text`` taps, types and then presses Enter
+  the typing fails (the focus rule refuses it, or it fails for another reason,
+  such as the typing backend refusing on the device), the step stops there and
+  the Enter is not pressed (``docs/architecture_design.md`` §4.1: a failed
+  action stops its step). AndroidWorld's ``input_text`` taps, types and then presses Enter
   whether or not the text went in (``env/actuation.py``).
 - *Refused before running*, with :data:`NOT_AN_ACTION`: the action types
   M3A's prompt does not teach (``double_tap``, ``swipe``, ``unknown``), which
