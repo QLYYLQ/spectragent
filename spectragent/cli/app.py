@@ -9,11 +9,12 @@ import inspect
 import io
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import redirect_stdout
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
 import typer
 import yaml
@@ -29,8 +30,12 @@ if TYPE_CHECKING:
     from typer._click.core import Parameter
     from typer._click.shell_completion import CompletionItem
 
+    from spectragent.core.registries import CapabilityFlag
+
 #: Where a command keeps the start flags it was given (flag → value) in ``ctx.meta``.
 _START_FLAGS = "spectragent.start_flags"
+#: Where ``config template`` keeps the capabilities' template flags it was given.
+_TEMPLATE_FLAGS = "spectragent.template_flags"
 
 #: The commands a leaf module's own parser runs: name, module, help.
 _LEAF_COMMANDS: tuple[tuple[str, str, str], ...] = (
@@ -67,49 +72,112 @@ _LEAF_COMMANDS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-class _WithStartFlags(TyperCommand):
-    """A command that also takes every capability's start flags (``docs/architecture_design.md`` §4.9).
+class _WithCapabilityFlags(TyperCommand):
+    """A command that also takes flags every capability declares, one help panel per capability.
 
-    The flags come from each capability package's ``declarations.py``
-    (``START_FLAGS``), read when the command first parses or shows its help,
-    and are listed under one panel per capability. Their values are kept in
-    ``ctx.meta`` for the command to read (:func:`_given_start_flags`), never
-    passed as parameters: the command knows no capability's flag by name.
+    The flags come from each capability package's ``declarations.py``, read
+    when the command first parses or shows its help. Their values are kept in
+    ``ctx.meta`` under :attr:`meta_key` for the command to read
+    (:func:`_given_flags`), never passed as parameters: the command knows no
+    capability's flag by name.
     """
 
-    _start_flags_added = False
+    #: Where the given flags are kept in ``ctx.meta``.
+    meta_key: ClassVar[str]
+    #: What the flags are, for the help panels: ``start flags``.
+    kind: ClassVar[str]
+    _flags_added = False
+
+    @staticmethod
+    def declared() -> Mapping[str, Sequence[CapabilityFlag]]:
+        """Each capability's flags of this kind, by ``capability_id``."""
+        raise NotImplementedError
+
+    @staticmethod
+    def metavar(flag: CapabilityFlag) -> str:
+        raise NotImplementedError
 
     def get_params(self, ctx: typer.Context) -> list[Parameter]:
-        if not self._start_flags_added:
-            from spectragent.core.registries import start_flags
+        if not self._flags_added:
             from spectragent.core.run_cli import start_flag_help
 
-            self._start_flags_added = True
+            self._flags_added = True
+            taken = {option for param in self.params for option in param.opts}
+            declared = self.declared()
+            for capability_id, flags in declared.items():
+                for flag in flags:
+                    if flag.flag in taken:
+                        raise ValueError(
+                            f"the {capability_id} capability declares {flag.flag} among its "
+                            f"{self.kind}, and the {self.name} command already takes it"
+                        )
             self.params.extend(
                 TyperOption(
                     param_decls=[flag.flag],
-                    metavar=flag.key.upper(),
+                    metavar=self.metavar(flag),
                     help=start_flag_help(capability_id, flag),
                     expose_value=False,
-                    callback=_keep_start_flag,
-                    rich_help_panel=f"{capability_id} start flags (refused without a "
+                    callback=partial(_keep_flag, self.meta_key),
+                    rich_help_panel=f"{capability_id} {self.kind} (refused without a "
                     f"{capability_id} capability)",
                 )
-                for capability_id, flags in start_flags().items()
+                for capability_id, flags in declared.items()
                 for flag in flags
             )
         return super().get_params(ctx)
 
 
-def _keep_start_flag(ctx: typer.Context, param: Parameter, value: str | None) -> str | None:
+class _WithStartFlags(_WithCapabilityFlags):
+    """A command that also takes every capability's start flags (``docs/architecture_design.md`` §4.9)."""
+
+    meta_key = _START_FLAGS
+    kind = "start flags"
+
+    @staticmethod
+    def declared() -> Mapping[str, Sequence[CapabilityFlag]]:
+        from spectragent.core.registries import start_flags
+
+        return start_flags()
+
+    @staticmethod
+    def metavar(flag: CapabilityFlag) -> str:
+        from spectragent.schemas.task import StartFlag
+
+        assert isinstance(flag, StartFlag)
+        return flag.key.upper()
+
+
+class _WithTemplateFlags(_WithCapabilityFlags):
+    """``config template``, which also takes every capability's template flags (§4.17)."""
+
+    meta_key = _TEMPLATE_FLAGS
+    kind = "template flags"
+
+    @staticmethod
+    def declared() -> Mapping[str, Sequence[CapabilityFlag]]:
+        from spectragent.core.registries import template_flags
+
+        return template_flags()
+
+    @staticmethod
+    def metavar(flag: CapabilityFlag) -> str:
+        from spectragent.core.registries import TemplateFlag
+
+        assert isinstance(flag, TemplateFlag)
+        return flag.receptor.upper()
+
+
+def _keep_flag(
+    meta_key: str, ctx: typer.Context, param: Parameter, value: str | None
+) -> str | None:
     if value is not None:
-        ctx.meta.setdefault(_START_FLAGS, {})[param.opts[0]] = value
+        ctx.meta.setdefault(meta_key, {})[param.opts[0]] = value
     return value
 
 
-def _given_start_flags(ctx: typer.Context) -> dict[str, str]:
-    """The start flags this command was given, flag → value."""
-    return dict(ctx.meta.get(_START_FLAGS, {}))
+def _given_flags(ctx: typer.Context, meta_key: str = _START_FLAGS) -> dict[str, str]:
+    """The capability flags this command was given, flag → value: its start flags unless told."""
+    return dict(ctx.meta.get(meta_key, {}))
 
 
 class _Leaf(TyperCommand):
@@ -441,7 +509,7 @@ def create_app() -> typer.Typer:
     ) -> None:
         from spectragent.cli.configuration import explain_config
 
-        start = _given_start_flags(ctx)
+        start = _given_flags(ctx)
 
         def inspect() -> dict[str, Any]:
             data = explain_config(
@@ -525,7 +593,7 @@ def create_app() -> typer.Typer:
         )
         raise typer.Exit(code)
 
-    @config_app.command("template")
+    @config_app.command("template", cls=_WithTemplateFlags)
     def config_template(
         ctx: typer.Context,
         source: Annotated[
@@ -538,16 +606,20 @@ def create_app() -> typer.Typer:
             ),
         ] = None,
         agent: str | None = typer.Option(
-            None, help="Agent registry key; new templates use browser_use."
+            None, help="Agent registry key; new templates use browser_use.dom."
         ),
         loop: str | None = typer.Option(None, help="Loop registry key; new templates use react."),
         llm: str | None = typer.Option(None, help="Full LLM registry key, e.g. openai.direct."),
         model: str | None = typer.Option(None, help="Model name; required for a new template."),
         environment: str | None = typer.Option(
-            None, help="Environment registry key; new templates use browser."
+            None,
+            help="Environment registry key; new templates use the one the agent's wiring "
+            "requires, and need this flag when its wiring can run in several.",
         ),
-        backend: str | None = typer.Option(
-            None, help="Browser provider registry key; new templates use local_chrome."
+        benchmark: str | None = typer.Option(
+            None,
+            help="A benchmark (shipped alias or benchmark YAML path), composed with the template "
+            "as a run composes it; the capability settings it supplies are left out of the YAML.",
         ),
         record: Annotated[
             list[str] | None,
@@ -556,10 +628,6 @@ def create_app() -> typer.Typer:
                 help="Repeat for metrics, errors, trajectory, observations; or use all/none for these four channels. New templates use metrics.",
             ),
         ] = None,
-        replayability: str | None = typer.Option(
-            None,
-            help="Replayability registry key (none/pinned). Network source and archive remain independent.",
-        ),
         output_path: Annotated[
             Path | None,
             typer.Option(
@@ -571,11 +639,13 @@ def create_app() -> typer.Typer:
     ) -> None:
         """Write a fully expanded, commented YAML template without launching anything.
 
-        Without --from, select BrowserUse/ReAct, simple memory, a local browser,
-        instant input, BrowserUse DOM cleaning/text, live network, no pinning or
-        environment archive, and metrics only. Supply --model; no model is guessed.
-        --from supports any valid run skeleton, including archive/branch configs.
-        Required missing fields are errors. Task-specific checks use config check.
+        Without --from, select BrowserUse (or --agent) with ReAct, openai.direct and
+        simple memory, the environment the agent's wiring requires (or --environment)
+        with each capability's declared starting choices, no environment archive, and
+        metrics only. Supply --model; no model is guessed. --from supports any valid
+        run skeleton, including archive/branch configs. With --benchmark, the settings
+        the benchmark supplies are left out. Required missing fields are errors.
+        Task-specific checks use config check.
         """
         from spectragent.cli.config_templates import TemplateChoices, render_config_template
 
@@ -591,9 +661,9 @@ def create_app() -> typer.Typer:
                     llm=llm,
                     model=model,
                     environment=environment,
-                    backend=backend,
                     recording=tuple(record) if record is not None else None,
-                    replayability=replayability,
+                    capability_flags=_given_flags(ctx, _TEMPLATE_FLAGS),
+                    benchmark=benchmark,
                 ),
                 raw,
             )

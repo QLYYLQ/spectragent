@@ -32,12 +32,11 @@ from spectragent.benchmarks.selection import read_benchmark, run_root
 from spectragent.core.benchmark_runner import positive_seconds, safe_run_id, task_snapshot
 from spectragent.core.composer import ConfigComposer, named_packages
 from spectragent.core.experiment import ExperimentScope
-from spectragent.core.registries import start_flags
+from spectragent.core.registries import CapabilityFlag, start_flags
 from spectragent.core.runtime import VERIFY_TIMEOUT_S, AgentRuntime
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.restoration import BranchProvenance
-from spectragent.schemas.task import StartFlag
 
 
 class StartFlagError(ValueError):
@@ -76,8 +75,11 @@ def start_context(given: Mapping[str, str], raw: object) -> dict[str, str] | Non
     return context or None
 
 
-def start_flag_help(capability_id: str, flag: StartFlag) -> str:
-    """*flag*'s help, labelled with its capability: what ``--help`` and tab completion show."""
+def start_flag_help(capability_id: str, flag: CapabilityFlag) -> str:
+    """*flag*'s help, labelled with its capability: what ``--help`` and tab completion show.
+
+    The same label for a capability's template flags (``config template``).
+    """
     return f"({capability_id}) {flag.help}"
 
 

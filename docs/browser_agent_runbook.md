@@ -39,7 +39,7 @@ uv run spectragent config check experiment.yaml
 uv run spectragent config template --from configs/browser_use_local.yaml --output expanded.yaml
 ```
 
-新模板的默认选型是 BrowserUse（`browser_use.dom`）＋ReAct、`openai.direct`、simple memory、local Chrome、instant 输入、BrowserUse cleaner、text serializer、live 网络、无回放固定；型号必须用 `--model` 提供。所选组件和受体的配置字段、默认动作及各自参数全部展开，说明与约束来自当前 schema；未选的可选组件不展开。注释标明来自模板选型、用户参数、骨架或 schema 的默认值。新模板只启用 metrics，含模型报告的 token、调用次数和计时；可以重复 `--record metrics --record errors`，也可以用 `--record all` / `--record none` 全开或全关四个内容通道。`none` 不删除 trace writer，也不关闭骨架中独立选择的 archive。
+新模板的默认选型是 BrowserUse（`browser_use.dom`）＋ReAct、`openai.direct`、simple memory、local Chrome、instant 输入、BrowserUse cleaner、text serializer、live 网络、无回放固定；型号必须用 `--model` 提供。environment 由 agent 的 wiring 选出（BrowserUse 选 browser），browser 块从 local Chrome 起的这些选择写在 browser capability 自己的 `declarations.py`（`TEMPLATE_BLOCK`），`--backend` 与 `--replayability` 是它声明的模板参数；它们只是模板的起点，YAML 里看得到、改得掉，不是运行时的默认。所选组件和受体的配置字段、默认动作及各自参数全部展开，说明与约束来自当前 schema；未选的可选组件不展开。注释标明来自模板选型、用户参数、骨架或 schema 的默认值。新模板只启用 metrics，含模型报告的 token、调用次数和计时；可以重复 `--record metrics --record errors`，也可以用 `--record all` / `--record none` 全开或全关四个内容通道。`none` 不删除 trace writer，也不关闭骨架中独立选择的 archive。
 
 `--replayability none|pinned` 只控制回放固定，`network_source: live|archive` 与 `trace_writer.archive` 独立；新模板为 live 和 `archive: []`，离线回放用 `--from configs/flywheel/replay_ui_tars_archive.yaml` 保留其网络与归档选择。生成只校验配置和装配，不启动 Chrome、不调用模型、不打开回放任务证据；任务相关输入仍在 `config check` 或 `run --dry-run` 中验证。必填项缺失会列出字段位置，框架不编造型号或路径。没有 `--output` 时 stdout 是纯 YAML；输出路径存在会拒绝覆盖。
 
