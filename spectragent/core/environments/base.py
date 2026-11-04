@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from spectragent.core.archive._registrar import ArchiverBase
     from spectragent.core.archive.types import ArchiveBatch
     from spectragent.core.capabilities.base import PreparedSetupContext
+    from spectragent.core.environment_reuse import EnvironmentHandover
     from spectragent.schemas.restoration import RestorationEvidence, Retarget
     from spectragent.schemas.task import SetupTaskText
     from spectragent.schemas.verdict import Verdict
@@ -393,6 +394,25 @@ class Environment(Protocol):
             ValueError: A component whose capability is not here, does not
                 host setup components, or is named by two components.
         """
+        ...
+
+    def environment_identities(self, setups: Sequence[BenchmarkSetup] = ()) -> dict[str, str]:
+        """What each capability that carries task state brings up, by ``capability_id``.
+
+        Asks every capability implementing ``ReusableEnvironment``, with the
+        setup component about to be bound to it (*setups* routed as
+        :meth:`bind_setups` routes them); empty when none carries task state.
+        Reads configuration only (``docs/architecture_design.md`` §4.10.1
+        "环境跨任务复用").
+
+        Raises:
+            ValueError: As :meth:`bind_setups`, for *setups*.
+        """
+        ...
+
+    def bind_handover(self, handover: EnvironmentHandover | None) -> None:
+        """Hand *handover* to every capability that carries task state, for its next setup and
+        teardown. Acquires nothing."""
         ...
 
     def bind_live_verifiers(self, verifiers: Sequence[LiveVerifier]) -> None:

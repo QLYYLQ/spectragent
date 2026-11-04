@@ -37,6 +37,7 @@ from spectragent.core.capabilities.base import (
     PreparedSetupContext,
     RestorationAlignment,
     RestorationSupport,
+    ReusableEnvironment,
     SetupCheck,
     SetupContextPreparation,
     SetupHost,
@@ -60,6 +61,7 @@ from spectragent.schemas.verdict import Judgment, Verdict, VerifierIdentity
 
 if TYPE_CHECKING:
     from spectragent.benchmarks._setup_registrar import BenchmarkSetup
+    from spectragent.core.environment_reuse import EnvironmentHandover
     from spectragent.verifiers.base import LiveVerifier
 
 logger = logging.getLogger(__name__)
@@ -631,6 +633,33 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         for cap in self.capabilities.values():
             if isinstance(cap, SetupHost):
                 cap.bind_setup(groups.get(cap.capability_id))
+
+    # ── Environment reuse across tasks: routing ─────────────────
+
+    def environment_identities(self, setups: Sequence[BenchmarkSetup] = ()) -> dict[str, str]:
+        """What each capability that carries task state brings up, by ``capability_id``.
+
+        Every capability implementing
+        :class:`~spectragent.core.capabilities.base.ReusableEnvironment` is
+        asked with the setup component about to be bound to it, routed as
+        :meth:`bind_setups` routes it. Empty when none carries task state.
+        Reads configuration only (``docs/architecture_design.md`` §4.10.1).
+
+        Raises:
+            ValueError: As :meth:`_setup_groups`.
+        """
+        hosted = self._setup_groups(setups)
+        return {
+            cap.capability_id: cap.environment_identity(hosted.get(cap.capability_id))
+            for cap in self.capabilities.values()
+            if isinstance(cap, ReusableEnvironment)
+        }
+
+    def bind_handover(self, handover: EnvironmentHandover | None) -> None:
+        """Hand *handover* to every capability that carries task state. Acquires nothing."""
+        for cap in self.capabilities.values():
+            if isinstance(cap, ReusableEnvironment):
+                cap.bind_handover(handover)
 
     # ── Benchmark live verifiers: routing the binding ─────────────
 

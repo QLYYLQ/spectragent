@@ -557,7 +557,7 @@ class AgentRuntime:
         # set up, bound or narrowed.
         self._prepared_setup = PreparedSetupContext({}, {})
         self._task_text_setter = None
-        setups = self._benchmark_setups()
+        setups = self.benchmark_setups()
         live_verifiers = self._live_verifiers()
         if env is not None:
             self._prepared_setup = env.prepare_setup_context(env_context)
@@ -761,8 +761,13 @@ class AgentRuntime:
         """
         return self._run.instances("benchmark")
 
-    def _benchmark_setups(self) -> list[BenchmarkSetup]:
-        """The run's benchmark setup components: ``[]`` with no benchmark or none (:meth:`_benchmarks`)."""
+    def benchmark_setups(self) -> list[BenchmarkSetup]:
+        """The run's benchmark setup components: ``[]`` with no benchmark or none (:meth:`_benchmarks`).
+
+        :meth:`prepare` binds them; a sweep that asks for reuse reads them
+        before that to decide whether the task may run on the environment
+        kept from the task before (``core/environment_reuse.py``).
+        """
         return [benchmark.setup for benchmark in self._benchmarks() if benchmark.setup is not None]
 
     def _live_verifiers(self) -> list[LiveVerifier]:
@@ -829,6 +834,7 @@ class AgentRuntime:
         action_filter: list[str] | None = None,
         config: dict[str, Any] | None = None,
         raise_on_error: bool = True,
+        earlier_tasks_on_environment: int = 0,
     ) -> Any:
         """One-shot: prepare + env lifecycle + run + lifecycle hooks + timeout.
 
@@ -942,6 +948,10 @@ class AgentRuntime:
             raise_on_error: Re-raise an unexpected exception after the
                 trace is closed out. Benchmark drivers pass ``False`` to
                 get the failed ``AgentResult`` back and keep going.
+            earlier_tasks_on_environment: How many tasks the environment
+                served before this one, when a sweep kept it from them
+                (``core/environment_reuse.py``); handed to ``on_run_start``
+                for the trace, never read here. 0: a new environment.
         """
         has_env_context = env_context is not None
         prepared_agent = self.prepare(
@@ -1030,6 +1040,7 @@ class AgentRuntime:
                 task_setup=self._prepared_setup.recordable if has_env_context else None,
                 branch=branch,
                 benchmark_spec=benchmark_spec,
+                earlier_tasks_on_environment=earlier_tasks_on_environment,
                 config_source=config_source,
             )
 

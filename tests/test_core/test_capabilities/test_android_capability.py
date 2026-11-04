@@ -785,6 +785,8 @@ class _RecordingSetup:
     tasks: list[OracleTask | None] = field(default_factory=list)
     #: The event loop's time when the episode question reached it.
     asked_at: float | None = None
+    #: Whether it resets the device between tasks.
+    resets_between_tasks: bool = True
 
     @property
     def setup_id(self) -> str:

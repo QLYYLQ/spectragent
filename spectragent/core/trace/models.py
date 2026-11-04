@@ -653,7 +653,7 @@ def _absent(value: Any) -> bool:
 
 
 def _empty(value: Any) -> bool:
-    """``exclude_if`` of a per-task mapping: not written when it holds nothing."""
+    """``exclude_if`` of a per-task mapping or count: not written when it holds nothing."""
     return not value
 
 
@@ -687,21 +687,23 @@ class TraceConfig(BaseModel):
     under ``env/`` — the state of the world the agent acted in,
     privacy-marked on its own terms.
 
-    Five per-task facts sit beside the layers: :attr:`task_setup`, the
+    Six per-task facts sit beside the layers: :attr:`task_setup`, the
     environment setup context the task started from, redacted by value;
     :attr:`branch`, where a branch run came from; :attr:`max_steps`, the
     step budget the Loop ran the task under; :attr:`task_text_setter`,
-    the capability whose setup completes the task's text; and
+    the capability whose setup completes the task's text;
     :attr:`benchmark_spec`, how the benchmark the task belongs to was
-    selected.
+    selected; and :attr:`earlier_tasks_on_environment`, how many tasks the
+    environment served before this one.
 
     **A per-task or per-feature field is written only when it has a
     value** (``docs/architecture_design.md`` §5.3): ``branch`` only in a
     branch run, ``task_setup`` only when the task was started with a setup
     context, ``max_steps`` only when the Loop has a step budget,
     ``task_text_setter`` only when a setup completes the task's text,
-    ``env_evidence_privacy`` only when archivers were bound,
-    ``benchmark_spec`` only when the task belongs to a benchmark,
+    ``earlier_tasks_on_environment`` only when the environment was kept
+    from an earlier task, ``env_evidence_privacy`` only when archivers were
+    bound, ``benchmark_spec`` only when the task belongs to a benchmark,
     ``extra`` only when the caller passed some. A placeholder such as
     ``"branch": null`` in every other run's ``config.json`` would be one
     more thing to explain. An absent key reads back as the field's
@@ -796,6 +798,11 @@ class TraceConfig(BaseModel):
     #: (``docs/architecture_design.md`` §5.3). Per task, so not part of the
     #: digest.
     task_text_setter: str | None = Field(default=None, exclude_if=_absent)
+    #: How many tasks this run's environment served before this one: a sweep
+    #: kept it from its earlier tasks (``docs/architecture_design.md``
+    #: §4.10.1 "环境跨任务复用"). 0 (not written): a new environment. Per
+    #: task, so not part of the digest.
+    earlier_tasks_on_environment: int = Field(default=0, ge=0, exclude_if=_empty)
 
     #: Which source file launched this run, across all historical versions.
     #: Absent for callers and older traces without explicit source provenance.
@@ -827,7 +834,8 @@ class TraceConfig(BaseModel):
         ``archive_bindings``) moves it through the latter, with no special
         case. Excluded: ``task`` / ``task_id`` (which task, not which
         configuration), ``extra``, ``task_setup``, ``branch``,
-        ``max_steps`` and ``task_text_setter`` (per-task data), the
+        ``max_steps``, ``task_text_setter`` and
+        ``earlier_tasks_on_environment`` (per-task data), the
         provenance fields
         ``config_source`` / ``secrets_recorded`` / ``env_evidence_privacy``,
         and ``benchmark_spec`` (where the benchmark block came from; the
