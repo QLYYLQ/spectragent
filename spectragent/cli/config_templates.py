@@ -490,22 +490,16 @@ def _receptor_start(
 
 
 def _named_key(catalog: ConfigurationCatalog, layer: str, block: dict[str, Any]) -> str | None:
-    """The implementation of *layer* whose whole fixed name *block* writes, if any."""
+    """The implementation of *layer* whose fixed name *block* writes; ``None`` when it names none.
+
+    *block* must write every top-level part of the name, so a values-only
+    ``llm`` block (no ``model_type``) names no provider.
+    """
     for key, definition in catalog.components.get(layer, {}).items():
         selector = _constant_fields(definition.config_model)
-        if selector and _writes_selector(block, selector):
+        if selector and selector.keys() <= block.keys() and _matches_selector(block, selector):
             return key
     return None
-
-
-def _writes_selector(block: object, selector: dict[str, Any]) -> bool:
-    """Whether *block* writes every part of *selector*, nested selectors (``provider``) included."""
-    return isinstance(block, dict) and all(
-        _writes_selector(block.get(name), value)
-        if isinstance(value, dict)
-        else name in block and block[name] == value
-        for name, value in selector.items()
-    )
 
 
 def _key_of(catalog: ConfigurationCatalog, layer: str, block: object) -> str:
