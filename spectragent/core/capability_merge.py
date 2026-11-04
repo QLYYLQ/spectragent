@@ -381,15 +381,16 @@ class CapabilityMerge:
         }
         problems: list[MergeProblem] = []
         seen: set[JsonValue] = set()
-        for item in value:
+        for position, item in enumerate(value):
             if not isinstance(item, Mapping):
                 continue
             key = item.get(discriminator)
             where = f"{at}[{key}]"
             if key in seen:
+                # A fault of the part: named where the part writes it.
                 problems.append(
                     MergeProblem(
-                        f"{target.path}.{where}",
+                        f"{side.path}.{at}[{position}]",
                         f"{side} sets options on {key!r} twice; a part sets each entry's "
                         f"options once",
                         "capability_contribution_invalid",

@@ -301,7 +301,7 @@ def test_a_part_that_sets_one_entrys_options_twice_is_refused_as_invalid(tmp_pat
 
     assert refused.issue is not None and refused.issue.code == "capability_contribution_invalid"
     assert str(refused) == (
-        "environment[0].capabilities[0].actions[android.scroll]: the benchmark androidworld "
+        "benchmark[0].capability[0].actions[1]: the benchmark androidworld "
         "(benchmark[0].capability[0]) sets options on 'android.scroll' twice; a part sets each "
         "entry's options once."
     )
