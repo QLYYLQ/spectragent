@@ -61,9 +61,14 @@ says the most policy steps a task takes (`None` by default), Runtime hands it to
 An Agent declares consumed fields in `__execution_limit_fields__`. A deliberate empty set
 means these limits do not apply to its prompts; an absent declaration cannot silently
 ignore a supplied limit. Consumed fields must be known and provided. A consuming Agent's
-existing `prepare` slot explicitly accepts `execution_limits` by keyword; `**kwargs` is
-not a consumption declaration. Runtime checks this in `prepare()` and hands the same typed
-value to `AgentRuntime.seed_messages()`.
+existing `prepare` slot explicitly accepts `execution_limits` by keyword, or the Agent
+implements `check_run_settings(execution_limits)` (`RunSettingsCheck`), or both; `**kwargs`
+is not a consumption declaration. Runtime checks this in `prepare()`, asks
+`check_run_settings` right there, and hands the same typed value to
+`AgentRuntime.seed_messages()` when `prepare` names it. A setting an Agent cannot work with
+(M3A: fewer than 2 actions per reply) is refused in `check_run_settings`, never in its
+`prepare` seed slot: `spectragent config check` and the bench pre-flight run `prepare()`
+only, so a refusal in the seed slot passes them and fails every run at its start.
 
 The Agent uses its existing `prepare`, `_build_system_prompt` and `build_react_prompt`
 methods to decide wording and placement. Runtime never constructs domain prompt text.

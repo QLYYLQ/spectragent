@@ -122,15 +122,6 @@ def test_no_finish_verb_no_promise_about_it() -> None:
     assert "finished()" not in content
 
 
-def test_a_budget_below_one_is_a_config_error_not_a_prompt() -> None:
-    with pytest.raises(ValueError, match="max_actions_per_step=0"):
-        UITarsAgent().prepare(
-            task="t",
-            action_space=space_for(UITarsAgent(), _NEGOTIATED),
-            execution_limits=ExecutionLimits(max_actions_per_step=0),
-        )
-
-
 def test_the_agent_owns_no_copy_of_the_limit() -> None:
     agent = UITarsAgent()
     assert not hasattr(agent, "max_actions_per_step")

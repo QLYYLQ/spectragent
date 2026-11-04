@@ -85,7 +85,7 @@ from spectragent.core.llm.messages import (
     UserMessage,
 )
 from spectragent.core.loops.coordinate_frames import fact_in_model_frame, point_writer
-from spectragent.core.loops.limits import ExecutionLimits
+from spectragent.core.loops.limits import ExecutionLimits, actions_per_step
 from spectragent.schemas.action import Action, ActionDescriptor
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation.geometry import PointFrame
@@ -273,7 +273,15 @@ class SkyvernAgent(AgentBase):
             self, registry, required, optional, shown=self.show_capture_state
         )
 
-    # ── Lifecycle hook called by AgentRuntime ──────────────────
+    # ── Lifecycle hooks called by AgentRuntime ─────────────────
+
+    def check_run_settings(self, execution_limits: ExecutionLimits) -> None:
+        """Refuse in ``AgentRuntime.prepare()`` a Loop without a cap the prompt can state.
+
+        ``RunSettingsCheck``: :func:`actions_per_step`, which :meth:`prepare`
+        asks again for the number it writes.
+        """
+        actions_per_step(execution_limits, agent="Skyvern")
 
     def prepare(
         self,
@@ -296,9 +304,7 @@ class SkyvernAgent(AgentBase):
             UnsupportedParamsSchema: An action's params are outside the closed
                 union's subset — before the first model call.
         """
-        max_actions_per_step = execution_limits.max_actions_per_step
-        if max_actions_per_step is None:
-            raise ValueError("prepare requires the Loop's max_actions_per_step execution limit")
+        max_actions_per_step = actions_per_step(execution_limits, agent="Skyvern")
         dom_format = fragment_formats.get("dom")
         if not dom_format:
             raise ValueError("prepare requires the dom fragment's format description")

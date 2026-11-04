@@ -392,15 +392,19 @@ async def test_a_contribution_goes_where_the_memory_keeps_it() -> None:
     ],
     ids=["one-action-per-reply", "a-re-ask", "a-limit-on-unread-replies", "a-wider-window"],
 )
-def test_a_run_that_would_not_run_m3a_as_androidworld_does_is_refused(
+def test_a_run_that_would_not_run_m3a_as_androidworld_does_is_refused_in_prepare(
     loop: dict[str, int], window: int, refusal: str
 ) -> None:
     """input_text runs as two actions; an unread reply costs its step, never more, never less;
-    the memory keeps the step's one message."""
+    the memory keeps the step's one message. ``AgentRuntime.prepare()`` refuses it, before
+    anything is negotiated, set up or seeded (``RunSettingsCheck``)."""
     runtime = AgentRuntime.for_agent(_assembly(loop=loop, window=window), AGENT_ID)
-    runtime.prepare(task_id="assembly")
 
     with pytest.raises(ValueError, match=refusal):
+        runtime.prepare(task_id="assembly")
+
+    assert runtime.negotiated_observation is None and runtime.negotiated_actions is None
+    with pytest.raises(RuntimeError, match="needs prepare"):
         runtime.seed_messages("Turn wifi off.")
 
 
@@ -445,7 +449,19 @@ def test_a_space_without_an_action_m3as_prompt_teaches_is_refused() -> None:
         M3AAgent().check_action_space(narrowed)
 
 
-#: The Loop settings M3A runs on: AndroidWorld's (``M3AAgent.prepare``).
+def test_prepare_refuses_a_run_filtered_to_leave_out_an_action_m3a_teaches() -> None:
+    """``AgentRuntime.prepare()`` makes M3A's ``check_action_space`` (``ActionSpaceCheck``): the
+    refusal comes before anything is set up, not at the first prompt."""
+    full = AgentRuntime.for_agent(_assembly(), AGENT_ID)
+    full.prepare(task_id="assembly")
+    without_open_app = sorted(full.action_space.allowed_actions - {"android.open_app"})
+    runtime = AgentRuntime.for_agent(_assembly(), AGENT_ID)
+
+    with pytest.raises(ValueError, match="this run's action space has no open_app"):
+        runtime.prepare(task_id="assembly", action_filter=without_open_app)
+
+
+#: The Loop settings M3A runs on: AndroidWorld's (``M3AAgent.check_run_settings``).
 _ANDROIDWORLD_LOOP: dict[str, Any] = {
     "max_actions_per_step": 2,
     "max_consecutive_parse_errors": None,

@@ -50,7 +50,11 @@ from spectragent.core.loops.coordinate_frames import (
 )
 from spectragent.core.loops.errors import RunAbort, carried_outcome
 from spectragent.core.loops.identity import RunIdentity
-from spectragent.core.loops.limits import ExecutionLimits, validate_execution_limits
+from spectragent.core.loops.limits import (
+    ExecutionLimits,
+    RunSettingsCheck,
+    validate_execution_limits,
+)
 from spectragent.core.loops.validation import MissingEnvironmentError
 from spectragent.core.negotiation import (
     FRAGMENT_FORMATS_PARAMETER,
@@ -187,7 +191,7 @@ class AgentRuntime:
         self._execution_models: tuple[BaseChatModel, ...] = ()
         self._call_context = RunCallContext()
         self._execution_limits = ExecutionLimits()
-        self._agent_consumes_limits = False
+        self._prepare_takes_limits = False
         # The most policy steps the Loop allows this task (see :meth:`prepare`);
         # ``None`` when the Loop has no step budget.
         self._step_budget: int | None = None
@@ -438,8 +442,10 @@ class AgentRuntime:
                 verifiers that would write one verdict file, or two
                 capabilities whose setups would each complete the task's text. Also UI-TARS's refusal,
                 from its ``check_action_space`` (``ActionSpaceCheck``), of a
-                verb whose points differ from its action's; another agent's
-                check raises its own errors.
+                verb whose points differ from its action's, and an agent's
+                refusal of the run's settings from its ``check_run_settings``
+                (``RunSettingsCheck``; M3A: ``max_actions_per_step`` below 2);
+                another agent's check raises its own errors.
             BrowserCooperationError: (and any capability's own refusal)
                 from ``Environment.check_setup``.
             ScreenshotGeometryError: The agent's model writes points on a
@@ -457,9 +463,14 @@ class AgentRuntime:
         self._call_context = RunCallContext()
         self._identity = RunIdentity.resolve(agent=agent, loop=loop, env=env, task_id=task_id)
         self._execution_limits = loop.execution_limits()
-        self._agent_consumes_limits = validate_execution_limits(
+        self._prepare_takes_limits = validate_execution_limits(
             agent, self._identity.loop_id, self._execution_limits
         )
+        # Step 1a: The run settings the agent depends on (M3A: two actions per
+        # reply, no re-ask, one message in memory), refused now rather than by
+        # its ``prepare`` seed slot at the start of every run.
+        if isinstance(agent, RunSettingsCheck):
+            agent.check_run_settings(self._execution_limits)
         # Step 1b: The task's inputs to the Loop, refused before anything
         # else is negotiated: a checkpoint handed to a Loop that does not
         # declare one must fail here, not run the task from scratch.
@@ -765,13 +776,14 @@ class AgentRuntime:
         effective action space this assembly's guard executes
         (:attr:`action_space`: the negotiated, guarded descriptors the prompt
         advertises and the bindings that say what a name means), the
-        Loop's typed execution limits when the agent declares consumption,
-        and the fragment format descriptions its prompt quotes when it
-        declares ``__fragment_formats__`` (keyed by the declared names);
-        ``[]`` when the agent has no ``prepare``. Writes no memory, touches no
-        environment: :meth:`execute` clears the memory and writes these, and
-        the training export's student renderer seeds each context segment
-        with them — the same assembly as a live run, without running one.
+        Loop's typed execution limits when the agent declares consumption
+        and its ``prepare`` names them, and the fragment format descriptions
+        its prompt quotes when it declares ``__fragment_formats__`` (keyed by
+        the declared names); ``[]`` when the agent has no ``prepare``. Writes
+        no memory, touches no environment: :meth:`execute` clears the memory
+        and writes these, and the training export's student renderer seeds
+        each context segment with them — the same assembly as a live run,
+        without running one.
 
         Raises:
             RuntimeError: :meth:`prepare` has not run.
@@ -783,7 +795,7 @@ class AgentRuntime:
         if not callable(agent_prepare):
             return []
         inputs: dict[str, Any] = {"task": task, "action_space": self.action_space}
-        if self._agent_consumes_limits:
+        if self._prepare_takes_limits:
             inputs["execution_limits"] = self._execution_limits
         if self._fragment_formats is not None:
             inputs[FRAGMENT_FORMATS_PARAMETER] = self._fragment_formats

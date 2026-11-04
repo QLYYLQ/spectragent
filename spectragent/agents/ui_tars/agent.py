@@ -25,7 +25,8 @@ a browser, a desktop VM or an Android emulator unchanged.
 - **The output contract.** The Loop owns ``max_actions_per_step`` and is what
   truncates; ``AgentRuntime`` hands it to :meth:`UITarsAgent.prepare`, which
   renders the budget (:func:`_action_contract`): one ``Action:`` line per
-  action, run in order, at most N.
+  action, run in order, at most N (ReAct's N is at least 1). A Loop that sets
+  no cap is refused in ``AgentRuntime.prepare()`` (:meth:`UITarsAgent.check_run_settings`).
 """
 
 from __future__ import annotations
@@ -64,7 +65,7 @@ from spectragent.core.llm.messages import (
     UserMessage,
 )
 from spectragent.core.loops.coordinate_frames import fact_in_model_frame, point_writer
-from spectragent.core.loops.limits import ExecutionLimits
+from spectragent.core.loops.limits import ExecutionLimits, actions_per_step
 from spectragent.schemas.action import Action
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation.geometry import CoordinateSpace
@@ -108,7 +109,7 @@ _POINT_SYNTAX = (
 
 
 def _action_contract(max_actions_per_step: int, *, can_finish: bool) -> tuple[str, str]:
-    """``(action_format, action_budget)`` for the Loop's per-step limit.
+    """``(action_format, action_budget)`` for the Loop's per-step limit, 1 or more.
 
     The semantics are ``ReactLoop``'s, stated as the model experiences
     them: every ``Action:`` line is one action; they run in the order
@@ -119,11 +120,6 @@ def _action_contract(max_actions_per_step: int, *, can_finish: bool) -> tuple[st
     action runs. With one action per reply there is nothing to stop, so its
     wording does not mention failure.
     """
-    if max_actions_per_step < 1:
-        raise ValueError(
-            f"max_actions_per_step={max_actions_per_step}: a step that may run "
-            f"no action cannot be advertised to the model"
-        )
     if max_actions_per_step == 1:
         return (
             "Action: <one action call from Available Actions, written exactly as shown>",
@@ -334,6 +330,14 @@ class UITarsAgent(AgentBase):
         """
         UITarsCodec(action_space)
 
+    def check_run_settings(self, execution_limits: ExecutionLimits) -> None:
+        """Refuse in ``AgentRuntime.prepare()`` a Loop without a cap the prompt can state.
+
+        ``RunSettingsCheck``: :func:`actions_per_step`, which :meth:`prepare`
+        asks again for the number it writes.
+        """
+        actions_per_step(execution_limits, agent="UI-TARS")
+
     def prepare(
         self,
         task: str,
@@ -350,9 +354,7 @@ class UITarsAgent(AgentBase):
         capabilities offer binds to neither and its verb is not taught.
         ``max_actions_per_step`` comes from the Loop, which is what truncates.
         """
-        max_actions_per_step = execution_limits.max_actions_per_step
-        if max_actions_per_step is None:
-            raise ValueError("prepare requires the Loop's max_actions_per_step execution limit")
+        max_actions_per_step = actions_per_step(execution_limits, agent="UI-TARS")
         self._codec = UITarsCodec(action_space, writes_thought=self.prompt_template != "grounding")
         self._input_platform_text = None
         action_format, action_budget = _action_contract(

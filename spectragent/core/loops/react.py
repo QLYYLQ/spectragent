@@ -147,7 +147,7 @@ class ReactLoop(AgentLoopBase):
     - ``max_steps``: the most policy steps a run takes. A ceiling: a task's
       own step budget, the optional Loop input ``max_steps``, lowers it for
       that task (AndroidWorld's ``int(10 * complexity)``) and never raises it
-    - ``max_actions_per_step``: maximum actions per LLM response
+    - ``max_actions_per_step``: maximum actions per LLM response, at least 1
     - ``max_consecutive_parse_errors``: consecutive unparseable *steps*
       before termination; ``None`` never ends the run on them (the step
       budget still does)
@@ -199,7 +199,15 @@ class ReactLoop(AgentLoopBase):
         ),
     ] = 100
     max_actions_per_step: Annotated[
-        int, Field(default=1, description="Maximum actions per LLM response.")
+        int,
+        Field(
+            default=1,
+            ge=1,
+            description=(
+                "Maximum actions per LLM response, at least 1: a Loop that runs none per "
+                "reply could never act."
+            ),
+        ),
     ] = 1
     max_consecutive_parse_errors: Annotated[
         int | None,

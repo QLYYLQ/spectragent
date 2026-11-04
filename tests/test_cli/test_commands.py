@@ -195,6 +195,23 @@ def test_a_name_refusal_is_a_validation_error(tmp_path, capsys, change, code, lo
     assert [(issue["code"], issue["path"]) for issue in error["issues"]] == [(code, location)]
 
 
+def test_a_loop_that_may_run_no_action_per_reply_is_a_validation_error(tmp_path, capsys):
+    """``max_actions_per_step: 0`` is a run that can never act, whatever the agent: the ReAct
+    Loop's schema refuses it before anything is composed."""
+    raw = yaml.safe_load(Path("configs/browser_use_local.yaml").read_text())
+    raw["agent"][0]["agent_loop"]["max_actions_per_step"] = 0
+    path = tmp_path / "no_actions.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    assert main(["--json", "config", "check", str(path)]) == 2
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert (error["type"], error["stage"]) == ("ValidationError", "validation")
+    assert [
+        issue["type"]
+        for issue in error["issues"]
+        if issue["location"][-1] == "max_actions_per_step"
+    ] == ["greater_than_equal"]
+
+
 def test_yaml_syntax_error_never_echoes_a_credential_line(tmp_path, capsys):
     path = tmp_path / "invalid.yaml"
     path.write_text("llm:\n  api_key: [secret-malformed-yaml-sentinel\n")
@@ -369,16 +386,13 @@ def test_config_commands_take_the_subset_of_the_benchmark(tmp_path, capsys, comm
     assert "give --benchmark with it" in json.loads(capsys.readouterr().out)["error"]["message"]
 
 
-def test_config_check_with_androidworld_alone_merges_its_part_and_checks_without_a_task(
-    tmp_path, capsys, monkeypatch
-):
-    """The shipped ``androidworld`` alias, with no task: its setup checks the installation and
-    what it needs of the device, its part of the Android block (the AVD, the ``open_app`` table) is
-    merged in, and the task is setup's to refuse (``docs/architecture_design.md`` §4.10.1)."""
+def _androidworld_m3a_config(tmp_path, monkeypatch, **loop) -> Path:
+    """An M3A run on Android for ``--benchmark androidworld``, its Loop AndroidWorld's but *loop*,
+    with a fake AndroidWorld installation and data under *tmp_path*."""
     import sys
 
     from tests._helpers.android_device import fake_service_apk
-    from tests._helpers.benchmark_data import ANDROIDWORLD_APPS, androidworld_data
+    from tests._helpers.benchmark_data import androidworld_data
     from tests._helpers.fake_androidworld import fake_installation
 
     data = androidworld_data(tmp_path / "data" / "android" / "androidworld")
@@ -394,9 +408,15 @@ def test_config_check_with_androidworld_alone_merges_its_part_and_checks_without
         "ui_tree_cleaner": {"cleaner_id": "androidworld"},
         "ui_tree_serializer": {"serializer_id": "m3a"},
     }
+    androidworld_loop = {
+        "loop_id": "react",
+        "max_steps": 120,
+        "max_actions_per_step": 2,
+        "max_consecutive_parse_errors": None,
+    }
     agent = {
         "agent_id": "m3a",
-        "agent_loop": {"loop_id": "react", "max_steps": 120},
+        "agent_loop": {**androidworld_loop, **loop},
         "llm": {"model_type": "openai", "model": "m", "provider": {"name": "direct"}},
         "memory": {"memory_id": "sliding_window", "window_size": 1},
     }
@@ -406,6 +426,18 @@ def test_config_check_with_androidworld_alone_merges_its_part_and_checks_without
             {"agent": [agent], "environment": [{"env_type": "android", "capabilities": [android]}]}
         )
     )
+    return config
+
+
+def test_config_check_with_androidworld_alone_merges_its_part_and_checks_without_a_task(
+    tmp_path, capsys, monkeypatch
+):
+    """The shipped ``androidworld`` alias, with no task: its setup checks the installation and
+    what it needs of the device, its part of the Android block (the AVD, the ``open_app`` table) is
+    merged in, and the task is setup's to refuse (``docs/architecture_design.md`` §4.10.1)."""
+    from tests._helpers.benchmark_data import ANDROIDWORLD_APPS
+
+    config = _androidworld_m3a_config(tmp_path, monkeypatch)
 
     assert main(["--json", "config", "check", str(config), "--benchmark", "androidworld"]) == 0
     assert json.loads(capsys.readouterr().out)["checked"] == "configuration_and_prepare"
@@ -421,6 +453,19 @@ def test_config_check_with_androidworld_alone_merges_its_part_and_checks_without
     assert block["backend"]["avd"] == "AndroidWorldAvd"
     (open_app,) = [a for a in block["actions"] if a["action_id"] == "android.open_app"]
     assert open_app["apps"] == ANDROIDWORLD_APPS
+
+
+def test_config_check_refuses_a_loop_m3a_cannot_run_on(tmp_path, capsys, monkeypatch):
+    """M3A's ``input_text`` runs as two actions: one per reply is refused by ``prepare()``, so the
+    check reports it rather than every task refusing at its start (``RunSettingsCheck``)."""
+    config = _androidworld_m3a_config(tmp_path, monkeypatch, max_actions_per_step=1)
+    task = ["--task-id", "SystemBrightnessMax/42/0"]
+
+    argv = ["--json", "config", "check", str(config), "--benchmark", "androidworld", *task]
+    assert main(argv) == 2
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert (error["type"], error["stage"]) == ("ValueError", "prepare")
+    assert error["message"].endswith("needs the Loop's max_actions_per_step at 2 or more; it is 1")
 
 
 def test_human_explain_shows_negotiation_without_dumping_resolved_config(capsys):
