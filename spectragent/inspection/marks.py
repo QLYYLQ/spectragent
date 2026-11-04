@@ -650,18 +650,12 @@ def _screen(point: ScreenPoint) -> tuple[int, int]:
     return point.x, point.y
 
 
-def _centre(element: AddressedElement | None) -> tuple[int, int] | None:
-    if element is None or element.bounds is None:
-        return None
-    left, top, right, bottom = element.bounds
-    return (left + right) // 2, (top + bottom) // 2
-
-
 def _android(action: Action, result: ActionResult | None, element: AddressedElement | None) -> _Css:
     """An Android action in the screen's pixels: where the finger went, and its line.
 
-    The point is where the effect says the finger went down; else the point
-    the params give; else the centre of the element they name, as recorded.
+    The point is where the effect says the finger went down, else the point
+    the params give; never a point nothing recorded. An element the params
+    name is drawn as its recorded bounds either way.
     """
     name, params = action.name, action.params
     verb = action_verb(name)
@@ -672,8 +666,10 @@ def _android(action: Action, result: ActionResult | None, element: AddressedElem
     named = _element(action)
     target = element.text if element is not None else f"#{named}" if named is not None else None
     box = element.bounds if element is not None else None
+    # Said for an action whose point nothing recorded: its element's box may still be drawn.
+    no_point = "没有记录按下的位置" + ("；虚线框是它指名的元素" if box else "")
     if name in ("android.click", "android.click_coordinate", "android.long_press"):
-        point = (_screen(touch.start) if touch else None) or first or _centre(element)
+        point = (_screen(touch.start) if touch else None) or first
         if point is not None:
             line = f"{verb} {_xy(point)}" + (f" → {target}" if target else "")
         else:
@@ -686,7 +682,7 @@ def _android(action: Action, result: ActionResult | None, element: AddressedElem
             point=point,
             box=box,
             measured=touch is not None,
-            unplaced=None if point else "没有记录按下的位置",
+            unplaced=None if point else no_point,
         )
     if name == "android.drag":
         start = _screen(touch.start) if touch else first
@@ -707,7 +703,7 @@ def _android(action: Action, result: ActionResult | None, element: AddressedElem
             line += f" → {target}"
         elif first is not None:
             line = f"在 {_xy(first)} {line}"
-        start = _screen(touch.start) if touch else first or _centre(element)
+        start = _screen(touch.start) if touch else first
         end = _screen(touch.end) if touch else None
         if start and end:
             line += f"，手指从 {_xy(start)} 滑到 {_xy(end)}"
@@ -719,7 +715,9 @@ def _android(action: Action, result: ActionResult | None, element: AddressedElem
             box=box,
             direction=direction if direction in _DIRECTIONS else None,
             measured=touch is not None,
-            unplaced=None if start else "没有记录滑动的位置",
+            unplaced=None
+            if start
+            else "没有记录滑动的位置" + ("；虚线框是它指名的元素" if box else ""),
         )
     if name in ("android.type", "android.type_coordinate"):
         text = params.get("text")
@@ -734,12 +732,20 @@ def _android(action: Action, result: ActionResult | None, element: AddressedElem
             line += f" → {target}"
         if isinstance(effect, AndroidTextEffect) and not effect.text_entered:
             line += "，没有输入文字"
-        point = (_screen(touch.start) if touch else None) or first or _centre(element)
-        if point is None:
+        point = (_screen(touch.start) if touch else None) or first
+        if point is None and box is None:
             # Typed into the field that had focus: no place to draw.
             return _Css(None, line)
         typed = _clip(text, TYPED_CHARS) if isinstance(text, str) and not sensitive else None
-        return _Css("type", line, point=point, box=box, typed=typed, measured=touch is not None)
+        return _Css(
+            "type",
+            line,
+            point=point,
+            box=box,
+            typed=typed,
+            measured=touch is not None,
+            unplaced=None if point else no_point,
+        )
     if name == "android.press_key":
         key = params.get("key")
         return _Css(None, f"{verb} {_ANDROID_KEYS.get(str(key), key or '')}".strip())

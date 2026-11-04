@@ -213,3 +213,26 @@ def test_a_browser_index_click_never_reads_the_dom(
     monkeypatch.setattr(RunTrace, "observation_fragment", forbid)
     (element,) = addressed_elements(trace, record)
     assert element is not None and element.text == "#7"
+
+
+def test_a_click_that_recorded_no_touch_gets_no_point(run: RunTrace, tmp_path: Path) -> None:
+    """Only its element's recorded bounds are drawn; no point is made up at their centre."""
+    wal = WALWriter(tmp_path / "untouched", "untouched")
+    wal.init_run(TraceConfig())
+    shot = AndroidScreenshotObs(
+        image_bytes=PNG_BYTES,
+        image_width=540,
+        image_height=1200,
+        viewport_width=1080,
+        viewport_height=2400,
+    )
+    refused = ActionResult(success=False, error="the element is not on the screen")
+    record = StepRecord(
+        step=0,
+        actions=[Action(name="android.click", params={"index": 0})],
+        action_results=[refused],
+    )
+    wal.commit_step(0, record, fragments=[fragment(0, shot), fragment(0, _tree())])
+    (click,) = observation_marks(RunTrace(wal.run_dir), "r", 0).sets[0].marks
+    assert (click.kind, click.x, click.y, click.box) == ("click", None, None, (400, 50, 500, 150))
+    assert click.unplaced is not None and "虚线框" in click.unplaced

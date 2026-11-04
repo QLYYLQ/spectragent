@@ -23,6 +23,13 @@ export function angle(a, b) {
 
 const DIRECTION = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
 
+/** The element box a mark carries, in image pixels, or null. */
+function boxOf(mark) {
+  if (!Array.isArray(mark.box) || mark.box.length !== 4) return null;
+  const [x0, y0, x1, y1] = mark.box;
+  return x1 > x0 && y1 > y0 ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : null;
+}
+
 /**
  * Everything to draw for one served image: per set, its colour, and per mark
  * that has a point the shapes (in image pixels). Marks without a point stay
@@ -45,15 +52,15 @@ export function markLayout(data) {
     color: markColor(index),
     label: set.label,
     shapes: (set.marks || [])
-      .filter((mark) => mark.x != null && mark.y != null && mark.kind)
+      .filter((mark) => mark.kind && ((mark.x != null && mark.y != null) || boxOf(mark)))
       .map((mark) => {
-        const shape = {
-          number: mark.number,
-          kind: mark.kind,
-          x: mark.x,
-          y: mark.y,
-          stack: stack(mark.x, mark.y),
-        };
+        // A mark with only its element's box (no recorded point) is numbered at the box's corner.
+        const box = boxOf(mark);
+        const pointed = mark.x != null && mark.y != null;
+        const x = pointed ? mark.x : box.x;
+        const y = pointed ? mark.y : box.y;
+        const shape = { number: mark.number, kind: mark.kind, x, y, stack: stack(x, y) };
+        if (!pointed) shape.boxOnly = true;
         // A recorded end (a drag's release, a swipe's lift) wins over a
         // scroll's drawn direction arrow.
         if (["drag", "scroll"].includes(mark.kind) && mark.end_x != null && mark.end_y != null)
@@ -62,10 +69,7 @@ export function markLayout(data) {
           const [dx, dy] = DIRECTION[mark.direction];
           shape.end = { x: mark.x + dx * length, y: mark.y + dy * length };
         }
-        if (Array.isArray(mark.box) && mark.box.length === 4) {
-          const [x0, y0, x1, y1] = mark.box;
-          if (x1 > x0 && y1 > y0) shape.box = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
-        }
+        if (box) shape.box = box;
         if (shape.end) shape.angle = angle(shape, shape.end);
         if (mark.kind === "type" && mark.typed) shape.typed = mark.typed;
         return shape;
@@ -83,7 +87,7 @@ export function legendRows(data) {
     marks: (set.marks || []).map((mark) => ({
       number: mark.number,
       text: mark.text,
-      drawn: Boolean(mark.kind && mark.x != null && mark.y != null),
+      drawn: Boolean(mark.kind && ((mark.x != null && mark.y != null) || boxOf(mark))),
       note:
         mark.kind && (mark.x == null || mark.y == null)
           ? mark.unplaced || "位置未知，没有画在图上"
