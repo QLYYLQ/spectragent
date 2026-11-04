@@ -1306,19 +1306,22 @@ def task_snapshot(task: Any, benchmark: str, subset: str) -> dict[str, Any]:
 def _reference_loader(
     benchmark: Benchmark, verifiers: Sequence[OfflineVerifier], selection: str
 ) -> BaseEvalLoader | None:
-    """The reference rows the sweep's verifiers judge against; ``None`` when none needs one.
+    """The reference rows *verifiers* judge *benchmark*'s runs against; ``None`` when none needs one.
 
-    The benchmark's own (:meth:`BenchmarkBase.reference_loader`). A verifier
-    that needs one on a benchmark with none stops the sweep before anything
-    runs, naming it: a sweep must not run for hours to fail at its judging
-    pass.
+    The benchmark's own (:meth:`BenchmarkBase.reference_loader`), the selected
+    one's or the one a branch task inherits. A verifier that needs one on a
+    benchmark with none stops the sweep before anything runs, naming it: a
+    sweep must not run for hours to fail at its judging pass.
+
+    Raises:
+        ValueError: A verifier needs reference rows and *benchmark* has none.
     """
     needing = [verifier.verifier_id for verifier in verifiers if "reference" in verifier.needs]
     if not needing:
         return None
     loader = benchmark.reference_loader()
     if loader is None:
-        raise SystemExit(
+        raise ValueError(
             f"Verifier(s) {', '.join(needing)} of benchmark {selection!r} judge against the "
             f"task's reference row, and the benchmark has no reference data: drop them from its "
             f"verifiers, or pass --no-eval."
@@ -1358,25 +1361,21 @@ def inherited_benchmark(
     rows when they need them.
 
     Raises:
-        BenchmarkSelectionError: The selection no longer reads, or names
-            another benchmark.
-        Exception: What composing the root raises (``ComposeError``, a task
-            loader's data error).
+        BenchmarkSelectionError: The selection no longer reads, names another
+            benchmark, or its block changed since the source ran (``read_spec``).
+        ValueError: A verifier it lists needs reference rows it does not have.
+        Exception: What composing its block raises (``ComposeError``, a task
+            loader's data error); composing the whole root is the pre-flight's.
     """
-    root = run_root(configuration, task_source, read_spec(spec))
+    block = read_spec(spec)
+    root = run_root(configuration, task_source, block)
     composer = ConfigComposer.for_config(root)
-    probe = composer.compose(root)
-    benchmark = next(
-        candidate
-        for candidate in probe.instances("benchmark")
-        if candidate.benchmark_id == spec.benchmark_id
-    )
+    benchmark = compose_benchmark_alone(block)
     verifiers = benchmark.offline_verifiers() if evaluate else []
-    needs_reference = any("reference" in verifier.needs for verifier in verifiers)
     return TaskBenchmark(
         compose=lambda: composer.compose(root),
         verifiers=verifiers,
-        reference_loader=benchmark.reference_loader() if needs_reference else None,
+        reference_loader=_reference_loader(benchmark, verifiers, spec.selection),
         primary_rule=benchmark,
     )
 
@@ -1528,7 +1527,10 @@ def main(
     verifiers = [] if args.no_eval else chosen.offline_verifiers()
     benchmark = loader.benchmark_name
     subset = getattr(loader, "subset", "")
-    reference_loader = _reference_loader(chosen, verifiers, args.benchmark)
+    try:
+        reference_loader = _reference_loader(chosen, verifiers, args.benchmark)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     # One per benchmark the branch tasks inherit, shared by the probe below
     # and the runner, which composes each task's stack from it.
     built: dict[BenchmarkSpec, TaskBenchmark] = {}

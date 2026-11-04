@@ -1036,9 +1036,9 @@ class TestTraceBranchesSweep:
             def reference_loader(self) -> None:
                 return None
 
-        with pytest.raises(SystemExit) as stopped:
+        with pytest.raises(ValueError) as stopped:
             _reference_loader(_NoReferenceData(), [ExactMatchVerifier()], "mine.yaml")  # type: ignore[arg-type]
-        message = str(stopped.value.code)
+        message = str(stopped.value)
         assert "exact_match" in message and "'mine.yaml'" in message
         assert "no reference data" in message and "--no-eval" in message
 
