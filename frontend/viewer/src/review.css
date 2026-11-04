@@ -600,7 +600,7 @@
   margin-bottom: 0;
 }
 .technical-facts .item-facts dd {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 11px;
 }
 
@@ -622,7 +622,7 @@
   border-radius: 3px;
   background: var(--info-bg);
   color: var(--info);
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: var(--mono);
   font-size: 10px;
   overflow-wrap: anywhere;
   text-align: right;

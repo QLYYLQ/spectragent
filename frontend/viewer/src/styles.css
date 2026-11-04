@@ -1,10 +1,5 @@
 :root {
-  font-family:
-    Inter,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  font-family: var(--sans);
   color: var(--text);
   background: var(--bg);
   font-synthesis: none;
@@ -683,7 +678,7 @@ td.numeric small {
 .mono,
 code,
 pre {
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-family: var(--mono);
 }
 .badge {
   display: inline-block;
@@ -995,7 +990,7 @@ pre {
 }
 .step-number {
   font-size: 13px;
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: var(--mono);
   color: var(--text-2);
 }
 .action-name {
@@ -1104,7 +1099,7 @@ pre {
   overflow-wrap: anywhere;
 }
 .summary-hint {
-  font-family: monospace;
+  font-family: var(--mono);
   float: right;
   color: var(--muted);
   font-size: 9px;
