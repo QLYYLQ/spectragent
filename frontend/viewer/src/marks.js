@@ -61,9 +61,9 @@ export function markLayout(data) {
         const y = pointed ? mark.y : box.y;
         const shape = { number: mark.number, kind: mark.kind, x, y, stack: stack(x, y) };
         if (!pointed) shape.boxOnly = true;
-        // A recorded end (a drag's release, a swipe's lift) wins over a
-        // scroll's drawn direction arrow.
-        if (["drag", "scroll"].includes(mark.kind) && mark.end_x != null && mark.end_y != null)
+        // A drag's arrow is the finger's path; a scroll's points the way its
+        // verb says ("向下滚动" points down), on every capability.
+        if (mark.kind === "drag" && mark.end_x != null && mark.end_y != null)
           shape.end = { x: mark.end_x, y: mark.end_y };
         else if (mark.kind === "scroll" && DIRECTION[mark.direction]) {
           const [dx, dy] = DIRECTION[mark.direction];

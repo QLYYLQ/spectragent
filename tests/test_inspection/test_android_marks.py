@@ -168,13 +168,8 @@ def test_android_marks_are_in_image_pixels_with_the_element_bounds(run: RunTrace
     # the screen's physical px at half scale; the element's recorded bounds as a box
     assert (click.kind, click.x, click.y, click.measured) == ("click", 450, 100, True)
     assert click.box == (400, 50, 500, 150)
-    assert (scroll.kind, scroll.x, scroll.y, scroll.end_x, scroll.end_y) == (
-        "scroll",
-        270,
-        750,
-        270,
-        350,
-    )
+    # the arrow follows "down", as on the browser; the finger moved up, which the line says
+    assert (scroll.kind, scroll.x, scroll.y, scroll.end_x) == ("scroll", 270, 750, None)
     assert (scroll.direction, scroll.box) == ("down", (0, 350, 540, 1150))
     assert (typed.kind, typed.x, typed.y, typed.typed) == ("type", 270, 250, "Emilia")
     assert typed.box == (0, 200, 540, 300)

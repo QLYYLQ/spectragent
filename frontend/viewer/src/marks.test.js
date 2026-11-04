@@ -87,7 +87,7 @@ test("dots on the same spot are fanned out, not hidden under each other", () => 
   );
 });
 
-test("an element's recorded bounds become a box, and a recorded swipe end wins over the arrow", () => {
+test("an element's recorded bounds become a box, and a scroll's arrow follows its direction", () => {
   const layout = markLayout({
     width: 540,
     height: 1200,
@@ -99,8 +99,9 @@ test("an element's recorded bounds become a box, and a recorded swipe end wins o
   });
   const [click, swipe, flat] = layout.sets[0].shapes;
   assert.deepEqual(click.box, { x: 400, y: 50, width: 100, height: 100 });
-  assert.deepEqual(swipe.end, { x: 270, y: 350 });
-  assert.equal(swipe.angle, -90);
+  // "down": the arrow points down even where the finger's recorded path went up
+  assert.equal(swipe.angle, 90);
+  assert.ok(swipe.end.y > swipe.y);
   assert.equal(flat.box, undefined);
 });
 

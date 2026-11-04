@@ -31,7 +31,8 @@ point went into the field that had focus: it is listed, not drawn, and moves
 no pointer.
 
 An Android touch is drawn where its effect says the finger went down (and, for
-a drag or a swipe, where it lifted); an action naming an element of the UI
+a drag, where it lifted; a scroll's arrow, as on the browser, points the way
+its verb says, against the finger's path); an action naming an element of the UI
 tree also gets that element's recorded bounds as a box, and its line names the
 element by its text, read from the UI tree its step's observation recorded
 (the fragment the action's element param declares it addresses).
@@ -704,14 +705,14 @@ def _android(action: Action, result: ActionResult | None, element: AddressedElem
         elif first is not None:
             line = f"在 {_xy(first)} {line}"
         start = _screen(touch.start) if touch else first
-        end = _screen(touch.end) if touch else None
-        if start and end:
-            line += f"，手指从 {_xy(start)} 滑到 {_xy(end)}"
+        if touch is not None:
+            line += f"，手指从 {_xy(start)} 滑到 {_xy(_screen(touch.end))}"
+        # The mark's arrow points the way the verb says, as on the browser; the
+        # finger's opposite path is in the line.
         return _Css(
             "scroll",
             line,
             point=start,
-            end=end,
             box=box,
             direction=direction if direction in _DIRECTIONS else None,
             measured=touch is not None,
