@@ -1305,43 +1305,14 @@
 
 /* The history sits below the current image; opening a file leaves the label intact. */
 .trajectory-evidence { margin-top: 14px; border-top: 1px solid var(--stage-line); padding-top: 12px; }
-.trajectory-heading, .history-detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.trajectory-heading h3, .history-detail-heading h3 { margin: 0; font-size: 13px; }
-.trajectory-heading > span, .history-detail-heading > span { color: var(--muted); font-size: 11px; }
+.trajectory-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.trajectory-heading h3 { margin: 0; font-size: 13px; }
+.trajectory-heading > span { color: var(--muted); font-size: 11px; }
 .history-note { color: #63727a; font-size: 11px; line-height: 1.65; margin: 8px 0 12px; }
-.trajectory-layout { display: grid; grid-template-columns: minmax(170px, calc((100% - 20px) / var(--history-columns))) minmax(0, 1fr); gap: 12px; align-items: start; }
-.history-stack { min-width: 0; padding: 0 12px 22px 0; max-height: 650px; overflow-y: auto; overflow-x: hidden; }
-.history-group { margin-top: 18px; }
-.history-group h4 { display: flex; justify-content: space-between; margin: 0 0 9px; color: #625c4f; font-size: 11px; }
-.history-group h4 span { font-weight: 400; color: #7a827e; }
-.history-papers:not(:empty) { padding-top: 8px; padding-bottom: 12px; }
-.history-file { position: relative; display: block; width: 100%; padding: 0; text-align: left; background: #fffcf4; border: 1px solid #c9c4b5; border-radius: 5px 5px 2px 2px; box-shadow: 0 3px 7px #403b2917; transition: transform 150ms ease, box-shadow 150ms ease; }
-.history-papers .history-file { margin: 0; }
-.history-papers .history-file + .history-file { margin-top: -38px; }
-.history-file:hover, .history-file:focus-visible { z-index: 3; transform: translate(8px, -10px); box-shadow: 0 9px 16px #403b2933; }
-.history-file.active { border-color: #b17222; z-index: 2; }
-.history-file.pinned { box-shadow: inset 3px 0 #c58324, 0 4px 10px #403b291c; }
-.history-file-tab { display: block; padding: 8px 10px; background: #f1ead8; color: #514735; font-weight: 650; font-size: 11px; }
-.history-file-tab small { float: right; font-weight: 400; }
-.history-file.current .history-file-tab { background: #3e3529; color: #ffda9b; }
-.history-file.future .history-file-tab { background: #e3ebec; color: #36535c; }
-.history-file-body { display: flex; gap: 9px; align-items: center; min-height: 58px; padding: 7px 9px; }
-.history-file-body img { width: 72px; max-height: 42px; object-fit: cover; border: 1px solid #ded9cb; }
-.history-file-body > span { overflow: hidden; text-overflow: ellipsis; color: #617079; font-size: 10px; }
-.history-detail { min-width: 0; max-height: 720px; overflow: auto; background: #fffdf7; border: 1px solid #cfc9ba; border-radius: 5px; padding: 12px; box-shadow: 0 4px 10px #403b2914; }
-.history-detail-heading { position: sticky; top: -12px; z-index: 2; background: #fffdf7; padding: 10px 0; border-bottom: 1px solid #e8e2d5; margin-top: -8px; }
-.history-detail-heading h3 > span { margin-left: 8px; font-weight: 400; color: #7a756b; font-size: 11px; }
-.history-images { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin: 12px 0; align-items: start; }
-.history-images figure { display: grid; grid-template-rows: subgrid; grid-row: span 3; gap: 0; min-width: 0; margin: 0; border: 1px solid #ddd7c9; background: #f3efe4; }
-.history-images figcaption { padding: 7px; font-size: 11px; color: #4f5e65; }
-.history-images figcaption span { display: block; font-size: 10px; color: #7e7563; margin-top: 4px; }
-.history-images img { display: block; width: 100%; height: auto; }
 .history-image-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 9px 16px; margin-top: 12px; font-size: 11px; }
 .history-image-tools .toggle { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .history-frame-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; margin-left: auto; color: #647079; }
 .history-frame-picker select { max-width: 100%; padding: 5px; font-size: 11px; }
-.history-image-link { display: block; align-self: start; min-width: 0; line-height: 0; }
-.history-image-surface { display: block; position: relative; width: 100%; }
 .history-image-info { align-self: start; padding: 0 7px; overflow-wrap: anywhere; }
 .history-image-info .mark-legend { font-size: 11px; }
 .history-image-info .mark-note, .history-image-info .mark-problem { font-size: 10px; }
@@ -1367,15 +1338,36 @@
 .review-evidence-section .item-line { margin-top: 12px; }
 .item-facts dd { max-height: 180px; overflow: auto; }
 @media (max-width: 1100px) {
-  .trajectory-layout { grid-template-columns: 170px minmax(0, 1fr); }
-  .history-images, .history-actions { grid-template-columns: minmax(0, 1fr); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .history-file { transition: none; }
+  .history-actions { grid-template-columns: minmax(0, 1fr); }
 }
 
-.history-preview > a { display: block; max-width: 390px; margin: 12px 0; }
-.history-preview img { display: block; width: 100%; height: auto; }
-.history-preview > p { font-size: 12px; color: #5d6b73; }
+/* The archive as a folder: a strip of step tabs, and the one open card under them. */
+.folder-tabs { display: flex; gap: 2px; align-items: flex-end; margin: 10px 0 0; padding: 4px 4px 0; overflow-x: auto; scrollbar-width: thin; }
+.folder-tab { position: relative; flex: 0 0 auto; display: grid; gap: 1px; min-width: 76px; padding: 6px 12px 7px; text-align: left; border: 1px solid var(--folder-line); border-bottom: 0; border-radius: 8px 8px 0 0; background: var(--folder-tab); color: var(--muted); font: inherit; cursor: pointer; transform: translateY(3px); transition: transform 120ms ease, background 120ms ease; }
+.folder-tab:hover { transform: translateY(0); background: var(--folder-hover); }
+.folder-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.folder-tab-relation { font-size: 9px; letter-spacing: .04em; }
+.folder-tab-step { font-size: 12px; font-weight: 650; color: var(--text); }
+.folder-tab-origin { font-size: 9px; }
+.folder-tab.current { border-top: 3px solid var(--accent); }
+.folder-tab.future .folder-tab-relation { color: var(--lane-1); }
+.folder-tab.restored { background: repeating-linear-gradient(135deg, var(--folder-tab) 0 6px, var(--folder-hover) 6px 7px); }
+.folder-tab[aria-selected="true"] { z-index: 2; transform: none; background: var(--surface); color: var(--text); border-color: var(--folder-edge); box-shadow: 0 -2px 6px var(--shadow); }
+.folder-tab[aria-selected="true"]::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--surface); }
+.folder-card { position: relative; z-index: 1; min-width: 0; padding: 12px 14px 16px; background: var(--surface); border: 1px solid var(--folder-edge); border-radius: 0 8px 8px 8px; box-shadow: 0 6px 16px var(--shadow); }
+.folder-card-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.folder-card-head h3 { margin: 0; font-size: 15px; }
+.folder-card-head h3 > span { margin-left: 8px; font-weight: 400; color: var(--muted); font-size: 11px; }
+.folder-card-nav { display: flex; gap: 14px; }
+.folder-card-nav .text-button:disabled { opacity: .4; cursor: default; }
+.folder-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 4px 0 10px; font-size: 12px; }
+.folder-facts dt { color: var(--muted); }
+.folder-facts dd { margin: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: 11px; }
+.folder-action h4 { margin: 8px 0 6px; font-size: 12px; }
+.folder-action pre { margin: 0; padding: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11.5px; line-height: 1.65; background: var(--sunk); border: 1px solid var(--border); border-radius: 4px; }
+@media (prefers-reduced-motion: reduce) {
+  .folder-tab { transition: none; }
+}
+
 
 .review-evidence-section .item-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }

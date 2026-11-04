@@ -279,11 +279,18 @@ def annotation_router(
         include_messages: bool = False,
     ) -> dict[str, Any]:
         key, _ = trajectory_target(queue_id, item_id, queue_sha256, index)
+        following = index + 1
         return {
             **repository.step(key, index, include_messages=include_messages),
             "frames": repository.step_frames(key, index),
             "observation_marks": repository.observation_marks(key, index),
             "observation_pointer": repository.observation_pointer(key, index),
+            # This step's actions on the next observation: the screen after them.
+            "after_marks": repository.image_marks(
+                key, following, marks_from=[(key, index, f"第 {index} 步做的动作")]
+            )
+            if repository.has_step(key, following)
+            else None,
         }
 
     @router.get("/trajectory-image")

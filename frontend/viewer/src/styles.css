@@ -1639,3 +1639,69 @@ pre {
 .decision-images figure { margin: 0; max-width: 36rem; flex: 1 1 20rem; }
 .decision-images img { width: 100%; height: auto; border: 1px solid #cbd5e1; border-radius: 0.5rem; }
 .decision-images figcaption { overflow-wrap: anywhere; margin: 0.5rem 0; }
+
+/* Images shown together to be compared: the same box for each, top-aligned,
+   every image fit inside its box at its own aspect ratio, its marks on top. */
+.compare-row {
+  --compare-height: min(560px, 70vh);
+  display: grid;
+  grid-template-columns: repeat(var(--compare-count, 2), minmax(0, 1fr));
+  gap: 10px;
+  align-items: start;
+  margin: 12px 0;
+}
+.compare-figure {
+  display: grid;
+  grid-template-rows: subgrid;
+  grid-row: span 3;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+}
+.compare-figure > figcaption {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+}
+.compare-figure > figcaption span {
+  display: block;
+  margin-top: 2px;
+  font-weight: 400;
+  font-size: 10px;
+  color: var(--muted);
+}
+.compare-box {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  height: var(--compare-height);
+  padding: 6px;
+  overflow: hidden;
+  background: var(--sunk);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  line-height: 0;
+}
+.compare-box.empty {
+  align-items: center;
+  line-height: normal;
+}
+.compare-surface {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+.compare-surface img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(var(--compare-height) - 12px);
+  width: auto;
+  height: auto;
+}
+@media (max-width: 600px) {
+  .compare-row {
+    --compare-height: 380px;
+    grid-template-columns: repeat(var(--compare-count, 2), minmax(120px, 1fr));
+    overflow-x: auto;
+  }
+}
