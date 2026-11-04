@@ -159,13 +159,12 @@ class CapabilityMerge:
         capability_id = contribution.block.get("capability_id")
         components = self._catalog.components.get(CAPABILITY_SECTION, {})
         if not isinstance(capability_id, str):
-            known = ", ".join(sorted(components)) or "none"
             raise CapabilityMergeError(
                 [
                     MergeProblem(
                         f"{contribution.path}.capability_id",
                         f"{contribution.source} writes a part of a capability's configuration "
-                        f"and names no capability_id (this run's capabilities: {known})",
+                        f"and names no capability_id",
                         "capability_contribution_invalid",
                     )
                 ]
