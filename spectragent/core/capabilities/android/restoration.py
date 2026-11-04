@@ -40,10 +40,11 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping
-from typing import Any, Final
+from typing import Final
 
 from PIL import Image, ImageDraw
 
+from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.actions.params import element_params
 from spectragent.core.capabilities.android.device.forest import (
     AndroidAccessibilityForest,
@@ -91,19 +92,19 @@ _CAPTURE_FIELDS: Final = tuple(
 # ── reading the observations ──────────────────────────────────────────
 
 
-def screenshot_fragment(observation: Any) -> AndroidScreenshotObs | None:
+def screenshot_fragment(observation: object) -> AndroidScreenshotObs | None:
     """The observation's ``android.screenshot``, or ``None`` (not negotiated, or its capture failed)."""
     value = getattr(observation, _SCREENSHOT_FIELD, None)
     return value if isinstance(value, AndroidScreenshotObs) else None
 
 
-def ui_tree_fragment(observation: Any) -> AndroidUITreeObs | None:
+def ui_tree_fragment(observation: object) -> AndroidUITreeObs | None:
     """The observation's ``android.ui_tree``, or ``None``."""
     value = getattr(observation, _UI_TREE_FIELD, None)
     return value if isinstance(value, AndroidUITreeObs) else None
 
 
-def device_record(observation: Any) -> DeviceAtCapture | None:
+def device_record(observation: object) -> DeviceAtCapture | None:
     """The device record of the capture that served *observation*, from whichever fragment carries it."""
     for name in _CAPTURE_FIELDS:
         value = getattr(observation, name, None)
@@ -215,10 +216,10 @@ def _within(recorded: ProtoRect, restored: ProtoRect, tolerance_px: int) -> bool
 
 def retarget_action(
     action: Action,
-    recorded: Any,
-    restored: Any,
+    recorded: object,
+    restored: object,
     *,
-    actions: Mapping[str, Any],
+    actions: Mapping[str, ActionBase],
     tolerance_px: int,
 ) -> Retarget:
     """How the recorded *action* runs against the *restored* observation (module docstring).
@@ -236,7 +237,7 @@ def retarget_action(
 
 
 def _retarget_element(
-    action: Action, param: str, recorded: Any, restored: Any, tolerance_px: int
+    action: Action, param: str, recorded: object, restored: object, tolerance_px: int
 ) -> Retarget:
     index = action.params[param]
 
@@ -341,7 +342,7 @@ def _union(a: Box | None, b: Box | None) -> Box | None:
     return min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])
 
 
-def screenshot_distance(recorded: Any, restored: Any, bar: Box | None) -> int | None:
+def screenshot_distance(recorded: object, restored: object, bar: Box | None) -> int | None:
     """The two screenshots' difference-hash distance with *bar* painted out of both; ``None`` without both."""
     hashes: list[int] = []
     for observation in (recorded, restored):
@@ -354,8 +355,8 @@ def screenshot_distance(recorded: Any, restored: Any, bar: Box | None) -> int | 
 
 
 def measure(
-    recorded: Any,
-    restored: Any,
+    recorded: object,
+    restored: object,
     *,
     alignment: ClockAlignment | None,
     screenshot_max_distance: int,
