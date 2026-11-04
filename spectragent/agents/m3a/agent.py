@@ -45,8 +45,11 @@ its MiniWoB tasks) and the reply format. The images are the screenshot as
 captured and the same screenshot with every element's set-of-mark drawn on it
 (``marks.py``), both JPEG as AndroidWorld sends them.
 
-**A run must run M3A as AndroidWorld does**, and :meth:`M3AAgent.prepare`
-refuses one that would not. The memory keeps this step's message alone:
+**A run must run M3A as AndroidWorld does**, and
+:meth:`M3AAgent.check_run_settings` refuses one that would not, in
+``AgentRuntime.prepare()`` (so ``spectragent config check`` and
+``spectragent bench``'s pre-flight refuse it too). The memory keeps this
+step's message alone:
 ``sliding_window`` (the only memory its wiring takes) with ``window_size: 1``.
 The Loop never asks again within a step (``parse_retries_per_step: 0``) and
 never ends the run on replies it cannot read (``max_consecutive_parse_errors:
@@ -85,9 +88,10 @@ departs from AndroidWorld: an element ``index`` for ``click``, ``long_press``,
 ``type`` and ``scroll``; ``input_text`` is ``type`` (without an index,
 ``type_coordinate`` without a point, into the field with focus) then
 ``press_key`` ``enter``, so the Loop's ``max_actions_per_step`` must be at
-least 2; ``answer`` and ``status`` are ``loop.done``, the answer and the claim
-apart. M3A's prompt lists every action it can take, so a run must offer them
-all (:meth:`M3AAgent.check_action_space`).
+least 2 (:meth:`M3AAgent.check_run_settings`); ``answer`` and ``status`` are
+``loop.done``, the answer and the claim apart. M3A's prompt lists every
+action it can take, so a run must offer them all
+(:meth:`M3AAgent.check_action_space`).
 
 M3A runs on the ``react`` Loop only: a branch replays recorded decisions
 through the prompt builder, and M3A's history lines come from summary calls a
@@ -220,7 +224,7 @@ class M3AAgent(AgentBase):
             "declare_only": True,
         },
         "llm": "llm",
-        # One message per step: the window keeps it alone (``prepare``).
+        # One message per step: the window keeps it alone (``check_run_settings``).
         "memory": ("memory", ["sliding_window"]),
     }
 
@@ -290,19 +294,14 @@ class M3AAgent(AgentBase):
                 f"run's action space has no {', '.join(missing)}"
             )
 
-    def prepare(
-        self,
-        task: str,
-        action_space: ActionSpace,
-        execution_limits: ExecutionLimits,
-    ) -> list[BaseMessage]:
-        """Start a run: no seed messages (each step is one message), and an empty history.
+    def check_run_settings(self, execution_limits: ExecutionLimits) -> None:
+        """Refuse a run that would not run M3A as AndroidWorld does (``RunSettingsCheck``).
 
-        The goal is read off each step's ``task`` fragment, so *task* is not kept.
+        ``AgentRuntime.prepare()`` asks, before the run starts (module
+        docstring).
 
         Raises:
-            ValueError: The run would not run M3A as AndroidWorld does (module
-                docstring): the Loop runs fewer than 2 actions per reply (M3A's
+            ValueError: The Loop runs fewer than 2 actions per reply (M3A's
                 ``input_text`` runs as typing and then Enter), asks again within
                 a step, or ends the run on replies it cannot read; or the
                 memory keeps more than the step's one message.
@@ -331,7 +330,14 @@ class M3AAgent(AgentBase):
                 "M3A keeps no conversation, each step is one message: its memory must be "
                 f"sliding_window with window_size 1; it is {window}"
             )
-        self.check_action_space(action_space)
+
+    def prepare(self, task: str, action_space: ActionSpace) -> list[BaseMessage]:
+        """Start a run: no seed messages (each step is one message), and an empty history.
+
+        The goal is read off each step's ``task`` fragment, so *task* is not
+        kept; *action_space* was checked in ``AgentRuntime.prepare()``
+        (:meth:`check_action_space`).
+        """
         self._history, self._before, self._prompt_snapshot = [], None, None
         return []
 

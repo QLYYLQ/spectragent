@@ -59,7 +59,13 @@ def run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ComposedRun:
         "agent": [
             {
                 "agent_id": "m3a",
-                "agent_loop": {"loop_id": "react", "max_steps": 120},
+                # AndroidWorld's settings, which M3A refuses to run without.
+                "agent_loop": {
+                    "loop_id": "react",
+                    "max_steps": 120,
+                    "max_actions_per_step": 2,
+                    "max_consecutive_parse_errors": None,
+                },
                 "llm": {"model_type": "openai", "model": "m", "provider": {"name": "direct"}},
                 "memory": {"memory_id": "sliding_window", "window_size": 1},
             }
