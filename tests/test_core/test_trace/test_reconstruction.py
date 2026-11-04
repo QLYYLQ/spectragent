@@ -5,12 +5,16 @@ from pathlib import Path
 
 import pytest
 
+from spectragent.core.llm.exceptions import ModelOutputTruncatedError
+from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.negotiation.observation import ObservationNegotiationResult
+from spectragent.core.trace.encoding import PendingLLMCall, encode_llm_call
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.reconstruction import (
     first_difference,
     recorded_form,
+    recorded_helper_replies,
     recorded_observation,
     recorded_step_info,
 )
@@ -125,3 +129,37 @@ def test_trace_readers_do_not_import_loop_implementations() -> None:
         if forbidden:
             offenders[module_name(path)] = forbidden
     assert offenders == {}
+
+
+def _helper_call(step: int, call: int, purpose: str, *, caller: str = "agent") -> PendingLLMCall:
+    return PendingLLMCall(
+        prompt(f"{purpose} {call}"), step=step, call=call, caller=caller, purpose=purpose
+    )
+
+
+def test_the_agents_own_helper_replies_are_read_by_purpose_in_call_order(tmp_path: Path) -> None:
+    """What a branch rebuilding its source's history hands the agent instead of calling (§4.1)."""
+    decision = _helper_call(1, 0, "agent_decision")
+    decision.complete(ChatInvokeCompletion(completion="click(1)", usage=None))
+    summary = _helper_call(1, 1, "step_summary")
+    summary.complete(ChatInvokeCompletion(completion="Opened Settings.", usage=None))
+    cut = _helper_call(1, 2, "step_summary")
+    cut.fail(ModelOutputTruncatedError(partial_output="Opened the"))
+    failed = _helper_call(1, 3, "step_summary")
+    failed.fail(RuntimeError("down"))
+    hooked = _helper_call(1, 4, "prompt_helper", caller="prompt_contribution:pkg.module:fn")
+    hooked.complete(ChatInvokeCompletion(completion="a hint", usage=None))
+    wal = new_wal(tmp_path)
+    wal.commit_step(0, step_record(0))
+    wal.commit_step(
+        1,
+        step_record(1),
+        llm_calls=[
+            encode_llm_call(1, index, pending)
+            for index, pending in enumerate((decision, summary, cut, failed, hooked))
+        ],
+    )
+    trace = RunTrace(wal.run_dir)
+
+    assert recorded_helper_replies(trace, 1) == {"step_summary": ("Opened Settings.", "Opened the")}
+    assert recorded_helper_replies(trace, 0) == {}

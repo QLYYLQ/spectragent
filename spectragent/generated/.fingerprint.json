@@ -1,7 +1,7 @@
 {
   "action": "606ca2a4f5ab010e",
   "action_translator": "9676d3c4b1ebe5c2",
-  "agent": "d41a863c25855f51",
+  "agent": "78aef66564895cae",
   "agent_loop": "0921b863f03d9d09",
   "android_provider": "169c249f498fb364",
   "android_tap_injector": "2567a5d070f09504",
@@ -30,7 +30,7 @@
   "replayability": "cd0e273bc73057eb",
   "restorer": "13e83e73e1c46a90",
   "step_selector": "cde47ac0230d823c",
-  "task_loader": "6313370a89bac849",
+  "task_loader": "3a532ef1775244b2",
   "typing_rhythm": "b73ed1af3b320f70",
   "verifier": "f708e764d5d39410"
 }

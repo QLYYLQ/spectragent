@@ -55,6 +55,7 @@ from spectragent.core.llm.messages import (
 )
 from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.loops import ReactLoop
+from spectragent.core.loops.validation import IncompatibleCheckpointError
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action, ActionResult
@@ -266,6 +267,64 @@ async def test_the_history_holds_the_summary_of_a_step_and_m3as_line_for_an_unre
 
     assert _text(message) == _ANDROIDWORLD["cases"]["action_selection_with_history"]
     assert len(summarizer.calls) == 1, "no call for the step whose reply could not be read"
+
+
+async def test_a_branch_rebuilding_its_sources_history_takes_the_recorded_summary() -> None:
+    """The same prompt as the run that summarized, with no model call (user ruling 2026-11-04)."""
+    opened = "Reason: Settings has the Wi-Fi toggle.\nAction: {'action_type': 'open_app', 'app_name': 'Settings'}"
+    history = [_record(0, opened, results=[ActionResult(success=True)])]
+    live = _agent(_Summarizer(["Opened Settings."]))
+    await live.build_react_prompt(_Observation(), context=_context(0))
+    (recorded,) = await live.build_react_prompt(
+        _Observation(history=HistoryObs(items=list(history))), context=_context(1)
+    )
+
+    summarizer = _Summarizer([])
+    branch = _agent(summarizer)
+    await branch.build_react_prompt(
+        _Observation(),
+        context=ReactPromptContext(
+            step=0, phase="history", is_branch=True, source_helper_replies={}
+        ),
+    )
+    (rebuilt,) = await branch.build_react_prompt(
+        _Observation(history=HistoryObs(items=list(history))),
+        context=ReactPromptContext(
+            step=1,
+            phase="history",
+            is_branch=True,
+            source_run_id="source-run",
+            source_helper_replies={"step_summary": ("Opened Settings.",)},
+        ),
+    )
+
+    assert _text(rebuilt) == _text(recorded)
+    assert summarizer.calls == [], "rebuilding history makes no model call"
+
+
+@pytest.mark.parametrize("recorded", [{}, {"step_summary": ("one", "two")}])
+async def test_a_source_step_without_its_one_summary_cannot_be_branched(
+    recorded: dict[str, tuple[str, ...]],
+) -> None:
+    opened = "Reason: r\nAction: {'action_type': 'open_app', 'app_name': 'Settings'}"
+    agent = _agent(_Summarizer(["never asked"]))
+    await agent.build_react_prompt(_Observation(), context=_context(0))
+    with pytest.raises(
+        IncompatibleCheckpointError, match="step 1 recorded .* step_summary"
+    ) as caught:
+        await agent.build_react_prompt(
+            _Observation(
+                history=HistoryObs(items=[_record(0, opened, results=[ActionResult(success=True)])])
+            ),
+            context=ReactPromptContext(
+                step=1,
+                phase="policy",
+                is_branch=True,
+                source_run_id="source-run",
+                source_helper_replies=recorded,
+            ),
+        )
+    assert caught.value.source == "source-run"
 
 
 async def test_the_summary_is_a_helper_call_with_androidworlds_prompt_and_the_marked_screens() -> (

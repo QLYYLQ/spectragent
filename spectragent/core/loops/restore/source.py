@@ -121,6 +121,13 @@ class SourceRun:
         except IncompatibleCallKindError as exc:
             raise IncompatibleCheckpointError(self.name, [str(exc)]) from exc
 
+    def helper_replies(self, step: int) -> dict[str, tuple[str, ...]]:
+        """The replies the Agent's own helper calls of *step* returned, by purpose (``reconstruction.recorded_helper_replies``)."""
+        return self._read(
+            lambda: reconstruction.recorded_helper_replies(self._trace, step),
+            f"the helper calls of step {step}",
+        )
+
     def observation(self, step: int, negotiated: Any) -> Any:
         """The observation *step* recorded, as this run's ``NegotiatedObservation``.
 

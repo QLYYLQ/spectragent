@@ -30,6 +30,7 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.reconstruction import recorded_form
 from spectragent.core.trace.redaction import OMITTED
 from spectragent.schemas.observation.fragments import StepInfoObs
+from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.restoration import BranchProvenance
 from spectragent.verifiers.trace_view import TraceView
 from tests._helpers.branch_fakes import (
@@ -263,6 +264,18 @@ class TestRecords:
         )
 
 
+class _HelperRepliesSeen(BranchFakeAgent):
+    """The fake agent, noting which source helper replies each prompt was handed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen: list[tuple[int, str, object]] = []
+
+    async def build_react_prompt(self, obs: Any, *, context: ReactPromptContext) -> list[Any]:
+        self.seen.append((context.step, context.phase, context.source_helper_replies))
+        return await super().build_react_prompt(obs, context=context)
+
+
 class TestHistorySource:
     def test_source_is_the_default(self) -> None:
         assert BranchLoop().history_source == "source"
@@ -299,7 +312,7 @@ class TestHistorySource:
     ) -> None:
         agent: Any = BranchFakeAgent()
         agent.build_restored_history = None
-        with pytest.raises(Exception, match="build_restored_history"):
+        with pytest.raises(Exception, match="build_restored_history") as caught:
             await run_branch(
                 tmp_path,
                 source,
@@ -308,6 +321,46 @@ class TestHistorySource:
                 agent=agent,
                 loop=BranchLoop(history_source="restored"),
             )
+        assert "branches with history_source: source" in str(caught.value)
+
+    @pytest.mark.parametrize(
+        ("history_source", "handed"),
+        [
+            # The two replayed steps and the first policy step end the source's
+            # history; the step after decides on the branch's own.
+            (
+                "source",
+                [(0, "history", {}), (1, "history", {}), (2, "policy", {}), (3, "policy", None)],
+            ),
+            # Restored history is this run's own: nothing of the source's is handed over.
+            (
+                "restored",
+                [
+                    (0, "history", None),
+                    (1, "history", None),
+                    (2, "policy", None),
+                    (3, "policy", None),
+                ],
+            ),
+        ],
+    )
+    async def test_the_sources_helper_replies_reach_only_the_prompts_that_rebuild_its_history(
+        self,
+        tmp_path: Path,
+        source: Path,
+        history_source: Literal["source", "restored"],
+        handed: list[tuple[int, str, object]],
+    ) -> None:
+        agent = _HelperRepliesSeen()
+        await run_branch(
+            tmp_path,
+            source,
+            2,
+            ["click 102", "done ok"],
+            agent=agent,
+            loop=BranchLoop(history_source=history_source, continue_steps=1),
+        )
+        assert agent.seen == handed
 
 
 @pytest.mark.parametrize("history_source", ["source", "restored"])
