@@ -28,7 +28,7 @@ from spectragent.core.capabilities.browser.observations import (
     ScreenshotObs,
 )
 from spectragent.core.loops.identity import RunIdentity
-from spectragent.core.loops.limits import ExecutionLimits
+from spectragent.core.loops.limits import ExecutionLimits, RunSettingsCheck
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.negotiation import extract_wiring, negotiate_action
 from spectragent.core.negotiation.observation import _observation_rules
@@ -70,6 +70,31 @@ class TestValidateCompatibility:
         agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
         loop = ReactLoop()
         loop.validate_slots(agent)
+
+
+# ── Run settings ──────────────────────────────────────────────────────
+
+
+class TestRunSettings:
+    """Each writes the Loop's action cap into its prompt, so ``AgentRuntime.prepare()`` refuses a
+    Loop with no cap, or one below 1 (``RunSettingsCheck``)."""
+
+    @pytest.mark.parametrize("member", [BrowserUseDomAgent, SkyvernDomAgent, UITarsAgent])
+    @pytest.mark.parametrize(
+        ("limits", "said"),
+        [
+            (ExecutionLimits(max_actions_per_step=0), "it is 0"),
+            (ExecutionLimits(unbounded=frozenset({"max_actions_per_step"})), "it is unbounded"),
+        ],
+    )
+    def test_a_cap_that_runs_no_action_or_is_none_is_refused(
+        self, member: type[Any], limits: ExecutionLimits, said: str
+    ) -> None:
+        agent = make_agent(member, memory=SimpleMemory(max_messages=10))
+        assert isinstance(agent, RunSettingsCheck)
+        with pytest.raises(ValueError, match=f"max_actions_per_step at 1 or more; {said}"):
+            agent.check_run_settings(limits)
+        agent.check_run_settings(ExecutionLimits(max_actions_per_step=1))
 
 
 # ── Observation negotiation ───────────────────────────────────────────

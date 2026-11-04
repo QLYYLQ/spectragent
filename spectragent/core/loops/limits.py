@@ -1,7 +1,9 @@
 """Typed execution limits supplied by a Loop and consumed by an Agent.
 
 Beside them, the optional check of the run's settings that
-``AgentRuntime.prepare()`` makes (:class:`RunSettingsCheck`).
+``AgentRuntime.prepare()`` makes (:class:`RunSettingsCheck`), and the refusal
+an agent whose prompt states the Loop's action cap shares
+(:func:`actions_per_step`).
 """
 
 from __future__ import annotations
@@ -72,6 +74,26 @@ class RunSettingsCheck(Protocol):
         and its own configuration; writes no state.
         """
         ...
+
+
+def actions_per_step(execution_limits: ExecutionLimits, *, agent: str) -> int:
+    """The Loop's ``max_actions_per_step``, for *agent*, whose prompt states it.
+
+    The refusal its ``check_run_settings`` makes in ``AgentRuntime.prepare()``,
+    and that its ``prepare`` seed slot makes again for the number it writes.
+
+    Raises:
+        ValueError: The Loop sets no cap, or one below 1: a prompt cannot
+            promise a number of actions per reply that is no number, or
+            that runs none.
+    """
+    limit = execution_limits.max_actions_per_step
+    if limit is None or limit < 1:
+        raise ValueError(
+            f"{agent}'s prompt states how many actions a reply may run, so it needs the Loop's "
+            f"max_actions_per_step at 1 or more; it is {'unbounded' if limit is None else limit}"
+        )
+    return limit
 
 
 class IncompatibleExecutionLimitsError(Exception):
