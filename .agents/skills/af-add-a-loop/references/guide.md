@@ -66,7 +66,9 @@ implements `check_run_settings(execution_limits)` (`RunSettingsCheck`), or both;
 is not a consumption declaration. Runtime checks this in `prepare()`, asks
 `check_run_settings` right there, and hands the same typed value to
 `AgentRuntime.seed_messages()` when `prepare` names it. A setting an Agent cannot work with
-(M3A: fewer than 2 actions per reply) is refused in `check_run_settings`, never in its
+(M3A: fewer than 2 actions per reply, parse retries, a bounded parse-error streak or a memory
+keeping more than one message; UI-TARS, BrowserUse and Skyvern: a Loop that leaves
+`max_actions_per_step` unbounded) is refused in `check_run_settings`, never in its
 `prepare` seed slot: `spectragent config check` and the bench pre-flight run `prepare()`
 only, so a refusal in the seed slot passes them and fails every run at its start.
 
