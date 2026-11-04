@@ -535,6 +535,34 @@ async def test_with_the_wait_on_the_clock_is_pinned_on_a_still_screen_that_then_
     assert shot.settle is not None and shot.settle.outcome == "settled"
 
 
+@pytest.mark.parametrize("pins_that_work", [0, 1], ids=["first_pin", "second_pin"])
+async def test_a_pinning_the_device_refuses_is_reported_and_the_capture_goes_on(
+    pins_that_work: int,
+) -> None:
+    """Either pinning failing leaves the clock where it is: reported failed, never the observation lost."""
+    phone = ScriptedPhone(
+        focused="com.android.settings/.Settings", clock_sets_that_work=pins_that_work
+    )
+    recorded = observation(record=device())
+    async with (
+        phone_server(phone) as adb,
+        android_capability(
+            adb, fragments={SCREENSHOT}, settle_max_wait_s=5, settle_quiet_ms=100
+        ) as capability,
+    ):
+        await capability.align_next_observation(recorded)
+        await capability.begin_observation(1)
+        shot = await capability.resolve_fragment(SCREENSHOT)
+        found = await capability.verify_restoration(recorded, SimpleNamespace(screenshot=shot))
+
+    assert isinstance(shot, AndroidScreenshotObs) and shot.image_bytes
+    assert phone.clock_sets == [CLOCK] * pins_that_work
+    alignment = found.clock_alignment
+    assert alignment is not None and (alignment.outcome, alignment.target_ms) == ("failed", CLOCK)
+    assert alignment.detail.startswith("BridgeError: cmd alarm failed (exit 255)")
+    assert "SET_TIME" in alignment.detail
+
+
 async def test_a_pinning_that_cannot_be_done_is_reported() -> None:
     phone = ScriptedPhone()
     async with (

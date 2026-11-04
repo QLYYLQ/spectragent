@@ -235,7 +235,10 @@ class ScriptedPhone:
             (AndroidWorld's 2023-10-15 15:34 UTC); it runs on from there, and
             ``cmd alarm set-time`` moves it.
         clock_fails: ``date`` fails from now on.
-        clock_sets: Every time ``cmd alarm set-time`` was given, in order.
+        clock_sets_that_work: How many ``cmd alarm set-time`` calls succeed
+            before every later one fails, as the shell user's does when the
+            system refuses it; ``None``: every one succeeds.
+        clock_sets: Every time ``cmd alarm set-time`` set the clock, in order.
         global_settings: What ``settings put global`` wrote, by name.
     """
 
@@ -274,6 +277,7 @@ class ScriptedPhone:
     inputs: list[str] = field(default_factory=list)
     clock_ms: int = 1_697_384_040_000
     clock_fails: bool = False
+    clock_sets_that_work: int | None = None
     clock_sets: list[int] = field(default_factory=list)
     global_settings: dict[str, str] = field(default_factory=dict)
     side: FakeDeviceSide = field(init=False)
@@ -519,6 +523,15 @@ class ScriptedPhone:
                 return ShellResult(stderr=b"date: bad clock\n", exit_code=1)
             return ShellResult(stdout=f"{self.now_ms}\n".encode())
         if words[:3] == ["cmd", "alarm", "set-time"]:
+            if (
+                self.clock_sets_that_work is not None
+                and len(self.clock_sets) >= self.clock_sets_that_work
+            ):
+                return ShellResult(
+                    stderr=b"java.lang.SecurityException: setTime: Neither user 2000 nor current "
+                    b"process has android.permission.SET_TIME.\n",
+                    exit_code=255,
+                )
             self.clock_ms, self._clock_since = int(words[3]), time.monotonic()
             self.clock_sets.append(self.clock_ms)
             return ShellResult()
