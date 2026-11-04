@@ -1541,24 +1541,31 @@ def main(
         return built[spec]
 
     selected = select_task_ids(loader, task_ids=args.task_ids, limit=args.limit)
+    if args.list:
+        for task_id in selected:
+            print(task_id)
+        if report is not None:
+            report({"task_ids": selected, "launched": False})
+        return 0
 
     from spectragent.core.benchmark_session import BatchSession
 
     # Where the traces go, for the session file beside them: the first task's
     # stack, as it runs (a branch task's is its source benchmark's). One that
-    # does not compose is the pre-flight's refusal, made before it.
-    try:
-        spec = inherited_of(loader.get_task_context(selected[0])) if selected else None
-        probe = inherited(spec).compose() if spec is not None else composer.compose(raw)
-    except Exception as exc:
-        if not selected:
-            raise
-        print(f"spectragent bench: {PreflightError(selected[0], exc)}", file=sys.stderr)
-        return PREFLIGHT_EXIT_CODE
-    trace_root = next(
-        (Path(hook.trace_dir) for hook in probe.hooks if hasattr(hook, "trace_dir")),
-        Path("traces"),
-    )
+    # does not compose is the pre-flight's refusal, made before it. A sweep
+    # with no task composes nothing: its session goes under ``traces``.
+    trace_root = Path("traces")
+    if selected:
+        try:
+            spec = inherited_of(loader.get_task_context(selected[0]))
+            probe = inherited(spec).compose() if spec is not None else composer.compose(raw)
+        except Exception as exc:
+            print(f"spectragent bench: {PreflightError(selected[0], exc)}", file=sys.stderr)
+            return PREFLIGHT_EXIT_CODE
+        trace_root = next(
+            (Path(hook.trace_dir) for hook in probe.hooks if hasattr(hook, "trace_dir")),
+            trace_root,
+        )
     session = BatchSession(
         args.session_dir or trace_root / ".sessions",
         benchmark=benchmark,
@@ -1585,12 +1592,6 @@ def main(
         benchmark_spec=spec_of(args.benchmark, task_source, subset=args.subset),
         inherited=inherited,
     )
-    if args.list:
-        for task_id in selected:
-            print(task_id)
-        if report is not None:
-            report({"task_ids": selected, "launched": False})
-        return 0
 
     try:
         summary = execute(runner.run(task_ids=selected))

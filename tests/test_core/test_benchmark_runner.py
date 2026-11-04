@@ -1616,13 +1616,22 @@ def test_the_subset_flag_selects_the_tasks_and_is_recorded(tmp_path, monkeypatch
         seen.append((kwargs["loader"].subset, block["task_loader"]["subset"]))
         specs.append(kwargs["benchmark_spec"])
 
+    async def run_nothing(self, *, task_ids=None, limit=None):
+        return BenchmarkRunSummary(benchmark="online_mind2web", subset="")
+
     monkeypatch.setattr(BenchmarkRunner, "__init__", spy)
+    monkeypatch.setattr(BenchmarkRunner, "run", run_nothing)
     config = Path(__file__).resolve().parents[2] / "configs" / "browser_use_local.yaml"
-    argv = ["--config", str(config), "--benchmark", str(benchmark), "--no-eval", "--list"]
-    assert main([*argv, "--session-dir", str(tmp_path / ".sessions")]) == 0
+    argv = ["--config", str(config), "--benchmark", str(benchmark), "--no-eval"]
+    sessions = ["--session-dir", str(tmp_path / ".sessions")]
+    assert main([*argv, *sessions, "--list"]) == 0
     assert capsys.readouterr().out.split() == ["easy", "hard"]
-    assert main([*argv, "--session-dir", str(tmp_path / ".sessions"), "--subset", "Hard"]) == 0
+    assert main([*argv, *sessions, "--list", "--subset", "Hard"]) == 0
     assert capsys.readouterr().out.split() == ["hard"]
+    assert seen == [], "listing composes no stack"
+
+    assert main([*argv, *sessions]) == 0
+    assert main([*argv, *sessions, "--subset", "Hard"]) == 0
     assert seen == [("All", "All"), ("Hard", "Hard")]
     # What every run records: the benchmark's YAML, absolute, the subset given,
     # and the block's fingerprints, taken with that subset written in.

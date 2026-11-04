@@ -277,6 +277,25 @@ def test_bench_refuses_up_front_a_source_benchmark_that_does_not_compose(
     assert not (tmp_path / "traces").exists() and not (tmp_path / ".sessions").exists()
 
 
+def test_a_sweep_with_no_branch_left_composes_nothing(
+    sweep: _Sweep, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """Its only source was left out: no stack is composed, and the run configuration needs one."""
+    from spectragent.core.benchmark_runner import main
+
+    sweep.benchmark.unlink()
+    sweep.task_source["task_loader"]["on_unbranchable"] = "skip"
+    sweep.branches.write_text(yaml.safe_dump({"benchmark": [sweep.task_source]}))
+    monkeypatch.chdir(tmp_path)
+    argv = ["--config", str(sweep.config_path), "--benchmark", str(sweep.branches)]
+
+    assert main([*argv, "--list"]) == 0
+    assert capsys.readouterr().out.split() == []
+    assert main(argv) == 0
+    assert "tasks=0" in capsys.readouterr().out
+    assert len(list((tmp_path / "traces" / ".sessions").iterdir())) == 1, "the default root"
+
+
 def test_run_and_config_check_compose_the_same_root(sweep: _Sweep) -> None:
     from spectragent.cli.configuration import explain_config
     from spectragent.core import run_cli
