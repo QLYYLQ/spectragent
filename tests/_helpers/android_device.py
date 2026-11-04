@@ -239,7 +239,9 @@ class ScriptedPhone:
             before every later one fails, as the shell user's does when the
             system refuses it; ``None``: every one succeeds.
         clock_sets: Every time ``cmd alarm set-time`` set the clock, in order.
-        global_settings: What ``settings put global`` wrote, by name.
+        global_settings: The global settings ``settings get global`` reads,
+            ``put`` writes and ``delete`` removes, by name: the emulator's two
+            animation scales set, the animator's not.
     """
 
     width: int = 1080
@@ -279,7 +281,12 @@ class ScriptedPhone:
     clock_fails: bool = False
     clock_sets_that_work: int | None = None
     clock_sets: list[int] = field(default_factory=list)
-    global_settings: dict[str, str] = field(default_factory=dict)
+    global_settings: dict[str, str] = field(
+        default_factory=lambda: {
+            "window_animation_scale": "1.0",
+            "transition_animation_scale": "1.0",
+        }
+    )
     side: FakeDeviceSide = field(init=False)
     _booted: float = field(init=False, default_factory=time.monotonic)
     #: When the clock was last set (or the phone booted), on the host's monotonic clock.
@@ -538,6 +545,11 @@ class ScriptedPhone:
         if words[:3] == ["settings", "put", "global"]:
             self.global_settings[words[3]] = words[4]
             return ShellResult()
+        if words[:3] == ["settings", "get", "global"]:
+            return ShellResult(stdout=f"{self.global_settings.get(words[3], 'null')}\n".encode())
+        if words[:3] == ["settings", "delete", "global"]:
+            gone = self.global_settings.pop(words[3], None)
+            return ShellResult(stdout=f"Deleted {int(gone is not None)} rows\n".encode())
         if command == "settings get secure default_input_method":
             return ShellResult(stdout=f"{INPUT_METHOD}\n".encode())
         if command == "pm list packages":

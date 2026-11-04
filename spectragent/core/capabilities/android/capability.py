@@ -108,7 +108,7 @@ restored screen with the recorded one as Android's own evidence
 ``align_next_observation`` has the next capture pin the device clock to the
 recorded capture's once the screen is still. ``animation_scale`` turns
 animations off at setup, so a recording and its branches reach each screen
-the same way.
+the same way, and teardown puts the scales back as setup found them.
 
 **Archivers** (``archive/``, the archive axis of §4.5) are bound before setup
 and chosen only by the trace hook's ``archive`` list. Setup assembles the
@@ -167,6 +167,7 @@ from spectragent.core.capabilities.android.benchmark_setup import (
     OracleTask,
 )
 from spectragent.core.capabilities.android.bridge import (
+    ANIMATION_SCALES,
     AdbQueries,
     DeviceBridge,
     DeviceInput,
@@ -397,6 +398,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     _clock_request: _ClockRequest | None
     #: What the last pinning did, until ``verify_restoration`` reports it.
     _clock_alignment: ClockAlignment | None
+    #: The animation scales the device held before setup set ``animation_scale``,
+    #: which teardown puts back; ``None``: setup changed none.
+    _animation_before: dict[str, str | None] | None
 
     def __init__(
         self,
@@ -531,9 +535,10 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 ge=0.0,
                 description=(
                     "The device's window, transition and animator duration scales, set at "
-                    "setup. 0 turns animations off, as AndroidWorld's Docker image does, so a "
-                    "screen reaches its final state at once; a recording and the branch runs "
-                    "from it should set the same. null (the default) leaves the device's own."
+                    "setup and put back as they were at teardown. 0 turns animations off, as "
+                    "AndroidWorld's Docker image does, so a screen reaches its final state at "
+                    "once; a recording and the branch runs from it should set the same. null "
+                    "(the default) leaves the device's own."
                 ),
             ),
         ] = None,
@@ -649,6 +654,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._ready = False
         self._clock_request = None
         self._clock_alignment = None
+        self._animation_before = None
         self.actions = actions
         self.ui_tree_source = default_ui_tree_source()
 
@@ -941,14 +947,18 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 self._screen_size = await queries.screen_size()
                 self._fingerprint = await queries.fingerprint()
                 if self.animation_scale is not None:
-                    await queries.set_animation_scale(self.animation_scale)
+                    # Kept before anything is written, so teardown puts back
+                    # whatever a partial write left.
+                    self._animation_before = await queries.animation_scales()
+                    scale = f"{self.animation_scale:g}"
+                    await queries.put_animation_scales(dict.fromkeys(ANIMATION_SCALES, scale))
                 return await _fastest_screen(side)
 
             producer = await device.run(
                 read_facts,
                 what="reading the device's facts",
                 wait_s=self.queue_wait_s,
-                run_s=6 * self.query_timeout_s + self.screenshot_timeout_s,
+                run_s=8 * self.query_timeout_s + self.screenshot_timeout_s,
             )
             if self._reads_events:
                 self._events = await side.service.events()
@@ -981,6 +991,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 launcher=queries,
                 facts=queries,
                 clock=queries,
+                settings=queries,
             )
             self._device = device
             if start_app is not None:
@@ -1059,6 +1070,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         """
         device, side, session, owner = self._device, self._side, self._session, self._owner
         handover, carried = self._handover, self._carried
+        animation_before, self._animation_before = self._animation_before, None
+        if device is not None and session is not None and animation_before is not None:
+            await self._put_animation_back(device, session, animation_before)
         keep = handover is not None and handover.keep and self._ready
         self._device = self._bridge = None
         self._side = self._session = None
@@ -1083,6 +1097,30 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                         handover.hand_over(self.capability_id, device_kept)
                     else:
                         await device_kept.close()
+
+    async def _put_animation_back(
+        self,
+        device: DeviceSession,
+        session: AndroidProviderSession,
+        scales: Mapping[str, str | None],
+    ) -> None:
+        """Put the animation scales back as setup found them; a failure is logged, never raised.
+
+        On an AVD booted writable they would otherwise outlive the run, and a
+        later run that leaves ``animation_scale`` out would inherit them.
+        """
+        queries = AdbQueries(
+            AdbClient(session.endpoint.host, session.endpoint.port), session.serial
+        )
+        try:
+            await device.run(
+                lambda: queries.put_animation_scales(scales),
+                what="putting the animation scales back",
+                wait_s=self.queue_wait_s,
+                run_s=len(scales) * self.query_timeout_s,
+            )
+        except Exception as exc:
+            logger.warning("android: the animation scales were not put back: %s", exc)
 
     async def _end_task(self, *, keep: bool) -> tuple[KeptEnvironment | None, bool]:
         """Stop the setup component; with *keep*, through its reset. What it keeps on the device,

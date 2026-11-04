@@ -587,17 +587,22 @@ async def test_a_pinning_that_cannot_be_done_is_reported() -> None:
     )
 
 
-@pytest.mark.parametrize(("scale", "written"), [(0.0, "0"), (None, None)])
-async def test_the_animation_scales_are_set_at_setup_when_configured(
-    tmp_path: Path, scale: float | None, written: str | None
+@pytest.mark.parametrize("scale", [0.0, None])
+async def test_the_animation_scales_are_set_at_setup_and_put_back_at_teardown(
+    tmp_path: Path, scale: float | None
 ) -> None:
+    """A writable AVD keeps its settings: a later run that leaves the knob out must not inherit 0."""
     phone = ScriptedPhone()
+    before = dict(phone.global_settings)
     async with phone_server(phone) as adb:
         capability = AndroidCapability(
             service_apk=str(fake_service_apk(tmp_path)), animation_scale=scale
         )
         configured(capability, adb)
         await capability.setup()
+        during = dict(phone.global_settings)
         await capability.teardown()
-    expected = dict.fromkeys(ANIMATION_SCALES, written) if written is not None else {}
-    assert phone.global_settings == expected
+        await capability.teardown()  # nothing is put back twice
+
+    assert during == (dict.fromkeys(ANIMATION_SCALES, "0") if scale is not None else before)
+    assert phone.global_settings == before, "the animator's scale, never set, is deleted again"

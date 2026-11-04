@@ -5,8 +5,9 @@ contracts as Protocols, and the layers below are their implementations. The
 capability reaches a device only through :class:`DeviceBridge`: the screen
 (:class:`ScreenCapture`), input (:class:`InputInjection`), the foreground app
 (:class:`ForegroundApps`), launching apps (:class:`AppLauncher`), the
-device's measured facts (:class:`DeviceFacts`) and its wall clock
-(:class:`DeviceClock`).
+device's measured facts (:class:`DeviceFacts`), its wall clock
+(:class:`DeviceClock`) and the settings a run changes and puts back
+(:class:`DeviceSettings`).
 
 Two sides implement them.
 
@@ -42,6 +43,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -256,6 +258,19 @@ class DeviceClock(Protocol):
         ...
 
 
+@runtime_checkable
+class DeviceSettings(Protocol):
+    """The global settings a run changes for itself and puts back: the animation scales."""
+
+    async def animation_scales(self) -> dict[str, str | None]:
+        """Each of :data:`ANIMATION_SCALES` as the device holds it; ``None``: not set."""
+        ...
+
+    async def put_animation_scales(self, values: Mapping[str, str | None]) -> None:
+        """Write each scale of *values*; ``None`` deletes it, as it was before anything set it."""
+        ...
+
+
 @dataclass(frozen=True)
 class DeviceBridge:
     """Everything the capability asks of one device, one implementation per role."""
@@ -266,6 +281,7 @@ class DeviceBridge:
     launcher: AppLauncher
     facts: DeviceFacts
     clock: DeviceClock
+    settings: DeviceSettings
 
 
 @dataclass(frozen=True)
@@ -402,10 +418,21 @@ class AdbQueries:
             raise ValueError(f"not a time since the epoch: {epoch_ms}")
         await self._check(f"cmd alarm set-time {int(epoch_ms)}")
 
-    async def set_animation_scale(self, scale: float) -> None:
-        """Set the window, transition and animator duration scales to *scale* (0: no animations)."""
+    async def animation_scales(self) -> dict[str, str | None]:
+        scales: dict[str, str | None] = {}
         for setting in ANIMATION_SCALES:
-            await self._check(f"settings put global {setting} {scale:g}")
+            value = (await self._check(f"settings get global {setting}")).decode().strip()
+            scales[setting] = None if value in ("", "null") else value
+        return scales
+
+    async def put_animation_scales(self, values: Mapping[str, str | None]) -> None:
+        for setting, value in values.items():
+            if setting not in ANIMATION_SCALES:
+                raise ValueError(f"not an animation scale: {setting!r}")
+            if value is None:
+                await self._check(f"settings delete global {setting}")
+            else:
+                await self._check(f"settings put global {setting} {shlex.quote(value)}")
 
     async def _run(self, command: str) -> ShellResult:
         return await self._client.shell(self._serial, command)
