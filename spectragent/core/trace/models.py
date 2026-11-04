@@ -768,10 +768,11 @@ class TraceConfig(BaseModel):
     #: group — or ``None`` (not written) for every run that is not a branch.
     #: Resolved by ``AgentRuntime`` from the task context and recorded as
     #: given. Per task (the task id is ``<source_run_id>/s<t>/b<i>``), so not
-    #: part of the digest: every task of one branch sweep shares a
-    #: ``config_hash``, and only sweep-level knobs (``continue_steps``, the
-    #: teacher's sampling, the restorer's ``verify``) move it, through
-    #: ``resolved``. Not called "provenance": that word names the
+    #: part of the digest: the tasks of one branch sweep whose sources ran one
+    #: benchmark share a ``config_hash`` (the source benchmark's block is in
+    #: ``resolved``, one hash per benchmark), and only sweep-level knobs
+    #: (``continue_steps``, the teacher's sampling, the restorer's ``verify``)
+    #: move it, through ``resolved``. Not called "provenance": that word names the
     #: ``secrets_recorded`` / ``env_evidence_privacy`` layer above.
     branch: BranchProvenance | None = Field(default=None, exclude_if=_absent)
     #: The most policy steps the Loop allowed this task: its ``step_budget``

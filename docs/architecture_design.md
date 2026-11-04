@@ -5260,7 +5260,7 @@ traces/
 | `complete` | 已关闭，在声明记录范围内完整；已恢复的历史故障仍可见 | `finalize` |
 | `incomplete` | 已关闭，但有东西没记下来：某一步选择的内容或它的某一路归档证据（run 可继续）、收尾那次收集（含超出 `closeout_collection_timeout`）、收尾补写的某一样欠账、`result.json`；`incomplete_reason` 写明是什么（每一项 `<通道>: <错误类>: <原因>`，几样按发生顺序用 `; ` 连起来，第一个洞在前），`complete_through` 说完整到第几步 | `finalize` |
 
-`complete_through` 表示声明记录范围内连续完整到哪一步；-1 表示没有完整前缀。已提交步缺少某个所选通道也会截断前缀，不只检查 step 文件是否存在。`missing_steps` 列实际尚未提交的步，后续提交仍保留；成功补齐缺口后前缀可以前进。无步骤归属的 trailing 故障不抹掉已有完整前缀。记录健康与 WAL 共用 `recorded_prefix` 规则，查看器和指标可读取缺口后的已提交内容并显示覆盖不足，分叉和导出则要求声明范围与所用前缀完整。当前只读取 format 8，旧数据和 fixtures 重建，不保留兼容路径。
+`complete_through` 表示声明记录范围内连续完整到哪一步；-1 表示没有完整前缀。已提交步缺少某个所选通道也会截断前缀，不只检查 step 文件是否存在。`missing_steps` 列实际尚未提交的步，后续提交仍保留；成功补齐缺口后前缀可以前进。无步骤归属的 trailing 故障不抹掉已有完整前缀。记录健康与 WAL 共用 `recorded_prefix` 规则，查看器和指标可读取缺口后的已提交内容并显示覆盖不足，分叉和导出则要求声明范围与所用前缀完整。当前只读取 format 9，旧数据和 fixtures 重建，不保留兼容路径。
 
 **判定统一存放（用户 2026-11-03 的裁决，§4.10.1；基准层 b 段已实施）。** 用户："judge的文件统一放就行，不用这样不同的hook放在不同的地方"。b 段之前判分有两个地方：判分时间点的判分记录 `oracle_scores.json` 在 run 记录里（manifest 指向它，用户 2026-10-31 的放法），离线评测的判定 `evals/<verdict_slug>.json` 在 run 记录旁边。两处并成了一处：
 
@@ -5624,7 +5624,7 @@ class StepRecord(BaseModel):
 
 ```python
 class RunTrace:
-    def __init__(self, trace_dir: Path) -> None: ...        # 只读 manifest.json；不是 format 8 就抛 TraceSchemaError
+    def __init__(self, trace_dir: Path) -> None: ...        # 只读 manifest.json；不是 format 9 就抛 TraceSchemaError
 
     @property
     def trace_dir(self) -> Path: ...
@@ -5752,7 +5752,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 
 **二进制 fragment 的后缀来自字节本身，不来自配置。** 截图的编码是 capability 配置（`screenshot_format: png | jpeg`，默认 png 与旧行为逐字节相同），但 `ScreenshotObs.trace_binary()` 是从图像头读出后缀的——一个"声明的格式"字段能和字节不一致（provider 没听配置、fragment 从磁盘文件重建），而不一致会在几层之外变成 vision provider 的 400。同理，agent 拼 `data:` URL 的 media type、artifact 落盘时的后缀、判分器按后缀判类型，读的都是同一个来源（`spectragent/schemas/observation/image.py`）。
 
-**trace 格式有版本，只读当前这一版。** `TRACE_FORMAT_VERSION = 8`。8 去掉了 manifest 的判分记录（`oracle_scores`）：所有判定都在 manifest 之外的判定存放（§5.3 "判定统一存放"）。7 引入声明记录范围、独立轻量调用账、稀疏步骤缺口和历史记录诊断；仍保留每 run 内容寻址的 prompt 图片。`AgentResult.schema_version = "5.0"`，总执行时间是 `metrics.execution_ms`，未测量的 usage/call count 为 None。读者拒绝旧格式和旧结果 schema，不保留迁移转发或对测试数据的兼容分支。
+**trace 格式有版本，只读当前这一版。** `TRACE_FORMAT_VERSION = 9`。9 在 `config.json` 里记下 run 的基准是怎样选的（`TraceConfig.benchmark_spec`，§5.3 "实验身份"）。8 去掉了 manifest 的判分记录（`oracle_scores`）：所有判定都在 manifest 之外的判定存放（§5.3 "判定统一存放"）。7 引入声明记录范围、独立轻量调用账、稀疏步骤缺口和历史记录诊断；仍保留每 run 内容寻址的 prompt 图片。`AgentResult.schema_version = "5.0"`，总执行时间是 `metrics.execution_ms`，未测量的 usage/call count 为 None。读者拒绝旧格式和旧结果 schema，不保留迁移转发或对测试数据的兼容分支。
 
 **离线读者找得到 fragment 类。** 评测进程未必 import 过定义 fragment 的模块（browser 的 fragment 是被各自的 watchdog import 时才注册的）。`ObservationRegistrar.get(key)` 落空时，reader 懒执行一次 `discover("spectragent.schemas")` 和 `discover("spectragent.core.capabilities")` 再查；仍然落空就抛 `TraceSchemaError`，点名 key，并说明定义它的模块必须在读侧可导入。
 

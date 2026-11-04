@@ -290,8 +290,10 @@ class BranchProvenance(BaseModel):
 
     Per task (the task id itself is ``<source_run_id>/s<t>/b<i>``, or
     ``<source_run_id>/s<t>/v<variant_id>/b<i>`` for a task variant), so it is
-    not part of the configuration digest: every task of one branch sweep
-    shares a ``config_hash``. ``source_trace`` is the source run directory
+    not part of the configuration digest: the tasks of one branch sweep whose
+    sources ran one benchmark (one ``benchmark_spec``) share a ``config_hash``;
+    a sweep over runs of several benchmarks has one per benchmark, whose block
+    each branch run's root holds. ``source_trace`` is the source run directory
     relative to the sources root (POSIX), so a reader holding the same root
     finds the source trace; the source benchmark / subset / task id join
     the branch back to the source task's reference.

@@ -52,7 +52,7 @@
 | 每任务超时 | 录制 `1800 s`；分叉 `1500 s`；模型请求 `300 s` 单独限制 | 沿用已用过的 runbook 预算；恢复后段检查点曾超出 `900 s`，不能把模型请求上限当整个 task 上限 |
 | 健康排除 | 机器报告原样保存，所有下游统一 `out/health/reviewed-exclusions.json` | 采用这次证据复核：10/25 腾讯 3 条只有遥测请求失败、首末画面已渲染，应撤销其 recording-health 整 run 排除；爱奇艺任务 18 有连续 5 个空白策略步，保留。原报告的 4 条排除和原 932 分叉结果继续作为历史事实 |
 | 复核不是成功判分 | 验证主文档/内容和截图；验证码、站外跳转和账号状态人工检查 | 当前 health 把 Document/Fetch/XHR 一并统计，会误伤遥测，也识别不了所有风控页。恢复通过、health 保留、Agent done 均不能替代任务正确性 |
-| 旧 trace 的复用 | v7 原件保留，用写下它的那一版工具审阅；当前读者只读格式 8，要在当前版本上查看或分叉 v7 的源就重录。分叉旧源时从该源的实际配置建立匹配副本，保留 cursor、时区、窗口、memory、提示等身份 | 新模板用于下一轮。仅换配置不能补出旧帧/thinking；改提示、memory 或浏览器指纹后，不能把新模板直接套到旧录制上要求 source 精确历史 |
+| 旧 trace 的复用 | v7 原件保留，用写下它的那一版工具审阅；当前读者只读格式 9，要在当前版本上查看或分叉 v7、v8 的源就重录。分叉旧源时从该源的实际配置建立匹配副本，保留 cursor、时区、窗口、memory、提示等身份 | 新模板用于下一轮。仅换配置不能补出旧帧/thinking；改提示、memory 或浏览器指纹后，不能把新模板直接套到旧录制上要求 source 精确历史 |
 
 ### Teacher、judge 与决策预算：逐项采用结论
 
@@ -272,7 +272,7 @@ Agent、loop 与 memory 的共有预算见上面的 Teacher 表。分叉 `max_st
 
 | 项目 | 候选差异 | 最终采用 | 采用谁、为什么 | 证据范围与限制 |
 |---|---|---|---|---|
-| recording | 当前显式四通道；历史 YAML 多依赖默认 | **metrics / errors / trajectory / observations 全 true** | 取两者实际行为并显式化。timeline 依赖 action timing；review 历史与 thinking 依赖正文通道。 | 22 源都是 v7、complete，567 policy +22 terminal，共 589 观察。当前读者只读格式 8，v7 要在当前版本上用（新界面、分叉、导出）就得重录；提示身份变化须重录是另一件事。 |
+| recording | 当前显式四通道；历史 YAML 多依赖默认 | **metrics / errors / trajectory / observations 全 true** | 取两者实际行为并显式化。timeline 依赖 action timing；review 历史与 thinking 依赖正文通道。 | 22 源都是 v7、complete，567 policy +22 terminal，共 589 观察。当前读者只读格式 9，v7 要在当前版本上用（新界面、分叉、导出）就得重录；提示身份变化须重录是另一件事。 |
 | live archivers | generic 三类；collection 加 frames | **network + storage + dom_raw + frames** | 取 collection 实跑；纯视觉 agent 仍需 rawDOM 支撑重定位、诊断与后续坐标处理。 | 归档不是 agent 额外观察，不能把辅助帧当下一次 observation。 |
 | offline archivers | 网络录制不能用在 archive source | **replay_log + storage + dom_raw + frames** | replay log 替换 network，其他同录制。 | 来源严格离线，miss 不临时上线补。 |
 | replay log / matcher | 部分历史靠默认，当前 full / exact+normalized | **log_mode full；exact+normalized；site_rules；strict miss；isolation required；shift_dates none** | 保留可追溯的逐请求诊断；不为压缩日志使用 summary 丢掉近邻 miss 细节。 | fuzzy 没有采集证据；站点规则必须冻结到 run，仅忽略不选内容的字段。 |
@@ -979,7 +979,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 ## 独立 Jev replay 审查
 
 运行示例统一使用 `max_actions_per_step: 4`；record、same-path replay、branch 和学生配置保持相同预算。
-当前 trace 为 v8，调用强制区分 `chat` 与 `decision`。旧轨迹保留原件，使用其写入版本的工具审阅；
+当前 trace 为 v9，调用强制区分 `chat` 与 `decision`。旧轨迹保留原件，使用其写入版本的工具审阅；
 新 reader 不自动补 `kind` 或转换旧格式。独立审查只读 source/replay，不改变恢复校验、源 token 计数或任务正确性评分。
 设计见 [architecture_design.md](architecture_design.md) §4.18。
 
