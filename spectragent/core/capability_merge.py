@@ -24,11 +24,16 @@ that capability (:meth:`CapabilityMerge.merge`):
   whole default list when it leaves the list out: a part may set options on an
   entry already there, matched by its discriminator (``action_id``), and never
   adds or removes one (coordinator ruling 2026-11-03), since a benchmark that
-  sets one action's knob would otherwise delete the others. A block that leaves
-  the list out while the run writes a top-level section of its layer (``action:``)
-  takes that section when it is composed; a part on such a list is refused,
-  naming where to write the list instead, since its entries are not the
-  default list (coordinator decision 2026-11-04).
+  sets one action's knob would otherwise delete the others. Options a part sets
+  on an entry the run's list leaves out are not used and not refused: the run
+  has no such action, so they mean nothing, and an agent that requires it is
+  still refused by name by action negotiation in ``prepare()``. The merge
+  returns them (:class:`UnusedOptions`) for ``config explain`` to show (user
+  ruling 2026-11-04). A block that leaves the list out while the run writes a
+  top-level section of its layer (``action:``) takes that section when it is
+  composed; a part on such a list is refused, naming where to write the list
+  instead, since its entries are not the default list (coordinator decision
+  2026-11-04).
 
 The per-task data stays in the per-task setup channel (``TaskContext.env``)
 and is never merged. The merged block is what the run validates, constructs
@@ -88,8 +93,6 @@ class MergeProblem:
     - ``capability_without_block``: a part of a capability the run
       configuration has no block of;
     - ``capability_setting_conflict``: two sides write one field differently;
-    - ``capability_entry_not_listed``: a part sets options on a list entry the
-      run configuration's list leaves out;
     - ``capability_list_in_top_level_section``: a part sets options on a list
       the run configuration writes in a top-level section, not in the block.
     """
@@ -97,6 +100,27 @@ class MergeProblem:
     path: str
     message: str
     code: str
+
+
+@dataclass(frozen=True)
+class UnusedOptions:
+    """Options a part sets on a list entry the run's list leaves out: not used, and not refused.
+
+    Attributes:
+        path: The entry in the run's list it would be: ``environment[0].capabilities[0].actions[android.open_app]``.
+        message: What was left unused and why, for ``config explain``.
+    """
+
+    path: str
+    message: str
+
+
+@dataclass(frozen=True)
+class MergedSections:
+    """The run's sections with the parts merged in, and the options the merge left unused."""
+
+    sections: dict[str, object]
+    unused: tuple[UnusedOptions, ...] = ()
 
 
 class CapabilityMergeError(ValueError):
@@ -132,6 +156,8 @@ class _Block:
     #: Field path within the block (``backend.avd``) → who wrote it; the run
     #: configuration for what this map leaves out.
     written_by: dict[str, _Side] = field(default_factory=dict)
+    #: Options parts set on list entries this block's lists leave out.
+    unused: list[UnusedOptions] = field(default_factory=list)
 
 
 class CapabilityMerge:
@@ -191,12 +217,14 @@ class CapabilityMerge:
 
     def merge(
         self, sections: Mapping[str, object], contributions: Sequence[Contribution]
-    ) -> dict[str, object]:
+    ) -> MergedSections:
         """*sections* with every part of *contributions* merged into its capability's blocks.
 
         The run configuration's blocks are the top-level ``capability`` entries
         and each environment's ``capabilities``; a part goes into every block of
-        its ``capability_id``. *sections* is not changed: the result is a copy.
+        its ``capability_id``. *sections* is not changed: the result is a copy,
+        with the options set on entries a block's list leaves out, which are
+        not used.
 
         Raises:
             CapabilityMergeError: ``capability_without_block`` when a part's
@@ -235,7 +263,7 @@ class CapabilityMerge:
             raise CapabilityMergeError(missing)
         if problems:
             raise CapabilityMergeError(problems)
-        return merged
+        return MergedSections(merged, tuple(unused for block in blocks for unused in block.unused))
 
     # -- one block --------------------------------------------------------
 
@@ -350,7 +378,9 @@ class CapabilityMerge:
 
         The entries are the run configuration's list, or the whole default
         list when it leaves the list out: every key the receptor takes, in
-        its order.
+        its order. Options on an entry the list leaves out are not used: they
+        go to the block's ``unused``, named field by field (an entry that sets
+        none is left out).
         """
         layer = entry.spec.registry_name
         discriminator = _discriminator(self._registrars.get(layer))
@@ -400,16 +430,19 @@ class CapabilityMerge:
             seen.add(key)
             existing = entries.get(key)
             if existing is None:
-                problems.append(
-                    MergeProblem(
-                        f"{target.path}.{where}",
-                        f"{side} sets options on {key!r}, and the run configuration's {name} "
-                        f"({target.path}.{at}) leave it out; a part sets options on the entries "
-                        f"there and never adds or removes one: list {key!r} in the run "
-                        f"configuration's {name}, or drop its options",
-                        "capability_entry_not_listed",
+                options = [
+                    option
+                    for option, setting in item.items()
+                    if option != discriminator and setting is not None
+                ]
+                if options:
+                    target.unused.append(
+                        UnusedOptions(
+                            f"{target.path}.{where}",
+                            f"{side} sets {', '.join(options)} on {key}, which this run's {name} "
+                            f"list ({target.path}.{at}) leaves out",
+                        )
                     )
-                )
                 continue
             definition = self._definition(layer, key)
             if definition is None:
@@ -618,4 +651,6 @@ __all__ = [
     "CapabilityMergeError",
     "Contribution",
     "MergeProblem",
+    "MergedSections",
+    "UnusedOptions",
 ]

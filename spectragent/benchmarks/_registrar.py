@@ -138,7 +138,8 @@ class BenchmarkBase(metaclass=BenchmarkRegistrar.Meta):
                     "by field into the run configuration's block of that capability: a field "
                     "both write with different values is refused, naming both; on a list of "
                     "blocks (actions) a part sets options on the entries there, matched by their "
-                    "discriminator, and never adds or removes one. [] (the default): none."
+                    "discriminator, and never adds or removes one: options on an entry the run's "
+                    "list leaves out are not used. [] (the default): none."
                 )
             ),
         ] = (),

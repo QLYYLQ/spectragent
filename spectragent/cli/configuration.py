@@ -69,9 +69,9 @@ def explain_config(
     with inspection_stage("schema"):
         composer = ConfigComposer.for_config(raw)
     with inspection_stage("validation"):
-        config = composer.validate(raw)
+        validated = composer.validated(raw)
     with inspection_stage("composition"):
-        run = composer.compose(config)
+        run = composer.compose(validated.config)
     agents = run.ids("agent")
     negotiation = None
     descriptors: list[dict[str, Any]] = []
@@ -139,7 +139,7 @@ def explain_config(
     )
     generated_status = "missing" if missing_files else "stale" if stale_layers else "current"
     with inspection_stage("provenance"):
-        provenance = explain_provenance(run, composer)
+        provenance = explain_provenance(run, composer, validated.unused_options)
     return {
         "checked": checked,
         "launched": False,

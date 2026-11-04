@@ -14,7 +14,8 @@ The AndroidWorld benchmark hands it to the Android capability as its part of
 the capability configuration (``AndroidWorldBenchmark.computed_capability``):
 ``apps`` of the ``android.open_app`` entry, so ``open_app`` opens the activity
 AndroidWorld opens. The part sets options on that entry and adds none: a run
-configuration whose actions leave ``android.open_app`` out is refused.
+configuration whose actions leave ``android.open_app`` out has no use for the
+table, and the merge leaves it unused (user ruling 2026-11-04).
 """
 
 from __future__ import annotations

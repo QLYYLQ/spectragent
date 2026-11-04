@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import fields, is_dataclass
 from typing import Any
 
@@ -11,6 +11,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
+from spectragent.core.capability_merge import UnusedOptions
 from spectragent.core.composer import ComposedRun, ConfigComposer
 from spectragent.core.composition_evidence import implementation_name
 
@@ -32,14 +33,18 @@ def declaration_document(value: Any) -> Any:
     raise TypeError(f"Unsupported declaration evidence: {type(value).__name__}")
 
 
-def explain_provenance(run: ComposedRun, composer: ConfigComposer) -> dict[str, Any]:
+def explain_provenance(
+    run: ComposedRun, composer: ConfigComposer, unused_options: Sequence[UnusedOptions]
+) -> dict[str, Any]:
     """Join Composer evidence with Conscribe's public declaration extraction.
 
     Declarations are explained with the Composer's own coverage: a run's partial
     build resolves a class's wiring against only what the run imported. Its
     unresolved wiring, for the components this run built, says what they declare
     and this run cannot provide (an agent's optional actions no named capability
-    offers); negotiation in ``prepare()`` decides the rest.
+    offers); negotiation in ``prepare()`` decides the rest. *unused_options* are
+    the options a benchmark sets on list entries the run's lists leave out,
+    which the capability merge skipped (:meth:`ConfigComposer.validated`).
     """
     evidence = run.composition
     if evidence is None:
@@ -71,6 +76,7 @@ def explain_provenance(run: ComposedRun, composer: ConfigComposer) -> dict[str, 
         "wiring": declaration_document(evidence.wiring),
         "declarations": declarations,
         "unresolved_wiring": unresolved,
+        "unused_options": declaration_document(tuple(unused_options)),
     }
 
 
@@ -124,3 +130,5 @@ def render_provenance(console: Console, provenance: dict[str, Any]) -> None:
                 + (", ".join(missing) if missing else "nothing registered")
             )
         )
+    for item in provenance.get("unused_options", []):
+        console.print(Text(f"Not used in this run: {item['message']}"))
