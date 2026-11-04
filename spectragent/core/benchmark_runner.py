@@ -1582,9 +1582,7 @@ def main(
         progress=progress,
         session=session,
         config_source=config_source,
-        benchmark_spec=spec_of(
-            args.benchmark, benchmark_id=chosen.benchmark_id, subset=args.subset
-        ),
+        benchmark_spec=spec_of(args.benchmark, task_source, subset=args.subset),
         inherited=inherited,
     )
     if args.list:

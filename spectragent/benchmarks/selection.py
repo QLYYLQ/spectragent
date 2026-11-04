@@ -32,7 +32,7 @@ from typing import Any
 import yaml
 
 from spectragent import REPO_ROOT
-from spectragent.schemas.benchmark_spec import BenchmarkSpec
+from spectragent.schemas.benchmark_spec import BenchmarkSpec, BlockFingerprints
 
 #: The run root section a benchmark YAML holds, and the only one.
 BENCHMARK_SECTION = "benchmark"
@@ -112,26 +112,40 @@ def read_benchmark(selection: str, *, subset: str | None = None) -> dict[str, An
     return block
 
 
-def spec_of(selection: str, *, benchmark_id: str, subset: str | None = None) -> BenchmarkSpec:
-    """How the benchmark *benchmark_id* was selected: *selection* (``--benchmark``) and *subset*.
+def spec_of(
+    selection: str, block: Mapping[str, Any], *, subset: str | None = None
+) -> BenchmarkSpec:
+    """How *block* was selected: *selection* (``--benchmark``), *subset*, and what the block was.
 
-    A path is recorded absolute, so a branch sweep run from another directory
-    finds the same file; an alias as it was given.
+    *block* is the one :func:`read_benchmark` gave for *selection* and
+    *subset*, before it was composed. A path is recorded absolute, so a branch
+    sweep run from another directory finds the same file; an alias as it was
+    given. The block's fingerprints are what :func:`read_spec` checks the
+    block found there later against.
     """
     recorded = str(Path(selection).expanduser().resolve()) if is_path(selection) else selection
-    return BenchmarkSpec(benchmark_id=benchmark_id, selection=recorded, subset=subset)
+    return BenchmarkSpec(
+        benchmark_id=str(block["benchmark_id"]),
+        selection=recorded,
+        subset=subset,
+        fingerprints=BlockFingerprints.of(block),
+    )
 
 
 def read_spec(spec: BenchmarkSpec) -> dict[str, Any]:
     """The benchmark block *spec* records the selection of, read again as :func:`read_benchmark` reads it.
 
     What a branch task of a run that recorded *spec* composes with: its source
-    run's benchmark, as its YAML says now.
+    run's benchmark, as the source ran it. Its task source, reference data,
+    setup component and capability part must be what they were then (their
+    fingerprints); a verifier listed since is welcome, as a verifier never
+    changes a run. What this cannot see is named in
+    :class:`~spectragent.schemas.benchmark_spec.BlockFingerprints`.
 
     Raises:
         BenchmarkSelectionError: The selection no longer reads (what
-            :func:`read_benchmark` refuses), or its block is another
-            benchmark's.
+            :func:`read_benchmark` refuses), its block is another
+            benchmark's, or one of those parts changed since.
     """
     block = read_benchmark(spec.selection, subset=spec.subset)
     found = block.get("benchmark_id")
@@ -139,6 +153,13 @@ def read_spec(spec: BenchmarkSpec) -> dict[str, Any]:
         raise BenchmarkSelectionError(
             f"--benchmark {spec.selection}: its block is the benchmark {found!r}, not "
             f"{spec.benchmark_id!r}, the one the run selected with it"
+        )
+    changed = spec.fingerprints.changed(BlockFingerprints.of(block))
+    if changed:
+        raise BenchmarkSelectionError(
+            f"{spec.describe()}: its {', '.join(changed)} changed since the run selected it, so a "
+            f"branch would not run as its source ran; restore the benchmark YAML, or branch runs "
+            f"recorded with it as it is now"
         )
     return block
 

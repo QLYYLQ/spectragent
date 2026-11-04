@@ -27,7 +27,7 @@ from spectragent.schemas import (
     StepRecord,
     TaskContext,
 )
-from spectragent.schemas.benchmark_spec import BenchmarkSpec
+from spectragent.schemas.benchmark_spec import BenchmarkSpec, BlockFingerprints
 from spectragent.schemas.restoration import IDENTITY, ordered_reasons
 
 
@@ -260,7 +260,11 @@ class TestTaskContext:
 
     def test_only_a_branch_task_names_the_benchmark_it_belongs_to(self) -> None:
         """Every other task belongs to the benchmark whose task source gave it (§4.10.1)."""
-        spec = BenchmarkSpec(benchmark_id="androidworld", selection="androidworld")
+        spec = BenchmarkSpec(
+            benchmark_id="androidworld",
+            selection="androidworld",
+            fingerprints=BlockFingerprints.of({}),
+        )
         branch = BranchProvenance(
             source_run_id="run-a",
             source_trace="run-a",

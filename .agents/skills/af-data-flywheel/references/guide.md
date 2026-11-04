@@ -561,7 +561,11 @@ uv run spectragent run --config configs/flywheel/branch_ui_tars_archive.yaml \
   branch run configuration writes neither), and its offline verifiers judge the branch run
   after the sweep (`--no-eval` skips them). Sources of several benchmarks mix in one sweep,
   each task its own; the pre-flight runs once per benchmark. A source whose benchmark YAML no
-  longer reads, or holds another benchmark, is unbranchable (`on_unbranchable`). A branch of
+  longer reads, holds another benchmark, or changed its task source, reference data, setup
+  component or capability part since the source ran (`benchmark_spec.fingerprints`; a
+  verifier added later is fine) is unbranchable (`on_unbranchable`), the refusal naming the
+  changed parts. The fingerprints do not see the data itself, a `data_dir: null` resolved
+  through the environment, or capability parts computed in code from the data. A branch of
   a run that belonged to no benchmark inherits nothing. `spectragent eval --benchmark
   <source benchmark>` still judges branch runs afterwards
   (architecture §4.10.1 "分叉任务继承源基准落地了什么").

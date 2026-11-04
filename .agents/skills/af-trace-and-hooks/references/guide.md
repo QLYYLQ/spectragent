@@ -360,7 +360,9 @@ M31 applied it once more:
   `execute(branch=…)` and on to `on_run_start(branch=…)`, and is recorded as given. Not
   named "provenance": that word is the `secrets_recorded` / `env_evidence_privacy` layer.
 - `TraceConfig.benchmark_spec`: how the benchmark the run's task belongs to was selected
-  (`benchmark_id`, the `--benchmark` selection, `--subset`); absent when it belongs to none.
+  (`benchmark_id`, the `--benchmark` selection, `--subset`) and the sha256 of each part of
+  the block that decides how its tasks run (`fingerprints`; verifiers left out, so a branch
+  can tell the block changed); absent when it belongs to none.
   Not in the digest: the benchmark block itself is in `resolved`. A branch run's is its
   source's, from the fourth context part `benchmark`, and its run root holds that benchmark's
   block too (architecture §5.3 "实验身份"). Trace format 9 added it; format 8 is refused.

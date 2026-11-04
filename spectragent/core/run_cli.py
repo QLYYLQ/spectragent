@@ -204,8 +204,7 @@ async def _run_in_experiment(
     config_source = ConfigSource.from_path(canonical, data=source_bytes)
     if task_id is not None:
         assert benchmark is not None  # main() refuses --task-id without --benchmark
-        chosen = compose_benchmark_alone(blocks[0])
-        loader = chosen.task_loader
+        loader = compose_benchmark_alone(blocks[0]).task_loader
         definition = loader.get(task_id)
         if definition is None:
             selection = f"--benchmark {benchmark}" + (f" --subset {subset}" if subset else "")
@@ -215,7 +214,7 @@ async def _run_in_experiment(
             )
         parts = loader.get_task_context(task_id)
         if parts.branch is None:
-            spec = spec_of(benchmark, benchmark_id=chosen.benchmark_id, subset=subset)
+            spec = spec_of(benchmark, blocks[0], subset=subset)
         else:
             # A branch task belongs to its source run's benchmark, composed
             # beside the task source as ``bench`` composes it (§4.10.1).

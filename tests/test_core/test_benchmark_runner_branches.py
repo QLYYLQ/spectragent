@@ -25,6 +25,7 @@ from typing import Any
 import pytest
 
 from spectragent.benchmarks import BenchmarkBase, BenchmarkSetupBase
+from spectragent.benchmarks.selection import read_benchmark, spec_of
 from spectragent.benchmarks.trace_branches import TraceBranches
 from spectragent.core.benchmark_runner import (
     BenchmarkRunner,
@@ -180,7 +181,7 @@ def _spec(tmp_path: Path, benchmark_id: str) -> BenchmarkSpec:
     """The record of selecting *benchmark_id* by the path of its YAML, which a branch reads again."""
     path = tmp_path / f"{benchmark_id}.yaml"
     path.write_text(f"benchmark:\n  - benchmark_id: {benchmark_id}\n    task_loader: {{}}\n")
-    return BenchmarkSpec(benchmark_id=benchmark_id, selection=str(path))
+    return spec_of(str(path), read_benchmark(str(path)))
 
 
 async def _source(

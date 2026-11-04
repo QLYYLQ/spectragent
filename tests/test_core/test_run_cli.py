@@ -15,8 +15,8 @@ from typing import Any
 import pytest
 import yaml
 
+from spectragent.benchmarks.selection import read_benchmark, spec_of
 from spectragent.core import run_cli
-from spectragent.schemas.benchmark_spec import BenchmarkSpec
 from tests._helpers.benchmark_data import online_mind2web_benchmark
 
 CONFIGS = Path(__file__).resolve().parents[2] / "configs"
@@ -205,9 +205,8 @@ async def test_a_benchmark_task_runs_with_its_text_context_and_identity(
     )
     assert seen["run_id"].startswith("t1_")
     assert seen["config"]["benchmark"] == "online_mind2web"
-    assert seen["benchmark_spec"] == BenchmarkSpec(
-        benchmark_id="online_mind2web", selection=str(benchmark.resolve())
-    )
+    assert seen["benchmark_spec"] == spec_of(str(benchmark), read_benchmark(str(benchmark)))
+    assert seen["benchmark_spec"].selection == str(benchmark.resolve())
 
 
 async def test_a_subset_selects_the_task_and_is_recorded(

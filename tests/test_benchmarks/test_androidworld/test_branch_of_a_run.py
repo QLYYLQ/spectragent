@@ -119,7 +119,7 @@ class _Sweep:
         }
         self.benchmark = tmp_path / "my_androidworld.yaml"
         self.benchmark.write_text(yaml.safe_dump({"benchmark": [block]}))
-        self.spec = spec_of(str(self.benchmark), benchmark_id="androidworld")
+        self.spec = spec_of(str(self.benchmark), block)
         self.sources = tmp_path / "sources"
         self._record(_configuration(tmp_path, {"loop_id": "react"}), block)
 

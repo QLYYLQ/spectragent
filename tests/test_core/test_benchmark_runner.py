@@ -30,7 +30,7 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
-from spectragent.schemas.benchmark_spec import BenchmarkSpec
+from spectragent.schemas.benchmark_spec import BenchmarkSpec, BlockFingerprints
 from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.recording import RecordingPlan
 from spectragent.schemas.restoration import BranchProvenance, Checkpoint
@@ -310,7 +310,10 @@ class TestBenchmarkRunner:
 
     async def test_each_run_records_how_its_benchmark_was_selected(self, tmp_path):
         spec = BenchmarkSpec(
-            benchmark_id="online_mind2web", selection="online_mind2web", subset="Hard"
+            benchmark_id="online_mind2web",
+            selection="online_mind2web",
+            subset="Hard",
+            fingerprints=BlockFingerprints.of({}),
         )
         writers: list[TraceWriter] = []
         runner = BenchmarkRunner(
@@ -1596,6 +1599,7 @@ def test_the_subset_flag_selects_the_tasks_and_is_recorded(tmp_path, monkeypatch
     """
     from pathlib import Path
 
+    from spectragent.benchmarks.selection import read_benchmark
     from spectragent.core.benchmark_runner import main
     from tests._helpers.benchmark_data import online_mind2web_benchmark
 
@@ -1620,13 +1624,14 @@ def test_the_subset_flag_selects_the_tasks_and_is_recorded(tmp_path, monkeypatch
     assert main([*argv, "--session-dir", str(tmp_path / ".sessions"), "--subset", "Hard"]) == 0
     assert capsys.readouterr().out.split() == ["hard"]
     assert seen == [("All", "All"), ("Hard", "Hard")]
-    # What every run records: the benchmark's YAML, absolute, and the subset given.
-    assert specs == [
-        BenchmarkSpec(benchmark_id="online_mind2web", selection=str(benchmark.resolve())),
-        BenchmarkSpec(
-            benchmark_id="online_mind2web", selection=str(benchmark.resolve()), subset="Hard"
-        ),
+    # What every run records: the benchmark's YAML, absolute, the subset given,
+    # and the block's fingerprints, taken with that subset written in.
+    hard = read_benchmark(str(benchmark), subset="Hard")
+    assert [(spec.selection, spec.subset) for spec in specs] == [
+        (str(benchmark.resolve()), None),
+        (str(benchmark.resolve()), "Hard"),
     ]
+    assert specs[1].fingerprints == BlockFingerprints.of(hard) != specs[0].fingerprints
 
 
 @pytest.mark.parametrize("flag", ["--timeout", "--verify-timeout"])
