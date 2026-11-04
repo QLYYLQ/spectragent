@@ -81,3 +81,20 @@ async def test_a_run_records_its_benchmarks_data_version(tmp_path: Path) -> None
     )
     assert writer.run_dir is not None
     assert RunTrace(writer.run_dir).config.data_version == _VERSION
+
+
+def test_the_version_is_read_after_the_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fetch removes the record before it replaces the files, so reading the record second never
+    pairs data a new fetch wrote with the old version; a sweep then sees the change."""
+    from spectragent.core.data_loader.task import _registrar
+
+    order: list[str] = []
+    parse, read = _registrar.parse_file, _registrar.read_data_version
+    monkeypatch.setattr(_registrar, "parse_file", lambda path: order.append("data") or parse(path))
+    monkeypatch.setattr(
+        _registrar, "read_data_version", lambda root: order.append("version") or read(root)
+    )
+    BrowseCompTaskLoader(data_dir=str(_data(tmp_path / "data")))
+    assert order == ["data", "version"]

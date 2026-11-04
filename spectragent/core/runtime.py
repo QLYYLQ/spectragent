@@ -34,6 +34,7 @@ from spectragent.core.aop.weaver import Weaver
 from spectragent.core.archive.protocols import ArchiveConsumer
 from spectragent.core.capabilities.base import PreparedSetupContext
 from spectragent.core.composer import ComposedRun, ComposeError
+from spectragent.core.data_loader.task.base import data_version_of
 from spectragent.core.hooks.base import (
     PromptModelOwner,
     RuntimeHook,
@@ -788,10 +789,9 @@ class AgentRuntime:
         A branch task's run holds two blocks (:meth:`_benchmarks`): its task
         source reads recorded runs and records no version, so the version is
         that of the benchmark it inherited, whose data its setup, its
-        verifiers and its references read.
+        verifiers and its references read (``data_version_of``).
         """
-        versions = (benchmark.task_loader.data_version for benchmark in self._benchmarks())
-        return next((version for version in versions if version is not None), None)
+        return data_version_of(benchmark.task_loader for benchmark in self._benchmarks())
 
     def seed_messages(self, task: str) -> list[Any]:
         """The run's seed messages for *task*, after :meth:`prepare` (arch §4.2).

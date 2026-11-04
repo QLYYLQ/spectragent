@@ -7,6 +7,7 @@ and other capabilities all consume the same protocol.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Protocol, runtime_checkable
 
 from spectragent.schemas.data_version import DataVersion
@@ -62,3 +63,13 @@ class BaseTaskLoader(Protocol):
         ``TaskContext()``.
         """
         ...
+
+
+def data_version_of(loaders: Iterable[BaseTaskLoader]) -> DataVersion | None:
+    """The data version a run records, from its benchmarks' task *loaders*: the one that has one.
+
+    A run has at most one benchmark that reads pinned data: a branch task's
+    run also holds its task source, which reads recorded runs and has no
+    version, beside the benchmark it inherited. ``None`` when none has one.
+    """
+    return next((v for loader in loaders if (v := loader.data_version) is not None), None)

@@ -92,7 +92,6 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
         )
 
         root = resolve_data_dir(self.env_type, self.__registry_key__, self.data_dir)
-        self._data_version = read_data_version(root)
         path = resolve_split_file(root, self.subset)
         try:
             listing = AndroidWorldTaskList.model_validate_json(path.read_bytes())
@@ -147,3 +146,5 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
         self._tasks.update(tasks)
         self._step_budgets.update(step_budgets)
         self._skipped.update(skipped)
+        # After the list, as the base reads it (``TaskLoaderBase._load``).
+        self._data_version = read_data_version(root)

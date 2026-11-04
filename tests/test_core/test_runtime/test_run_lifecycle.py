@@ -1414,6 +1414,7 @@ async def test_task_elapsed_time_includes_loading_cleanup_and_result_readback(mo
     class Loader:
         benchmark_name = "timed"
         subset = "all"
+        data_version = None
 
         def __getitem__(self, task_id):
             clock.now += 1

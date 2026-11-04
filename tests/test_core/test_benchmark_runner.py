@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -32,6 +33,7 @@ from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.benchmark_spec import BenchmarkSpec, BlockFingerprints
 from spectragent.schemas.config_source import ConfigSource
+from spectragent.schemas.data_version import DataVersion
 from spectragent.schemas.recording import RecordingPlan
 from spectragent.schemas.restoration import BranchProvenance, Checkpoint
 from spectragent.schemas.task import TaskContext
@@ -146,6 +148,7 @@ class _Loader:
 
     benchmark_name = "online_mind2web"
     subset = "Hard"
+    data_version: DataVersion | None = None
 
     def __init__(self, broken: set[str] | None = None):
         self._tasks = {
@@ -1687,3 +1690,62 @@ def test_a_time_limit_is_seconds_above_zero_on_both_clis(flag, value, capsys):
             cli([*argv, flag, value])
         assert raised.value.code == 2
         assert flag in capsys.readouterr().err
+
+
+class TestTheDataChangingDuringTheSweep:
+    """Each task's stack reads the benchmark's data again; a fetch in between must not slip in.
+
+    The sweep reads its tasks once, through the loader it was given. A task
+    whose own stack would read another version (another worktree fetched
+    another pin into the shared copy), or none (a fetch is rewriting it), is
+    not run: it would record a version, and a ``config_hash``, its task text
+    did not come from (``docs/architecture_design.md`` §4.10.1 "d 段落地了什么").
+    """
+
+    _READ = DataVersion(source="huggingface", repository="org/set", revision="a" * 40)
+
+    def _runner(self, tmp_path, versions: list[DataVersion | None]) -> BenchmarkRunner:
+        """A sweep whose tasks were read from :attr:`_READ`, each next stack's loader reading the next of *versions*."""
+        loader = _Loader()
+        loader.data_version = self._READ
+        compose = _make_factory(tmp_path, [], [])
+        pending = list(versions)
+
+        def composed():
+            run = compose()
+            run.by_layer["benchmark"] = {
+                "b": SimpleNamespace(
+                    setup=None,
+                    live_verifiers=lambda: [],
+                    task_loader=SimpleNamespace(data_version=pending.pop(0)),
+                )
+            }
+            return run
+
+        return BenchmarkRunner(loader=loader, compose=composed)
+
+    async def test_a_task_whose_stack_reads_another_version_is_not_run(self, tmp_path):
+        other = self._READ.model_copy(update={"revision": "b" * 40})
+        summary = await self._runner(tmp_path, [self._READ, other]).run()
+
+        first, second = summary.outcomes
+        assert first.error is None and first.trace_dir is not None
+        assert RunTrace(first.trace_dir).config.data_version == self._READ
+        assert second.error == (
+            f"the benchmark's data changed during the sweep: its tasks were read from "
+            f"{self._READ.describe()}, and this task's run would read {other.describe()}; start "
+            f"the sweep again once the data is fetched"
+        )
+        assert second.trace_dir is None, "no trace was opened for it"
+
+    async def test_data_being_fetched_again_is_a_change_too(self, tmp_path):
+        """A fetch removes the version record while it writes the files."""
+        summary = await self._runner(tmp_path, [self._READ, None]).run()
+        assert "and this task's run would read no recorded version" in str(
+            summary.outcomes[1].error
+        )
+
+    def test_the_pre_flight_refuses_it(self, tmp_path):
+        other = self._READ.model_copy(update={"revision": "b" * 40})
+        with pytest.raises(PreflightError, match="the benchmark's data changed during the sweep"):
+            self._runner(tmp_path, [other]).preflight("t-1")

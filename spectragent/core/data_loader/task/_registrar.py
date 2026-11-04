@@ -124,10 +124,12 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
             self.__registry_key__,  # type: ignore[attr-defined]
             self.data_dir,
         )
-        self._data_version = read_data_version(root)
         for raw in parse_file(resolve_split_file(root, self.subset)):
             task = self.normalize_raw(raw)
             self._tasks[task.task_id] = task
+        # After the data: a fetch removes the record before it replaces the
+        # files, so data read from a new fetch never meets the old record.
+        self._data_version = read_data_version(root)
 
     def normalize_raw(self, raw: dict[str, Any]) -> TaskDefinition:
         """Map a raw record into a ``TaskDefinition``.
