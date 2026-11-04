@@ -13,7 +13,8 @@ table read from beside its task lists:
   sides, two strategies for one receptor at the discriminator;
 - a list (``actions``) is the run configuration's or, left out, every action:
   a part sets options on an entry there and never adds or removes one, and
-  its options on an entry the run's list leaves out are not used, and named;
+  its options on an entry the run's list leaves out are not used, which
+  ``config explain`` shows;
 - a part that breaks the capability's schema is refused where it writes it,
   and one for a capability the run has no block of is refused;
 - a required setting neither side writes is refused naming it, with or
@@ -29,11 +30,15 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import JsonValue, ValidationError
+from rich.console import Console
 
 from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FILE, OPEN_APP_FORMAT
 from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
 from spectragent.benchmarks.androidworld.tasks import instance_seed
+from spectragent.cli.configuration import explain_config
+from spectragent.cli.configuration_provenance import render_provenance
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capability_merge import (
     CAPABILITY_SECTION,
@@ -46,6 +51,7 @@ from spectragent.core.composer import ComposeError, ConfigComposer
 from spectragent.core.data_loader._common import BenchmarkDataError
 from spectragent.core.trace.models import TraceConfig
 from spectragent.core.trace.redaction import redact_config
+from tests._helpers.benchmark_data import androidworld_data
 
 Block = dict[str, JsonValue]
 
@@ -205,6 +211,42 @@ def test_options_on_entries_the_runs_list_leaves_out_are_not_used(tmp_path: Path
             f"used",
         ),
     )
+
+
+def test_config_explain_shows_the_options_the_merge_left_unused(tmp_path: Path) -> None:
+    """In its JSON and its text, from the benchmark as ``--benchmark`` selects it."""
+    listed: list[JsonValue] = [{"action_id": "android.click_coordinate"}]
+    run = tmp_path / "run.yaml"
+    run.write_text(yaml.safe_dump(_run(_android(actions=listed), None)))
+    benchmark = tmp_path / "androidworld.yaml"
+    loader = {"benchmark_name": "androidworld", "data_dir": str(androidworld_data(tmp_path / "d"))}
+    benchmark.write_text(
+        yaml.safe_dump(
+            {
+                "benchmark": [
+                    {
+                        "benchmark_id": "androidworld",
+                        "task_loader": loader,
+                        "setup": {"setup_id": "androidworld"},
+                    }
+                ]
+            }
+        )
+    )
+
+    provenance = explain_config(run, benchmark=str(benchmark))["provenance"]
+
+    note = (
+        "the benchmark androidworld, computed in code (benchmark[0]) sets options on "
+        "android.open_app; this run's actions list (environment[0].capabilities[0].actions) "
+        "leaves it out, so they are not used"
+    )
+    assert provenance["unused_options"] == [
+        {"path": "environment[0].capabilities[0].actions[android.open_app]", "message": note}
+    ]
+    console = Console(record=True, width=1000)
+    render_provenance(console, provenance)
+    assert f"Not used in this run: {note}" in console.export_text()
 
 
 def test_the_merged_block_is_what_the_run_builds_and_records(tmp_path: Path) -> None:
