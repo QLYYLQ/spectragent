@@ -78,8 +78,13 @@ from spectragent.core.capabilities.browser.effects import (
 )
 from spectragent.core.trace.errors import RecordingScopeError, TraceSchemaError
 from spectragent.core.trace.reader import RunTrace
-from spectragent.schemas.action import Action, ActionResult
-from spectragent.schemas.observation._registrar import ObservationRegistrar, fragment_field_name
+from spectragent.schemas.action import Action, ActionEffect, ActionResult
+from spectragent.schemas.observation._registrar import (
+    FragmentBase,
+    ObservationRegistrar,
+    fragment_field_name,
+)
+from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.geometry import PointGrid, ScreenshotGeometry, point_grid
 from spectragent.schemas.step_record import StepRecord
 
@@ -364,7 +369,7 @@ _SCREENSHOT = "screenshot"
 _CAPTURE_STATE = "capture_state"
 
 
-def _fragment(trace: RunTrace, step: int, key: str) -> Any:
+def _fragment(trace: RunTrace, step: int, key: str) -> FragmentBase | FragmentFailure | None:
     """*step*'s committed fragment *key* (``android.ui_tree``), or ``None``."""
     entry = next((entry for entry in trace.manifest.steps if entry.step == step), None)
     if entry is None:
@@ -378,7 +383,7 @@ def _fragment(trace: RunTrace, step: int, key: str) -> Any:
         return None
 
 
-def _field(trace: RunTrace, step: int, field: str) -> Any:
+def _field(trace: RunTrace, step: int, field: str) -> FragmentBase | FragmentFailure | None:
     """*step*'s committed fragment whose observation field is *field* (``screenshot``), or ``None``."""
     entry = next((entry for entry in trace.manifest.steps if entry.step == step), None)
     if entry is None:
@@ -424,7 +429,7 @@ def addressed_elements(trace: RunTrace, record: StepRecord) -> list[AddressedEle
     index alone. ``None`` for an action that names no element.
     """
     found: list[AddressedElement | None] = []
-    read: dict[str, Any] = {}
+    read: dict[str, FragmentBase | FragmentFailure | None] = {}
     for action in record.actions:
         params = registered_params(action.name)
         if params is None:
@@ -632,7 +637,7 @@ def _typed(params: dict[str, Any], result: ActionResult | None, effect: Any) -> 
     return None if sensitive else text
 
 
-def _touch(effect: Any) -> Touch | None:
+def _touch(effect: ActionEffect | None) -> Touch | None:
     """The touch an Android action's effect says it made, or ``None``."""
     if isinstance(effect, AndroidTouchEffect):
         return effect.touch
