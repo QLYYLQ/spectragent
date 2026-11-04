@@ -507,6 +507,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         agent = run.agent
         memory = run.memory
         observation = source.observation(step, run.negotiated_obs)
+        calls, helper_replies = source.replayed_calls(step)
         try:
             record = source.record(step)
             # The frame the source step recorded: the prompt is rebuilt, and
@@ -522,7 +523,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                     source_reply=record.llm_output,
                     # What the source Agent's own helpers returned while it built
                     # this prompt: rebuilding history makes no model call.
-                    source_helper_replies=source.helper_replies(step),
+                    source_helper_replies=helper_replies,
                     frame=record.frame,
                 ),
             )
@@ -531,7 +532,6 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             raise
         memory.add_messages(new_msgs)
 
-        calls = source.calls(step)
         if not calls:
             raise IncompatibleCheckpointError(
                 source.name, [f"step {step} made no model call to replay"]

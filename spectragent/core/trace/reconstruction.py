@@ -16,7 +16,7 @@ from pydantic import TypeAdapter
 from spectragent.core.llm.exceptions import ModelOutputTruncatedError
 from spectragent.core.trace.encoding import snapshot
 from spectragent.core.trace.errors import IncompatibleCallKindError
-from spectragent.core.trace.models import RecordedChatCall, RecordedMessage
+from spectragent.core.trace.models import RecordedChatCall, RecordedLLMCall, RecordedMessage
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.observation._registrar import fragment_field_name
 from spectragent.schemas.observation.dynamic_model import build_observation_model_from_result
@@ -31,16 +31,34 @@ _MESSAGE: TypeAdapter[Any] = TypeAdapter(RecordedMessage)
 
 def recorded_chat_decisions(trace: RunTrace, step: int, *, consumer: str) -> list[RecordedChatCall]:
     """Only main Chat decisions are eligible for ReAct history and training answers."""
-    calls = [call for call in trace.llm_messages(step) if call.purpose == "agent_decision"]
-    if any(call.kind != "chat" for call in calls):
+    return chat_decisions(
+        trace.llm_messages(step), f"{trace.run_id} step {step}", consumer=consumer
+    )
+
+
+def chat_decisions(
+    calls: Sequence[RecordedLLMCall], where: str, *, consumer: str
+) -> list[RecordedChatCall]:
+    """The main Chat decisions among one step's *calls* (:func:`recorded_chat_decisions`).
+
+    Raises:
+        IncompatibleCallKindError: A decision of *where* is not a Chat call.
+    """
+    decisions = [call for call in calls if call.purpose == "agent_decision"]
+    if any(call.kind != "chat" for call in decisions):
         raise IncompatibleCallKindError(
-            f"{consumer}: {trace.run_id} step {step} contains a non-Chat Agent decision; this consumer requires Chat evidence"
+            f"{consumer}: {where} contains a non-Chat Agent decision; this consumer requires Chat evidence"
         )
-    return [call for call in calls if call.kind == "chat"]
+    return [call for call in decisions if call.kind == "chat"]
 
 
 def recorded_helper_replies(trace: RunTrace, step: int) -> dict[str, tuple[str, ...]]:
-    """The replies the Agent's own helper calls of *step* returned, by purpose, in call order.
+    """The replies the Agent's own helper calls of *step* returned (:func:`helper_replies`)."""
+    return helper_replies(trace.llm_messages(step))
+
+
+def helper_replies(calls: Sequence[RecordedLLMCall]) -> dict[str, tuple[str, ...]]:
+    """The replies the Agent's own helper calls among one step's *calls* returned, by purpose, in call order.
 
     A helper call is one the Agent made itself (``caller`` ``agent``) for
     another purpose than its decision (M3A's ``step_summary``). The reply is
@@ -50,7 +68,7 @@ def recorded_helper_replies(trace: RunTrace, step: int) -> dict[str, tuple[str, 
     and has no reply here.
     """
     replies: dict[str, list[str]] = {}
-    for call in trace.llm_messages(step):
+    for call in calls:
         if call.kind != "chat" or call.caller != "agent" or call.purpose == "agent_decision":
             continue
         if call.status == "completed" and call.completion is not None:

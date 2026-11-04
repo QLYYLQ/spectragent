@@ -323,6 +323,22 @@ class TestHistorySource:
             )
         assert "branches with history_source: source" in str(caught.value)
 
+    async def test_a_replayed_steps_call_files_are_read_once(
+        self, tmp_path: Path, source: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Its decisions and its helper replies come from one read: each read decodes every image."""
+        reads: list[int] = []
+        read = RunTrace.llm_messages
+
+        def counted(trace: RunTrace, step: int) -> Any:
+            reads.append(step)
+            return read(trace, step)
+
+        monkeypatch.setattr(RunTrace, "llm_messages", counted)
+        await run_branch(tmp_path, source, 2, ["done ok"])
+        # Step 0 is read once more first, for the seeded prompt; the checkpoint once, for its helpers.
+        assert sorted(reads) == [0, 0, 1, 2]
+
     @pytest.mark.parametrize(
         ("history_source", "handed"),
         [
