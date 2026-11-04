@@ -353,8 +353,9 @@ consume the policy-step budget, enter the run's policy action history, or inheri
 model usage. Source history reconstruction replays only Agent decision/retry calls, not
 auxiliary model replies. `history_source: source` reconstructs and exactly checks recorded prompts, replaying only
 main decision calls and recorded contributions. It reads each recorded reply through
-`read_reply`, a refused structured reply from its recorded `raw_output`, so a refusal reads
-back in the words the live step used; a source recorded before structured refusals were the
+`read_reply`, a refused structured reply from its recorded `raw_output` and a cut-off reply
+the source read as is from its recorded `partial_output`, so a refusal reads back in the
+words the live step used; a source recorded before structured refusals were the
 framework's (2026-10-26) carries the old pydantic wording and no longer matches.
 `restored` asks the Agent's public
 `build_restored_history` slot to express live restoration observations, actual retargeted

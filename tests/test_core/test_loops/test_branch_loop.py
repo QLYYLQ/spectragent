@@ -879,6 +879,52 @@ class TestRecordedReplies:
         ]
         assert out.result is not None and out.result.agent_done.value == "done"
 
+    async def test_a_cut_off_reply_the_source_read_as_is_replays_as_it_read_it(
+        self, tmp_path: Path
+    ) -> None:
+        """A source that ran ``cut_off_reply: read_as_is`` read each cut-off reply's text.
+
+        Step 0 asked twice: a reply cut off mid-word, then one that was all
+        reasoning (no text). Both were unreadable, so the step was spent. The
+        branch reads them from the calls' recorded ``partial_output`` and
+        rebuilds the same context, whatever its own ``cut_off_reply``.
+        """
+        from spectragent.core.llm.exceptions import ModelOutputTruncatedError
+
+        def cut_off(partial: str | None) -> ModelOutputTruncatedError:
+            return ModelOutputTruncatedError(stop_reason="length", partial_output=partial)
+
+        source = await record_source(
+            tmp_path,
+            [cut_off("cli"), cut_off(None), "click 100", "click 101", "done ok"],
+            loop=ReactLoop(
+                max_steps=10,
+                parse_retries_per_step=1,
+                today_override="2001-02-03",
+                cut_off_reply="read_as_is",
+            ),
+        )
+        recorded = RunTrace(source)
+        calls = recorded.llm_messages(0)
+        assert [(c.status, c.failure.error if c.failure else None) for c in calls] == [
+            ("failed", "ModelOutputTruncatedError"),
+            ("failed", "ModelOutputTruncatedError"),
+        ]
+        spent = recorded.step(0)
+        assert spent is not None and (spent.error_phase, spent.llm_output) == ("parse", "")
+
+        out = await run_branch(tmp_path, source, 2, ["done ok"])
+        assert BranchLoop().cut_off_reply == "end_run"
+        rebuilt = recorded_form(out.llm.prompts[0])
+        assert rebuilt == recorded_form(as_chat(recorded.llm_messages(2)[0]).messages)
+        said = [m["content"] for m in rebuilt if "could not be parsed" in str(m["content"])]
+        assert [text.split("\n")[0] for text in said] == [
+            "[SYSTEM] Your previous output could not be parsed into actions. Error: cannot "
+            "read 'cli'",
+            "[SYSTEM] Your previous output could not be parsed into actions. Error: empty reply",
+        ]
+        assert out.result is not None and out.result.agent_done.value == "done"
+
     async def test_a_reply_naming_an_ablated_action_replays_as_its_parse_failure(
         self, tmp_path: Path
     ) -> None:
