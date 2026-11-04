@@ -1,14 +1,20 @@
-"""ReactLoop — a reply cut off at the token ceiling ends the run, honestly.
+"""ReactLoop — a reply cut off at the token ceiling, under each ``cut_off_reply``.
 
-This is the opposite treatment from a ``ParseError``. A parse failure is the
-model's mistake and gets re-asked; a truncation is our configuration and
-cannot be re-asked out of existence — the ceiling is unchanged and the
-history is longer, so every retry truncates sooner while costing a
-maximum-length completion.
+By default (``end_run``) it ends the run, honestly. This is the opposite
+treatment from a ``ParseError``. A parse failure is the model's mistake and
+gets re-asked; a truncation is our configuration and cannot be re-asked out
+of existence — the ceiling is unchanged and the history is longer, so every
+retry truncates sooner while costing a maximum-length completion.
 
 The trace half matters as much as the money: routed through the parse path a
 run died reporting "Parse failed 3 consecutive times", which on an evaluation
 platform charges our own budget to the model under test.
+
+``read_as_is`` is what a benchmark's own harness does (AndroidWorld reads the
+content whatever the finish reason): the text the reply had generated goes to
+the agent's parser like any reply, and one it cannot read is a parse failure
+like any other, re-asked by ``parse_retries_per_step`` and counted by
+``max_consecutive_parse_errors``.
 """
 
 from __future__ import annotations
@@ -17,7 +23,7 @@ import asyncio
 from typing import Any
 
 from spectragent.core.llm.exceptions import ModelOutputTruncatedError
-from spectragent.core.llm.views import ModelInvokeUsage
+from spectragent.core.llm.views import ChatInvokeCompletion, ModelInvokeUsage
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.react import ReactLoop
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
@@ -43,6 +49,9 @@ class _FakeEnv:
 
     def get_action_space(self, **kw: Any) -> list[ActionDescriptor]:
         return [ActionDescriptor(name="done", description="Done")]
+
+    async def episode_over(self) -> bool:
+        return False
 
 
 class _FakeMemory:
@@ -201,3 +210,159 @@ class TestTruncationWithoutInstrumentation:
         llm, agent, env = _TruncatingLLM(usage=None), _Agent(), _FakeEnv()
         result = _run(llm, agent, env)
         assert result.metrics.usage is None
+
+
+# ── cut_off_reply: read_as_is ────────────────────────────────────────
+
+
+def _cut_off(partial_output: str | None) -> ModelOutputTruncatedError:
+    """The reply DeepSeek gave when its reasoning spent the whole budget, or one with *partial_output*."""
+    return ModelOutputTruncatedError(
+        model="scripted",
+        stop_reason="length",
+        ceiling_field="max_completion_tokens",
+        ceiling=32768,
+        usage=_TRUNCATED_USAGE,
+        partial_output=partial_output,
+    )
+
+
+class _ScriptedLLM:
+    """Answers each call with the next reply of its script; an exception in it is raised."""
+
+    inference_kind = "chat"
+    model = "scripted"
+
+    def __init__(self, *replies: str | BaseException) -> None:
+        self.replies = list(replies)
+        self.calls = 0
+
+    async def ainvoke(self, messages: Any, **kw: Any) -> ChatInvokeCompletion[str]:
+        self.calls += 1
+        reply = self.replies.pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        return ChatInvokeCompletion(completion=reply, usage=None)
+
+
+class _ReadingAgent:
+    """Reads ``done <answer>``, and nothing else; keeps every text its parser was handed."""
+
+    __wiring__: dict = {}
+    __execution_limit_fields__ = frozenset()
+
+    def __init__(self) -> None:
+        self.read: list[Any] = []
+
+    async def build_react_prompt(self, obs: Any, *, context) -> list:
+        return [{"role": "user", "content": "go"}]
+
+    def parse_react_output(self, llm_output: Any) -> list[Action]:
+        self.read.append(llm_output)
+        verb, _, answer = str(llm_output).partition(" ")
+        if verb != "done":
+            raise ParseError(f"cannot read {llm_output!r}")
+        return [Action(name="done", params={"extracted_content": answer})]
+
+    def get_react_output_model(self) -> None:
+        return None
+
+
+async def _act(action: Action) -> ActionResult:
+    return ActionResult(
+        success=True, is_done=True, extracted_content=action.params["extracted_content"]
+    )
+
+
+def _read_as_is(
+    llm: _ScriptedLLM, agent: _ReadingAgent, env: _FakeEnv, recorder: _Recorder, **loop: Any
+) -> Any:
+    ctx = {
+        "env": env,
+        "llm": llm,
+        "memory": _FakeMemory(),
+        "act_fn": _act,
+        "action_space": ActionSpace(),
+        "task_id": "t",
+        "step_recorder": recorder,
+    }
+    react = ReactLoop(**{"max_steps": 10, "cut_off_reply": "read_as_is", **loop})
+    return asyncio.run(react._execute(agent, "test", ctx=ctx))
+
+
+class TestReadAsIs:
+    def test_the_default_ends_the_run(self) -> None:
+        """``end_run`` is the default: the classes above run the Loop as constructed."""
+        assert ReactLoop().cut_off_reply == "end_run"
+
+    def test_the_cut_off_text_is_read_and_its_unreadable_reply_spends_the_step(self) -> None:
+        """The parser reads what the reply had generated; the run goes on to the next step."""
+        llm, agent, env, recorder = (
+            _ScriptedLLM(_cut_off("Reason: the slider is at -75, so"), "done ok"),
+            _ReadingAgent(),
+            _FakeEnv(),
+            _Recorder(),
+        )
+        result = _read_as_is(llm, agent, env, recorder, max_consecutive_parse_errors=None)
+
+        assert (result.agent_done.value, result.answer) == ("done", "ok")
+        assert agent.read == ["Reason: the slider is at -75, so", "done ok"]
+        assert (llm.calls, env.observe_calls) == (2, 2)
+        spent, done = recorder.records
+        assert spent.error_phase == "parse" and spent.actions == []
+        assert spent.error == "cannot read 'Reason: the slider is at -75, so'"
+        assert spent.llm_output == "Reason: the slider is at -75, so"
+        assert done.error_phase == ""
+
+    def test_a_reply_that_was_all_reasoning_reaches_the_parser_empty(self) -> None:
+        """No text (``None``) and empty text (``""``) are both the empty reply the parser gets."""
+        llm, agent, env, recorder = (
+            _ScriptedLLM(_cut_off(None), _cut_off(""), "done ok"),
+            _ReadingAgent(),
+            _FakeEnv(),
+            _Recorder(),
+        )
+        result = _read_as_is(llm, agent, env, recorder)
+
+        assert result.agent_done.value == "done"
+        assert agent.read == ["", "", "done ok"]
+        assert [record.llm_output for record in recorder.records] == ["", "", "done ok"]
+
+    def test_parse_retries_re_ask_a_cut_off_reply(self) -> None:
+        llm, agent, env, recorder = (
+            _ScriptedLLM(_cut_off(None), "done ok"),
+            _ReadingAgent(),
+            _FakeEnv(),
+            _Recorder(),
+        )
+        result = _read_as_is(llm, agent, env, recorder, parse_retries_per_step=1)
+
+        assert result.agent_done.value == "done"
+        assert (llm.calls, env.observe_calls, len(recorder.records)) == (2, 1, 1)
+
+    def test_the_consecutive_error_limit_counts_it(self) -> None:
+        """Cut-off replies are unreadable steps like any other, and the streak ends the run."""
+        llm, agent, env, recorder = (
+            _ScriptedLLM(*(_cut_off(None) for _ in range(5))),
+            _ReadingAgent(),
+            _FakeEnv(),
+            _Recorder(),
+        )
+        result = _read_as_is(llm, agent, env, recorder, max_consecutive_parse_errors=2)
+
+        assert result.agent_done.value == "error"
+        assert result.error == "Parse failed 2 consecutive times: cannot read ''"
+        assert llm.calls == 2
+        assert [record.error_phase for record in recorder.records] == ["parse", "parse"]
+
+    def test_cut_off_text_that_reads_runs(self) -> None:
+        """Read like any reply: text the parser can read runs as written."""
+        llm, agent, env, recorder = (
+            _ScriptedLLM(_cut_off("done early")),
+            _ReadingAgent(),
+            _FakeEnv(),
+            _Recorder(),
+        )
+        result = _read_as_is(llm, agent, env, recorder)
+
+        assert (result.agent_done.value, result.answer) == ("done", "early")

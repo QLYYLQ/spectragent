@@ -99,7 +99,11 @@ class ModelOutputTruncatedError(ModelProviderError):
     history is now longer, so the retry truncates earlier. Everything the
     Loop does for a parse failure (feed the error back, re-ask, count a
     streak) is wasted here, and each wasted attempt is a *maximum-length*
-    completion, the most expensive kind there is.
+    completion, the most expensive kind there is. So ReAct ends the run on
+    it by default; a run that must read the reply as a benchmark's own
+    harness does (AndroidWorld reads the content whatever the finish reason)
+    sets ``cut_off_reply: read_as_is``, and ``partial_output`` is then read
+    as the reply (``core/loops/react.py``).
 
     **``status_code`` is 400 on purpose and load-bearing.** The base
     defaults to 502, which sits inside ``ChatGoogle.retryable_status_codes``
@@ -115,10 +119,14 @@ class ModelOutputTruncatedError(ModelProviderError):
 
     ``partial_output`` is what the reply had generated when the ceiling cut
     it: the half-written JSON or prose, and on Anthropic the serialised
-    ``tool_use`` input that carries a forced-tool structured reply. The Loop
-    aborts the step on this error, so the trace's failure record is the
-    only place that text survives — without it a reader sees *that* the
-    budget ran out and never *what* the model was spending it on.
+    ``tool_use`` input that carries a forced-tool structured reply. It is
+    the reply's text only: each provider that raises this leaves the
+    model's reasoning out (thinking blocks, thought parts,
+    ``reasoning_content``), so a reply that spent the whole budget
+    reasoning has none: ``""`` or ``None``. When the Loop ends
+    the run on this error, the trace's failure record is the only place that
+    text survives — without it a reader sees *that* the budget ran out and
+    never *what* the model was spending it on.
     ``None`` means the provider handed back no text at all; ``""`` means it
     handed back an empty one. Deliberately not called ``raw_output``: on
     :class:`StructuredOutputValidationError` that name means the reply *as

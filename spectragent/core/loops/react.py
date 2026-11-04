@@ -19,7 +19,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
@@ -153,6 +153,10 @@ class ReactLoop(AgentLoopBase):
       budget still does)
     - ``parse_retries_per_step``: extra re-asks inside one step, on the
       observation that step already took
+    - ``cut_off_reply``: what a reply cut off at the completion-token
+      ceiling does: ``end_run`` (the default) ends the run on it;
+      ``read_as_is`` reads the text it had generated as the reply, as
+      AndroidWorld does
     - ``today_override``: pins ``StepInfoObs.today`` for replay
     - ``terminal_observation``: observe once more after the run ended and
       record it as an ``origin="terminal"`` step
@@ -221,6 +225,20 @@ class ReactLoop(AgentLoopBase):
             ),
         ),
     ] = 0
+    cut_off_reply: Annotated[
+        Literal["end_run", "read_as_is"],
+        Field(
+            default="end_run",
+            description=(
+                "What a reply cut off at the completion-token ceiling does. end_run: "
+                "the run ends on it, in error, naming the ceiling. read_as_is: the "
+                "text it had generated (empty when it generated none) is read like any "
+                "reply, as AndroidWorld reads it: one that cannot be read is a parse "
+                "failure, which parse_retries_per_step re-asks and "
+                "max_consecutive_parse_errors counts."
+            ),
+        ),
+    ] = "end_run"
     today_override: Annotated[
         str | None,
         Field(
@@ -534,27 +552,39 @@ class ReactLoop(AgentLoopBase):
                 )
                 raise
             except ModelOutputTruncatedError as exc:
-                # Our ceiling, not the model's mistake — so this must
-                # not get what a ParseError gets. Re-asking cannot help
-                # (the budget is unchanged and the history is now
-                # longer, so the retry truncates sooner) and each
+                # Our ceiling, not the model's mistake — so by default
+                # this does not get what a ParseError gets. Re-asking
+                # cannot help (the budget is unchanged and the history is
+                # now longer, so the retry truncates sooner) and each
                 # attempt costs a maximum-length completion. Ending here
                 # also keeps the trace honest: routed through the parse
                 # path, a run died reporting "Parse failed 3 consecutive
                 # times", which on an evaluation platform charges our
                 # configuration to the model under test.
-                #
-                return await self._abort(
-                    run,
-                    phase="llm",
-                    prompt_context=prompt_context,
-                    exc=exc,
-                    observation=observation,
-                    observation_summary=observation_summary,
-                    step_idx=step_idx,
-                    env_status="success",
-                    restoration=restoration,
+                if self.cut_off_reply == "end_run":
+                    return await self._abort(
+                        run,
+                        phase="llm",
+                        prompt_context=prompt_context,
+                        exc=exc,
+                        observation=observation,
+                        observation_summary=observation_summary,
+                        step_idx=step_idx,
+                        env_status="success",
+                        restoration=restoration,
+                    )
+                # ``read_as_is``: the reply a benchmark's own harness would
+                # have read (AndroidWorld reads the content whatever the
+                # finish reason), so the run follows that benchmark's rules
+                # for it. The call's failure record (``CallFailure``) still
+                # says it was cut off, with the text and the bill.
+                logger.warning(
+                    "ReactLoop: step %d reply cut off at the completion-token ceiling; "
+                    "reading the %d characters it had generated as the reply",
+                    step_idx,
+                    len(exc.partial_output or ""),
                 )
+                reply = exc.partial_output or ""
             except Exception as exc:
                 # The environment is fine; the model call is not. A 429
                 # should not be indistinguishable from a dead browser.
