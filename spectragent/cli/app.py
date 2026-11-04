@@ -382,6 +382,14 @@ def _render_configuration(console: Console, value: dict[str, Any]) -> None:
     )
 
 
+def _refused(exc: BaseException) -> bool:
+    """Whether *exc* is a refusal (``core/refusal.py``), or the Composer's wrapping of a component's.
+
+    Either exits 2, as a configuration error does.
+    """
+    return isinstance(exc, Refusal) or isinstance(exc.__cause__, Refusal)
+
+
 def _checked(output: Output, operation: Callable[[], Any]) -> None:
     try:
         output.emit(operation())
@@ -430,7 +438,7 @@ def _delegate(ctx: typer.Context, name: str, module: str) -> None:
         code = 130
         result["interrupted"] = True
     except Exception as exc:
-        code = 2 if isinstance(exc, (ValidationError, ValueError, OSError, Refusal)) else 1
+        code = 2 if isinstance(exc, (ValidationError, ValueError, OSError)) or _refused(exc) else 1
         result["error"] = _validation_error(exc)
     payload = {
         "command": name,
@@ -936,7 +944,7 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     except Exception as exc:
         code = getattr(
-            exc, "exit_code", 2 if isinstance(exc, (ValueError, OSError, Refusal)) else 1
+            exc, "exit_code", 2 if isinstance(exc, (ValueError, OSError)) or _refused(exc) else 1
         )
         error = _validation_error(exc)
         if "--json" in arguments:

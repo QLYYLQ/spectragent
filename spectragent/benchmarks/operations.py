@@ -27,6 +27,7 @@ record no version for it.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import tempfile
 from collections.abc import Mapping
@@ -107,8 +108,8 @@ def require_data(
         return
     if not fetch:
         raise BenchmarkDataError(
-            f"{problem}: fetch it with `spectragent benchmark fetch {selection}` (run and bench "
-            f"fetch it first when given --fetch)"
+            f"{problem}: fetch it with `spectragent benchmark fetch {shlex.quote(selection)}` "
+            f"(run and bench fetch it first when given --fetch)"
         )
     _fetch_into(directory, pinned, say)
 

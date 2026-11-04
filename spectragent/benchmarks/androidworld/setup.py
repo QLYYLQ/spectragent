@@ -78,6 +78,7 @@ from spectragent.benchmarks.androidworld.tasks import MINIWOB, UNREPRODUCIBLE, A
 from spectragent.core.capabilities.android.backends.base import AndroidProviderSession, DeviceNeeds
 from spectragent.core.capabilities.android.benchmark_setup import OracleTask
 from spectragent.core.capabilities.android.processes import finish
+from spectragent.core.data_loader._common import validation_summary
 from spectragent.core.environment_reuse import KeptEnvironment
 
 logger = logging.getLogger(__name__)
@@ -387,12 +388,14 @@ class AndroidWorldSetup(BenchmarkSetupBase):
             parsed = AndroidWorldTask.model_validate(task)
         except ValidationError as exc:
             raise AndroidWorldSetupError(
-                f"the task's oracle_task is not an AndroidWorld task: {exc}"
+                f"the task's oracle_task is not an AndroidWorld task ({validation_summary(exc)}): "
+                f"fetch the task lists again with spectragent benchmark fetch androidworld"
             ) from None
         if parsed.commit != PINNED_COMMIT:
             raise AndroidWorldSetupError(
                 f"the task list was made with AndroidWorld {parsed.commit}, and this setup runs "
-                f"{PINNED_COMMIT}: generate the list again with the pinned checkout"
+                f"{PINNED_COMMIT}: fetch the task lists again with spectragent benchmark fetch "
+                f"androidworld"
             )
         if parsed.task in UNREPRODUCIBLE:
             raise AndroidWorldSetupError(f"{parsed.task} cannot run: {UNREPRODUCIBLE[parsed.task]}")

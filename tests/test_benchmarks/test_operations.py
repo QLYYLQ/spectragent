@@ -97,6 +97,15 @@ def test_the_command_names_the_selection_as_given(root: Path, tmp_path: Path) ->
         read_benchmark_with_data(mine)
 
 
+def test_the_command_is_quoted_for_the_shell(root: Path, tmp_path: Path) -> None:
+    """A path with a space pastes as one argument."""
+    folder = tmp_path / "my benchmarks"
+    folder.mkdir()
+    mine = _own_benchmark(folder, tmp_path / "nowhere")
+    with pytest.raises(BenchmarkDataError, match=f"spectragent benchmark fetch '{mine}'`"):
+        read_benchmark_with_data(mine)
+
+
 def test_the_cache_copy_must_be_the_pinned_version(root: Path) -> None:
     _data(_cache_copy(root))
     with pytest.raises(BenchmarkDataError, match="has no data_version.json, so no fetch wrote it"):

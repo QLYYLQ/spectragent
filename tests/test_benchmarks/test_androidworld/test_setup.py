@@ -1540,6 +1540,20 @@ def test_a_task_the_setup_cannot_start_is_refused(
         _setup(root).check_setup(task)
 
 
+@pytest.mark.parametrize("task", [{"task": "SystemBrightnessMax"}, _task(commit="f" * 40)])
+def test_a_task_from_no_list_of_the_pinned_commit_names_the_fetch(
+    root: Path, task: dict[str, JsonValue]
+) -> None:
+    """In one line, with the command that writes the lists again, not pydantic's report."""
+    with pytest.raises(AndroidWorldSetupError) as refused:
+        _setup(root).check_setup(task)
+    message = str(refused.value)
+    assert message.endswith(
+        "fetch the task lists again with spectragent benchmark fetch androidworld"
+    )
+    assert "\n" not in message
+
+
 def test_every_problem_is_named_at_once(root: Path) -> None:
     (root / "cache" / "a11y" / FORWARDER_APK).unlink()
 
