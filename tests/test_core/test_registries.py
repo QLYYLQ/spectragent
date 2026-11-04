@@ -254,6 +254,8 @@ def test_the_template_flags_are_every_capabilitys_by_capability() -> None:
     assert [(flag.flag, flag.receptor) for flag in flags["browser"]] == [
         ("--backend", "backend"),
         ("--replayability", "replayability"),
+        ("--dom-cleaner", "dom_cleaner"),
+        ("--dom-serializer", "dom_serializer"),
     ]
 
 
