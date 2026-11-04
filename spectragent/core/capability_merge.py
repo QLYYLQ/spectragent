@@ -18,7 +18,8 @@ that capability (:meth:`CapabilityMerge.merge`):
   refused (§4.3 "消歧靠拒绝"); a strategy block both write (``backend``) is
   merged inside when both name the same strategy, refused when they name two,
   and so is a block of settings a field is typed as (``network_source.matcher``),
-  while a free-form map (``open_app``'s ``apps``) is one value;
+  while a free-form map (``open_app``'s ``apps``) is one value, whose
+  conflict names the keys the two maps differ in when either is too long to show;
 - a list of strategy blocks (``actions``) is the run configuration's, or the
   whole default list when it leaves the list out: a part may set options on an
   entry already there, matched by its discriminator (``action_id``), and never
@@ -56,6 +57,8 @@ ENVIRONMENT_SECTION = "environment"
 ENVIRONMENT_CAPABILITIES = "capabilities"
 #: How long a value shown in a conflict may be before it is cut.
 _SHOWN = 120
+#: How many keys of a map in a conflict are named before the rest are counted.
+_NAMED = 3
 
 
 @dataclass(frozen=True)
@@ -76,23 +79,30 @@ class Contribution:
 
 @dataclass(frozen=True)
 class MergeProblem:
-    """One problem of the merge, at the path its author wrote."""
+    """One problem of the merge, at the path its author wrote.
+
+    ``code`` says which kind, the issue a refusal reports:
+
+    - ``capability_contribution_invalid``: a part breaks the capability's
+      schema, or sets one list entry's options twice;
+    - ``capability_without_block``: a part of a capability the run
+      configuration has no block of;
+    - ``capability_setting_conflict``: two sides write one field differently;
+    - ``capability_entry_not_listed``: a part sets options on a list entry the
+      run configuration's list leaves out;
+    - ``capability_list_in_top_level_section``: a part sets options on a list
+      the run configuration writes in a top-level section, not in the block.
+    """
 
     path: str
     message: str
+    code: str
 
 
 class CapabilityMergeError(ValueError):
-    """The parts of a capability's configuration cannot be merged; every problem named.
+    """The parts of a capability's configuration cannot be merged; every problem named."""
 
-    ``code`` says which kind: ``capability_contribution_invalid`` (a part
-    breaks the capability's schema), ``capability_without_block`` (a part for
-    a capability the run configuration has no block of) or
-    ``capability_setting_conflict`` (two sides write one field differently).
-    """
-
-    def __init__(self, code: str, problems: Sequence[MergeProblem]) -> None:
-        self.code = code
+    def __init__(self, problems: Sequence[MergeProblem]) -> None:
         self.problems = tuple(problems)
         super().__init__(
             "\n".join(f"{problem.path}: {problem.message}" for problem in self.problems)
@@ -142,22 +152,27 @@ class CapabilityMerge:
 
         Raises:
             CapabilityMergeError: ``capability_contribution_invalid``, each
-                problem at the path the part writes it.
+                problem at the path the part writes it;
+                ``capability_without_block`` for a part of a capability this
+                run has no schema of, so no block of either.
         """
         capability_id = contribution.block.get("capability_id")
         components = self._catalog.components.get(CAPABILITY_SECTION, {})
-        if not isinstance(capability_id, str) or capability_id not in components:
-            known = ", ".join(sorted(components)) or "none"
+        if not isinstance(capability_id, str):
             raise CapabilityMergeError(
-                "capability_contribution_invalid",
                 [
                     MergeProblem(
                         f"{contribution.path}.capability_id",
-                        f"{contribution.source} writes a part of the {capability_id!r} "
-                        f"capability, which this run has no schema for (capabilities: {known})",
+                        f"{contribution.source} writes a part of a capability's configuration "
+                        f"and names no capability_id",
+                        "capability_contribution_invalid",
                     )
-                ],
+                ]
             )
+        if capability_id not in components:
+            # Each capability block of the run names its package, so the run
+            # has none of this one: a part computed in code, for another kind of run.
+            raise CapabilityMergeError([_without_block(contribution, capability_id)])
         model = components[capability_id].config_model
         try:
             model.model_validate(contribution.block)
@@ -166,12 +181,13 @@ class CapabilityMerge:
                 MergeProblem(
                     _joined(contribution.path, error["loc"], contribution.block),
                     f"{contribution.source} writes it: {error['msg']}",
+                    "capability_contribution_invalid",
                 )
                 for error in exc.errors()
                 if error["type"] != "missing"
             ]
             if problems:
-                raise CapabilityMergeError("capability_contribution_invalid", problems) from None
+                raise CapabilityMergeError(problems) from None
 
     def merge(
         self, sections: Mapping[str, object], contributions: Sequence[Contribution]
@@ -184,8 +200,8 @@ class CapabilityMerge:
 
         Raises:
             CapabilityMergeError: ``capability_without_block`` when a part's
-                capability has no block here; ``capability_setting_conflict``
-                naming every field two sides write differently.
+                capability has no block here; otherwise every problem of the
+                merge, each with its kind (:class:`MergeProblem`).
         """
         merged = copy.deepcopy(dict(sections))
         pooled = frozenset(
@@ -200,14 +216,7 @@ class CapabilityMerge:
                 block for block in blocks if block.fields.get("capability_id") == capability_id
             ]
             if not targets:
-                missing.append(
-                    MergeProblem(
-                        contribution.path,
-                        f"{contribution.source} writes a part of the {capability_id!r} capability, "
-                        f"and the run configuration has no {capability_id!r} capability block to "
-                        f"merge it into",
-                    )
-                )
+                missing.append(_without_block(contribution, capability_id))
                 continue
             assert isinstance(capability_id, str)
             definition = self._catalog.components[CAPABILITY_SECTION][capability_id]
@@ -223,9 +232,9 @@ class CapabilityMerge:
                     here="",
                 )
         if missing:
-            raise CapabilityMergeError("capability_without_block", missing)
+            raise CapabilityMergeError(missing)
         if problems:
-            raise CapabilityMergeError("capability_setting_conflict", problems)
+            raise CapabilityMergeError(problems)
         return merged
 
     # -- one block --------------------------------------------------------
@@ -362,6 +371,7 @@ class CapabilityMerge:
                         f"part sets options only on entries written in the capability block: "
                         f"write the {name} in the capability block, not in the top-level "
                         f"{layer!r} section",
+                        "capability_list_in_top_level_section",
                     )
                 ]
             base = [_entry(discriminator, key) for key in entry.spec.allowed_keys or ()]
@@ -371,14 +381,20 @@ class CapabilityMerge:
         }
         problems: list[MergeProblem] = []
         seen: set[JsonValue] = set()
-        for item in value:
+        for position, item in enumerate(value):
             if not isinstance(item, Mapping):
                 continue
             key = item.get(discriminator)
             where = f"{at}[{key}]"
             if key in seen:
+                # A fault of the part: named where the part writes it.
                 problems.append(
-                    MergeProblem(f"{target.path}.{where}", f"{side} sets its options twice")
+                    MergeProblem(
+                        f"{side.path}.{at}[{position}]",
+                        f"{side} sets options on {key!r} twice; a part sets each entry's "
+                        f"options once",
+                        "capability_contribution_invalid",
+                    )
                 )
                 continue
             seen.add(key)
@@ -391,6 +407,7 @@ class CapabilityMerge:
                         f"({target.path}.{at}) leave it out; a part sets options on the entries "
                         f"there and never adds or removes one: list {key!r} in the run "
                         f"configuration's {name}, or drop its options",
+                        "capability_entry_not_listed",
                     )
                 )
                 continue
@@ -440,12 +457,33 @@ class CapabilityMerge:
         self, target: _Block, at: str, existing: object, value: object, side: _Side
     ) -> MergeProblem:
         first = _first_writer(target, at)
+        if (
+            isinstance(existing, Mapping)
+            and isinstance(value, Mapping)
+            and max(len(repr(existing)), len(repr(value))) > _SHOWN
+        ):
+            # A map cut short (open_app's 117 names) says nothing: say where the two differ.
+            written = (
+                f"{first} writes {_entries(existing)} and {side} writes {_entries(value)}, "
+                f"which differ ({_difference(existing, value)})"
+            )
+        else:
+            written = f"{first} writes {_shown(existing)} and {side} writes {_shown(value)}"
         return MergeProblem(
             f"{target.path}.{at}",
-            f"{first} writes {_shown(existing)} and {side} writes {_shown(value)}; a run takes "
-            f"each setting from one side only: leave it out of one of them, or write the same "
-            f"value in both",
+            f"{written}; a run takes each setting from one side only: leave it out of one of "
+            f"them, or write the same value in both",
+            "capability_setting_conflict",
         )
+
+
+def _without_block(contribution: Contribution, capability_id: object) -> MergeProblem:
+    return MergeProblem(
+        contribution.path,
+        f"{contribution.source} writes a part of the {capability_id!r} capability, and the run "
+        f"configuration has no {capability_id!r} capability block to merge it into",
+        "capability_without_block",
+    )
 
 
 def _first_writer(target: _Block, at: str) -> _Side:
@@ -544,6 +582,35 @@ def _joined(path: str, loc: tuple[int | str, ...], block: Mapping[str, JsonValue
 def _shown(value: object) -> str:
     text = repr(value)
     return text if len(text) <= _SHOWN else f"{text[: _SHOWN - 3]}..."
+
+
+def _entries(value: Mapping[object, object]) -> str:
+    return "1 entry" if len(value) == 1 else f"{len(value)} entries"
+
+
+def _difference(first: Mapping[object, object], second: Mapping[object, object]) -> str:
+    """Where two maps differ: the keys only one has, and the keys both have with different values."""
+    said = [
+        f"{lead} {_named(keys)}{tail}"
+        for lead, keys, tail in (
+            ("only the first has", [key for key in first if key not in second], ""),
+            ("only the second has", [key for key in second if key not in first], ""),
+            (
+                "both have",
+                [key for key in first if key in second and first[key] != second[key]],
+                " with different values",
+            ),
+        )
+        if keys
+    ]
+    return "; ".join(said)
+
+
+def _named(keys: Sequence[object]) -> str:
+    """The first few of *keys* in sorted order by name, and how many more there are."""
+    named = ", ".join(_shown(key) for key in sorted(keys, key=str)[:_NAMED])
+    rest = len(keys) - _NAMED
+    return f"{named} and {rest} more" if rest > 0 else named
 
 
 __all__ = [

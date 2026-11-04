@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,12 @@ from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FILE, OPEN_APP
 from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
 from spectragent.benchmarks.androidworld.tasks import instance_seed
 from spectragent.core.capabilities.android.capability import AndroidCapability
+from spectragent.core.capability_merge import (
+    CAPABILITY_SECTION,
+    CapabilityMerge,
+    CapabilityMergeError,
+    Contribution,
+)
 from spectragent.core.composer import ComposeError, ConfigComposer
 from spectragent.core.data_loader._common import BenchmarkDataError
 from spectragent.core.trace.models import TraceConfig
@@ -242,19 +249,45 @@ def test_two_strategies_for_one_receptor_are_refused_at_the_discriminator(tmp_pa
     assert "writes 'shell_injection' and the benchmark androidworld" in str(refused)
 
 
-def test_an_app_table_in_the_run_configuration_is_refused_against_the_benchmarks(
+def test_an_app_table_in_the_run_configuration_is_refused_naming_where_the_tables_differ(
     tmp_path: Path,
 ) -> None:
-    listed: list[JsonValue] = [
-        {"action_id": "android.open_app", "apps": {"Clock": "com.google.android.deskclock"}}
-    ]
-    raw = _run(_android(actions=listed), _table(tmp_path))
+    """A free-form map is one value; one too long to show is not cut, the keys that differ are named.
+
+    In sorted order, whatever order the table is written in.
+    """
+    table: dict[str, JsonValue] = {f"app {n}": f"com.example.app{n}" for n in reversed(range(6))}
+    apps: dict[str, JsonValue] = {"Clock": "com.google.android.deskclock", "app 0": "com.other"}
+    listed: list[JsonValue] = [{"action_id": "android.open_app", "apps": apps}]
+    raw = _run(_android(actions=listed), _table(tmp_path, table))
 
     refused = _refused(raw)
 
-    assert refused.issue is not None
+    assert refused.issue is not None and refused.issue.code == "capability_setting_conflict"
     assert refused.issue.path == "environment[0].capabilities[0].actions[android.open_app].apps"
-    assert "and the benchmark androidworld, computed in code (benchmark[0]) writes" in str(refused)
+    assert str(refused) == (
+        "environment[0].capabilities[0].actions[android.open_app].apps: the run configuration "
+        "(environment[0].capabilities[0]) writes 2 entries and the benchmark androidworld, "
+        "computed in code (benchmark[0]) writes 6 entries, which differ (only the first has "
+        "'Clock'; only the second has 'app 1', 'app 2', 'app 3' and 2 more; both have 'app 0' "
+        "with different values); a run takes each setting from one side only: leave it out of "
+        "one of them, or write the same value in both."
+    )
+
+
+def test_two_small_maps_in_conflict_are_shown_whole(tmp_path: Path) -> None:
+    table: dict[str, JsonValue] = {"clock": "com.a", "markor": "com.b"}
+    listed: list[JsonValue] = [{"action_id": "android.open_app", "apps": {"Clock": "com.a"}}]
+
+    refused = _refused(_run(_android(actions=listed), _table(tmp_path, table)))
+
+    assert str(refused) == (
+        "environment[0].capabilities[0].actions[android.open_app].apps: the run configuration "
+        "(environment[0].capabilities[0]) writes {'Clock': 'com.a'} and the benchmark "
+        "androidworld, computed in code (benchmark[0]) writes {'clock': 'com.a', 'markor': "
+        "'com.b'}; a run takes each setting from one side only: leave it out of one of them, or "
+        "write the same value in both."
+    )
 
 
 def test_a_list_left_without_the_entry_the_benchmark_sets_is_refused(tmp_path: Path) -> None:
@@ -262,10 +295,34 @@ def test_a_list_left_without_the_entry_the_benchmark_sets_is_refused(tmp_path: P
 
     refused = _refused(raw)
 
-    assert refused.issue is not None and refused.issue.code == "capability_setting_conflict"
+    assert refused.issue is not None and refused.issue.code == "capability_entry_not_listed"
     assert refused.issue.path == "environment[0].capabilities[0].actions[android.open_app]"
     assert "sets options on 'android.open_app', and the run configuration's actions" in str(refused)
     assert "never adds or removes one" in str(refused)
+    assert refused.issue.remedy == (
+        "Add the entry to the run configuration's list, or remove its options from the "
+        "benchmark's part."
+    )
+
+
+def test_a_part_that_sets_one_entrys_options_twice_is_refused_as_invalid(tmp_path: Path) -> None:
+    listed: list[JsonValue] = [{"action_id": "android.open_app"}, {"action_id": "android.scroll"}]
+    twice: list[JsonValue] = [
+        {"action_id": "android.scroll", "duration_ms": 100},
+        {"action_id": "android.scroll", "duration_ms": 200},
+    ]
+    raw = _run(
+        _android(actions=listed), _table(tmp_path), {"capability_id": "android", "actions": twice}
+    )
+
+    refused = _refused(raw)
+
+    assert refused.issue is not None and refused.issue.code == "capability_contribution_invalid"
+    assert str(refused) == (
+        "benchmark[0].capability[0].actions[1]: the benchmark androidworld "
+        "(benchmark[0].capability[0]) sets options on 'android.scroll' twice; a part sets each "
+        "entry's options once."
+    )
 
 
 def test_a_part_that_breaks_the_schema_is_refused_where_it_is_written(tmp_path: Path) -> None:
@@ -282,6 +339,49 @@ def test_a_part_that_breaks_the_schema_is_refused_where_it_is_written(tmp_path: 
         "benchmark[0].capability[0].settle_quiet_ms",
         "benchmark[0].capability[0].speed",
     }
+
+
+def test_a_part_that_names_no_capability_is_refused_as_invalid(tmp_path: Path) -> None:
+    refused = _refused(_run(_android(), _table(tmp_path), {"backend": {"avd": "AW"}}))
+
+    assert refused.issue is not None and refused.issue.code == "capability_contribution_invalid"
+    assert refused.issue.path == "benchmark[0].capability[0].capability_id"
+    assert "writes a part of a capability's configuration and names no capability_id" in str(
+        refused
+    )
+
+
+def test_a_part_of_a_capability_the_run_has_no_schema_of_has_no_block_either() -> None:
+    """Every capability block names its package, so a run without the package has no block of it.
+
+    Asked of a catalog without the Android capability, as a browser run's is in a process that
+    imported nothing else: the refusal does not depend on what an earlier import left behind.
+    """
+    raw: dict[str, JsonValue] = {
+        "capability": [{"capability_id": "browser", "backend": {"provider_id": "local_chrome"}}]
+    }
+    composer = ConfigComposer.for_config(raw)
+    catalog = composer.catalog
+    capabilities = {
+        key: definition
+        for key, definition in catalog.components[CAPABILITY_SECTION].items()
+        if key != "android"
+    }
+    browser_only = replace(
+        catalog, components={**catalog.components, CAPABILITY_SECTION: capabilities}
+    )
+    part = Contribution(
+        {"capability_id": "android", "actions": []},
+        "the benchmark androidworld, computed in code",
+        "benchmark[0]",
+    )
+
+    with pytest.raises(CapabilityMergeError) as refused:
+        CapabilityMerge(browser_only, composer.registrars).check(part)
+
+    (problem,) = refused.value.problems
+    assert (problem.code, problem.path) == ("capability_without_block", "benchmark[0]")
+    assert "has no 'android' capability block to merge it into" in problem.message
 
 
 def test_a_part_for_a_capability_the_run_has_no_block_of_is_refused(tmp_path: Path) -> None:
@@ -395,10 +495,14 @@ def test_a_list_the_run_writes_in_a_top_level_section_is_refused_against_a_part(
 
     refused = _refused({**_run(_android(), _table(tmp_path)), "action": pool})
 
-    assert refused.issue is not None and refused.issue.code == "capability_setting_conflict"
+    assert refused.issue is not None
+    assert refused.issue.code == "capability_list_in_top_level_section"
     assert refused.issue.path == "environment[0].capabilities[0].actions"
     assert "takes the run configuration's top-level 'action' section" in str(refused)
     assert "write the actions in the capability block" in str(refused)
+    assert refused.issue.remedy == (
+        "Move the entries of the top-level section into the list in the capability block."
+    )
 
 
 def _browser_run(part_matcher: JsonValue) -> dict[str, JsonValue]:

@@ -936,8 +936,8 @@ class AgentRuntime:
 
 c 段落地的（2026-11-04）：
 
-- **合并在组装时做，不在 `prepare()` 里。** capability 是在组装时由配置构造的（§4.2.1），合并必须在构造之前，所以 `ConfigComposer.validate` 在校验运行根之前合并（`spectragent/core/capability_merge.py`），合并后的块才是校验、构造、记进 `resolved` 与 `config_hash` 的那一份；"capability 由合并后的配置构造"照提议做到了，只是不把构造挪进 `prepare()`。与 a 段把"数据缺了"的拒绝从 `prepare()` 挪到组装时（加载器在构造时读数据，§4.10.1 "数据"）同一个理由。拒绝照样在 trace 打开之前、任何东西启动之前，`spectragent run --dry-run`、`config check` 与 sweep 的 pre-flight（它也组装栈）都看得到，只是比 `prepare()` 早一步。这是实施时的调整（上面的做法写明是提议），待用户确认：裁决若要求拒绝必须出自 `prepare()`，就要把 capability 与 environment 的构造挪进 `prepare()`，合并的规则与代码不变。
-- 每一份贡献先按同一份 capability schema 校验它写了的字段（漏写的必填项不算错，别人可能写），错误点名它写在哪里（`benchmark[0].capability[0].<字段>`，issue `capability_contribution_invalid`）；再逐字段并进运行配置里同一 `capability_id` 的每个块（顶层 `capability` 段与每个 environment 的 `capabilities`）。只有一边写的照它；同一个字段两边的值不同，拒绝，点名字段、两边与各自写在哪里（issue `capability_setting_conflict`）；两边都写的策略块（`backend`）名字相同就在块里继续合并，不同就在判别字段上拒绝；字段类型是一块设置的（`network_source.matcher`，一个 pydantic 模型或 dataclass）同样在块里逐字段合并，free-form 的映射（`open_app` 的 `apps`）是一个值；YAML 的 `null` 是没写。列表（`actions`）是运行配置的，运行配置不写就是完整的默认列表（受体允许的每个键，按声明的顺序）；贡献按判别键给已有的条目设旋钮，给没有的条目设旋钮就拒绝（点名运行配置的列表不含它）。运行配置的块不写这个列表、根上却有这一层的顶层段（`action:`）时，组装会把顶层段的实例收进这个块，那才是这个 run 的列表，不是默认列表：贡献在这样的列表上设旋钮被拒，消息说把列表写进 capability 块（协调者 2026-11-04 的决定）。贡献点名的 capability 在运行配置里没有块，拒绝（issue `capability_without_block`）；运行根里既没有 `environment` 也没有 `capability` 段（导出、评测只读基准的数据）时不合并，也不算基准在代码里的那份。
+- **合并在组装时做，不在 `prepare()` 里。** capability 是在组装时由配置构造的（§4.2.1），合并必须在构造之前，所以 `ConfigComposer.validate` 在校验运行根之前合并（`spectragent/core/capability_merge.py`），合并后的块才是校验、构造、记进 `resolved` 与 `config_hash` 的那一份；"capability 由合并后的配置构造"照提议做到了，只是不把构造挪进 `prepare()`。与 a 段把"数据缺了"的拒绝从 `prepare()` 挪到组装时（加载器在构造时读数据，§4.10.1 "数据"）同一个理由。拒绝照样在 trace 打开之前、任何东西启动之前，`spectragent run --dry-run`、`config check` 与 sweep 的 pre-flight（它也组装栈）都看得到，只是比 `prepare()` 早一步。这是实施时的调整（上面的做法写明是提议），用户 2026-11-04 裁决保留它：要的是报错清晰、正式运行之前能快速核对配置带来的问题，不必所有错误都在 `prepare()` 里报，更早报出是好事；不接受的只是跑到一半才暴露的错误。这合乎已有的分层："能配什么"由生成的配置与组装约束，"能否协作"在 `prepare()` 里查（§4.14 "协作检查一览"），由配置与任务数据决定的错误都在任何东西启动之前报出，不等到"第一次输出之后才暴露"（§4.5 "协商流程"）。
+- 每一份贡献先按同一份 capability schema 校验它写了的字段（漏写的必填项不算错，别人可能写），错误点名它写在哪里（`benchmark[0].capability[0].<字段>`，issue `capability_contribution_invalid`；一份贡献给同一个条目设两次旋钮也是它，点名它在贡献里写的第二处）；再逐字段并进运行配置里同一 `capability_id` 的每个块（顶层 `capability` 段与每个 environment 的 `capabilities`）。只有一边写的照它；同一个字段两边的值不同，拒绝，点名字段、两边与各自写在哪里（issue `capability_setting_conflict`）；两边都写的策略块（`backend`）名字相同就在块里继续合并，不同就在判别字段上拒绝；字段类型是一块设置的（`network_source.matcher`，一个 pydantic 模型或 dataclass）同样在块里逐字段合并，free-form 的映射（`open_app` 的 `apps`）是一个值，它冲突时两份映射都短就整份打印，有一份长到要截断就只说两边各几项、哪些键只有一边有、哪些键两边的值不同（按名字排序各点名几个，其余计数）；YAML 的 `null` 是没写。列表（`actions`）是运行配置的，运行配置不写就是完整的默认列表（受体允许的每个键，按声明的顺序）；贡献按判别键给已有的条目设旋钮，给没有的条目设旋钮就拒绝（点名运行配置的列表不含它，issue `capability_entry_not_listed`）。运行配置的块不写这个列表、根上却有这一层的顶层段（`action:`）时，组装会把顶层段的实例收进这个块，那才是这个 run 的列表，不是默认列表：贡献在这样的列表上设旋钮被拒，消息说把列表写进 capability 块（协调者 2026-11-04 的决定；issue `capability_list_in_top_level_section`）。贡献点名的 capability 在运行配置里没有块，拒绝（issue `capability_without_block`；运行配置与基准的 `capability` 列表都没点名这个 capability 包、这个 run 连它的 schema 都没有时也是它，基准在代码里算出的贡献不点名包）；运行根里既没有 `environment` 也没有 `capability` 段（导出、评测只读基准的数据）时不合并，也不算基准在代码里的那份。
 - 合并之后校验整个根：capability 块里谁都没写的必填项，点名字段，说"required, and neither the run configuration nor a benchmark writes it"（issue `capability_setting_missing`）；没有基准时同样这样报。
 - 基准写贡献的两处：基准块的 `capability` 列表（`BenchmarkBase` 的构造参数，free-form 的块，组装时按上面的规则校验）与 `BenchmarkBase.computed_capability(config)`（类方法，拿校验过的基准块，在代码里算出贡献；AndroidWorld 的 `open_app` 名称表，§11.2）。`trace_branches` 没有 `capability` 字段：分叉任务的这些继承自源基准。`resolved` 里基准块照旧记着它的 `capability` 列表，合并后的值记在运行配置的 capability 块里；`config_hash` 读 `resolved` 时不读基准块的 `capability` 列表（`TraceConfig.configuration_digest`），所以一个设置写在运行配置里还是写在基准里，只要合并出的块相同，摘要就相同。
 - 运行配置点名的 capability 包之外，基准块的 `capability` 列表里的 `capability_id` 也点名 capability 包（`named_packages`）。
@@ -3161,13 +3161,13 @@ class TaskContext(BaseModel):
 
 **capability 配置合并（用户 2026-11-03 的裁决）。** 运行配置、基准与判分器各自在同一份 capability schema 里写它要的那一部分，哪个字段归谁没有固定的主人（用户："难解难分"）。几份贡献经协商合成一份 capability 配置，由它起环境：
 
-- 同一个字段、不同的值，在 `prepare()` 里拒绝，点名两边，与动作协商点名两个提供方同一做法（§4.3 "消歧靠拒绝"）；没有优先级，谁也不悄悄覆盖谁。
+- 同一个字段、不同的值，在 `prepare()` 里拒绝，点名两边，与动作协商点名两个提供方同一做法（§4.3 "消歧靠拒绝"）；没有优先级，谁也不悄悄覆盖谁。落地时拒绝在组装时就报出，用户 2026-11-04 裁决认可：报错清晰、在正式运行之前报出就好（§4.2 "c 段落地的"）。
 - 按任务的数据（每个网页任务不同的 cookie；以后每个 Android 任务不同的镜像，Android 的 setup 今天只收 `oracle_task`，这个键还没有）留在按任务的开局通道里（`TaskContext.env`），不进合并。
 - trace 记下合并后的配置。
 
 判分器只写要求，不写设置（协调者 2026-11-03 的决定，不是用户的裁决）。判分器若也写改变 agent 环境的设置，就会改变 run 与 `config_hash`，与上面"判分器从不改变 run"和"判分器不进实验身份"（§5.3 "实验身份"）相抵。所以判分器对 capability 只声明要求，在 `prepare()` 里核对，满足不了就拒绝；合并的设置只来自运行配置与基准。
 
-`prepare()` 里怎样合并、缺了怎样报，见 §4.2 "基准层在 `prepare()` 里加的检查"。
+怎样合并（在组装时，不在 `prepare()` 里）、缺了怎样报，见 §4.2 "基准层在 `prepare()` 里加的检查" 末的"c 段落地的"。
 
 **单个任务照样简单（用户 2026-11-03 的裁决）：**
 
@@ -3257,7 +3257,7 @@ a 段没做的：Android 的起始点。a 段 Android 不说起始点；`--start
 
 **c 段落地了什么（2026-11-04）。** 合并、承载基准组件、AndroidWorld 的开局布置组件与活体判分器、名称表、`--start-app` 与主屏幕上的名字；活体判分器建在 b 段之上，b 合进去之后落地。提议的名字照用了：`BenchmarkSetupRegistrar`（`setup_id`）、`SetupHost`、`LiveVerifierHost`；新起的名字：组件对 Android 承载者的契约 `AndroidBenchmarkSetup` 与 `AndroidLiveVerifier`、活体判分器的 Protocol `LiveVerifier`、基准交出它们的 `Benchmark.live_verifiers()`、基准在代码里的贡献 `BenchmarkBase.computed_capability`、合并的模块 `spectragent/core/capability_merge.py`。分开写在：
 
-- 合并（§4.2 "基准层在 `prepare()` 里加的检查" 末的"c 段落地的"）：在组装时做、不在 `prepare()` 里，这是实施时的调整，待用户确认；拒绝点名字段与两边；列表规则；谁都没写的必填项点名；`trace_branches` 不收贡献；
+- 合并（§4.2 "基准层在 `prepare()` 里加的检查" 末的"c 段落地的"）：在组装时做、不在 `prepare()` 里，这是实施时的调整，用户 2026-11-04 裁决保留它（报错清晰、在正式运行之前报出就好，不接受的是跑到一半才暴露的错误）；拒绝点名字段与两边；列表规则；谁都没写的必填项点名；`trace_branches` 不收贡献；
 - 开局布置组件与它的承载（§4.9 "基准组件由 capability 承载" 末）；AndroidWorld 的组件取代 Android 的 `task_oracle`，代码挪进 `spectragent/benchmarks/androidworld/`（§11.2 "任务裁判拆成两个基准组件" 末）；没有任务时（`config check --benchmark androidworld` 不带 `--task-id`）组件只查安装，任务留给 setup 去拒绝；
 - 名称表的两半（§11.2 "`open_app` 的名称表"）：AndroidWorld 的表由 `task_list.py` 从钉住的检出算出、写在任务列表旁边，作为基准在代码里的贡献合并进 `android.open_app`；没有基准时用主屏幕上的名字，setup 时经我们的服务读（设备协议 9）；
 - `--start-app` 与 Android 的起始点（§4.9 "起始参数"、§4.10 "任务的起始点归 capability"）；
