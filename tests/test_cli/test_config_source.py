@@ -57,12 +57,16 @@ def _stub_composer(monkeypatch, path, *, change_source=False):
     block = {"benchmark_id": "fixture"}
 
     def compose(raw):
-        if change_source:
+        # The benchmark block alone gives the tasks; the run root is composed after.
+        if change_source and raw != {"benchmark": [block]}:
             assert raw == {"version": "consumed", "benchmark": [block]}
             path.write_bytes(b"version: changed\n")
         loader = SimpleNamespace(benchmark_name="fixture", subset="all", task_ids=lambda: [])
         chosen = SimpleNamespace(
-            task_loader=loader, offline_verifiers=lambda: [], primary_verifier=None
+            benchmark_id="fixture",
+            task_loader=loader,
+            offline_verifiers=lambda: [],
+            primary_verifier=None,
         )
         return ComposedRun(by_layer={"benchmark": {"fixture": chosen}})
 

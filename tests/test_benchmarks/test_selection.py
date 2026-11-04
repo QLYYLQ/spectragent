@@ -12,8 +12,11 @@ from spectragent.benchmarks.selection import (
     aliases,
     is_path,
     read_benchmark,
+    read_spec,
     run_root,
+    spec_of,
 )
+from spectragent.schemas.benchmark_spec import BenchmarkSpec
 
 _LOADER = {"benchmark_name": "online_mind2web"}
 _BLOCK = {"benchmark_id": "online_mind2web", "task_loader": _LOADER}
@@ -122,3 +125,42 @@ def test_a_run_configuration_never_holds_a_benchmark(tmp_path: Path) -> None:
     for selected in ((), (block,)):
         with pytest.raises(BenchmarkSelectionError, match="select it with --benchmark"):
             run_root({"agent": [], "benchmark": [_BLOCK]}, *selected)
+
+
+def test_a_spec_records_an_alias_as_given_and_a_path_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """So a branch sweep run from another directory finds the same file again."""
+    monkeypatch.chdir(tmp_path)
+    _document(tmp_path, {"benchmark": [_BLOCK]})
+    assert spec_of("online_mind2web", benchmark_id="online_mind2web") == BenchmarkSpec(
+        benchmark_id="online_mind2web", selection="online_mind2web", subset=None
+    )
+    spec = spec_of("./mine.yaml", benchmark_id="online_mind2web", subset="Hard")
+    assert spec.selection == str(tmp_path.resolve() / "mine.yaml")
+    assert spec.describe() == f"--benchmark {spec.selection} --subset Hard"
+
+
+def test_a_spec_reads_its_block_again_with_its_subset(tmp_path: Path) -> None:
+    path = _document(tmp_path, {"benchmark": [_BLOCK]})
+    spec = spec_of(str(path), benchmark_id="online_mind2web", subset="Hard")
+    assert read_spec(spec) == read_benchmark(str(path), subset="Hard")
+    assert read_spec(spec)["task_loader"]["subset"] == "Hard"
+
+
+def test_a_spec_whose_yaml_now_holds_another_benchmark_is_refused(tmp_path: Path) -> None:
+    path = _document(tmp_path, {"benchmark": [_BLOCK]})
+    spec = BenchmarkSpec(benchmark_id="androidworld", selection=str(path))
+    with pytest.raises(BenchmarkSelectionError, match="'online_mind2web', not 'androidworld'"):
+        read_spec(spec)
+
+
+def test_a_branch_tasks_run_root_holds_its_task_source_and_its_benchmark(tmp_path: Path) -> None:
+    source = _document(tmp_path, {"benchmark": [_BLOCK]})
+    task_source = {
+        "benchmark_id": "trace_branches",
+        "task_loader": {"benchmark_name": "trace_branches"},
+    }
+    spec = spec_of(str(source), benchmark_id="online_mind2web")
+    root = run_root({"agent": []}, task_source, read_spec(spec))
+    assert root["benchmark"] == [task_source, _BLOCK]

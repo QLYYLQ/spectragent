@@ -30,6 +30,7 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.benchmark_spec import BenchmarkSpec
 from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.recording import RecordingPlan
 from spectragent.schemas.restoration import BranchProvenance, Checkpoint
@@ -305,6 +306,22 @@ class TestBenchmarkRunner:
             assert trace.config.subset == "Hard"
             assert trace.config.extra["difficulty"] == "hard"
             assert outcome.trace_dir.name.startswith(outcome.task_id)
+            assert trace.config.benchmark_spec is None, "no selection given, none recorded"
+
+    async def test_each_run_records_how_its_benchmark_was_selected(self, tmp_path):
+        spec = BenchmarkSpec(
+            benchmark_id="online_mind2web", selection="online_mind2web", subset="Hard"
+        )
+        writers: list[TraceWriter] = []
+        runner = BenchmarkRunner(
+            loader=_Loader(),
+            compose=_make_factory(tmp_path, [], writers),
+            timeout=10,
+            benchmark_spec=spec,
+        )
+        await runner.run()
+
+        assert [RunTrace(w.run_dir).config.benchmark_spec for w in writers] == [spec, spec]  # type: ignore[arg-type]
 
     async def test_limit_and_explicit_ids(self, tmp_path):
         envs: list[_Env] = []
@@ -1586,12 +1603,14 @@ def test_the_subset_flag_selects_the_tasks_and_is_recorded(tmp_path, monkeypatch
     tasks = [{**task, "task_id": "easy"}, {**task, "task_id": "hard"}]
     benchmark = online_mind2web_benchmark(tmp_path, {"All": tasks, "Hard": tasks[1:]})
     seen: list[tuple[str, Any]] = []
+    specs: list[BenchmarkSpec] = []
     construct = BenchmarkRunner.__init__
 
     def spy(self, **kwargs):
         construct(self, **kwargs)
         (block,) = kwargs["compose"]().top_level_cfg.model_dump()["benchmark"]
         seen.append((kwargs["loader"].subset, block["task_loader"]["subset"]))
+        specs.append(kwargs["benchmark_spec"])
 
     monkeypatch.setattr(BenchmarkRunner, "__init__", spy)
     config = Path(__file__).resolve().parents[2] / "configs" / "browser_use_local.yaml"
@@ -1601,6 +1620,13 @@ def test_the_subset_flag_selects_the_tasks_and_is_recorded(tmp_path, monkeypatch
     assert main([*argv, "--session-dir", str(tmp_path / ".sessions"), "--subset", "Hard"]) == 0
     assert capsys.readouterr().out.split() == ["hard"]
     assert seen == [("All", "All"), ("Hard", "Hard")]
+    # What every run records: the benchmark's YAML, absolute, and the subset given.
+    assert specs == [
+        BenchmarkSpec(benchmark_id="online_mind2web", selection=str(benchmark.resolve())),
+        BenchmarkSpec(
+            benchmark_id="online_mind2web", selection=str(benchmark.resolve()), subset="Hard"
+        ),
+    ]
 
 
 @pytest.mark.parametrize("flag", ["--timeout", "--verify-timeout"])

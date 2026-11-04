@@ -1596,7 +1596,7 @@ PRD §9 的每一项度量、§10 / §11 交给 M33 的每一个问题，由一�
 
 ### M35: 基准层（基准组件、开局布置、判分器、capability 配置合并）
 
-**优先级**: P1（泛化层；排在这里是提议） | **前置依赖**: M08、M11、M15、M16；c 段另依赖 M26 的 Android 阶段 1–2（AndroidWorld 的任务裁判、服务与任务加载器） | **被依赖方**: 无 | **状态**: 设计已定（用户 2026-11-03 的裁决，architecture §4.10.1）；a 段已完成（2026-11-03）；b 段已完成（2026-11-04，见 b 段末）；c 段已完成（2026-11-04，见 c 段末）；d、e 段还没实施
+**优先级**: P1（泛化层；排在这里是提议） | **前置依赖**: M08、M11、M15、M16；c 段另依赖 M26 的 Android 阶段 1–2（AndroidWorld 的任务裁判、服务与任务加载器） | **被依赖方**: 无 | **状态**: 设计已定（用户 2026-11-03 的裁决，architecture §4.10.1）；a 段已完成（2026-11-03）；b 段已完成（2026-11-04，见 b 段末）；c 段已完成（2026-11-04，见 c 段末）；分叉任务继承源基准已完成（2026-11-04，见 c 段之后）；d、e 段还没实施
 
 #### 业务实现
 
@@ -1615,6 +1615,9 @@ PRD §9 的每一项度量、§10 / §11 交给 M33 的每一个问题，由一�
 - **c 段：capability 配置合并与 AndroidWorld。** c 段做合并、承载的 Protocol 与开局布置组件：运行配置与基准的 capability 贡献在 `prepare()` 里合并，冲突点名两边，缺项说明谁都没写，列表只给已有条目设旋钮、不增删（协调者 2026-11-03 定的规则）；判分器只写要求，在 `prepare()` 里核对（协调者 2026-11-03 的决定）；capability 承载基准组件（`SetupHost`、`LiveVerifierHost`，提议名）；AndroidWorld 的开局布置组件（architecture §11.2）；`open_app` 名称表由 AndroidWorld 基准从钉住的代码算出，没有基准的单任务读启动器标签。AndroidWorld 的活体判分器要 b 段的注册表与判定存放：b 合进去之后，它建在 b 上落地；两段之间不搭临时的桥（协调者 2026-11-03 定的顺序）。完成标准（提议）：活体判分器落地之后，AndroidWorld 的运行配置里没有任务裁判、名称表与任务加载器，`--benchmark androidworld` 跑通；名称表含 AndroidWorld 自己的启动表里的每个 app。
 
   **c 段的完成情况（2026-11-04）。** 落地的形状记在 architecture §4.10.1 "c 段落地了什么"。合并在组装时做（`ConfigComposer.validate`），不在 `prepare()` 里：capability 在组装时构造，合并必须在构造之前；这是实施时的调整，用户 2026-11-04 裁决保留它（architecture §4.2 "c 段落地的"）。完成标准的核对：AndroidWorld 的运行配置里没有任务裁判、名称表与任务加载器，`--benchmark androidworld` 跑通一个任务（AndroidWorld 的服务开局，`open_app` 按 AndroidWorld 的表打开，判定以活体判定进 run 的 `verdicts/`，判分器是 `androidworld`，即基准的主判定）；名称表由 `task_list.py` 从钉住的检出读出、含 `_PATTERN_TO_ACTIVITY` 每条正则的每个名字（117 个）。活体判分器在 b 段合进去之后落地（同一天，c 段的最后一步）：AndroidWorld 的活体判分器 `androidworld` 由 Android capability 承载（`LiveVerifierHost`），写在基准的 `verifiers` 里，经开局布置组件起的服务判分；判定的身份与 slug 没变，主判定与成功规则照旧；过渡用的 `TaskOracle` 删掉了；判分器的要求（Android 的是对设备的需要）在 `prepare()` 里、合并之后核对，满足不了就拒绝，点名判分器与要求。核对：一个 AndroidWorld 任务经 `--benchmark androidworld` 跑完，判定在 `verdicts/`，身份是 `androidworld` 加钉住的 commit。
+- **分叉任务继承源基准**（c 段留下的一件；用户 2026-11-03 的裁决："分叉 sweep 是一种任务来源"）。每个基准任务的 run 记下它的基准是怎样选的（`TraceConfig.benchmark_spec`，trace 格式升到 9），分叉任务带着源 run 的这份记录，按它重新读出源基准的块，与分叉 YAML 的任务来源一起组装：源基准的开局布置组件、活体判分器、离线判分器与它那部分 capability 配置都是分叉 run 的；几个基准的源混在一次 sweep 里时按任务各取各的，pre-flight 每个基准一次，主判定每个种类一行（architecture §4.10.1 "分叉任务继承源基准落地了什么"、§5.3 "实验身份"）。
+
+  **完成情况（2026-11-04）。** `tests/test_core/test_benchmark_runner_branches.py` 让一个 AndroidWorld 式的源（承载在 capability 上的开局布置组件、活体判分器、离线判分器）经真的 `trace_branches` 加载器、`BenchmarkRunner` 与 `BranchLoop` 分叉：分叉 run 记下源的 `benchmark_spec`，开局布置组件开起源任务，活体与离线判定都在它的 `verdicts/`；混合几个基准的 sweep 里每个分叉各按各的基准组装、记录与判分，没有基准的源的分叉什么也不继承。`tests/test_benchmarks/test_androidworld/test_branch_of_a_run.py` 在真的 Composer 上分叉一个 AndroidWorld run：分叉的运行配置不写 AVD 与 app 名称表，`bench` 的 pre-flight、`run --task-id --dry-run` 与 `config check --task-id` 组装出的栈都合并了它们，并把 AndroidWorld 的开局布置组件与活体判分器绑在 Android capability 上。没做 live 验证（不开模拟器）。
 - **d 段：数据获取。** 共用缓存 `$SPECTRAGENT_BENCHMARK_DATA`；`spectragent benchmark fetch <alias>` 与 `run` / `bench` 的 `--fetch`；钉住的数据源与版本，下载之后核对，trace 记数据版本；重的安装走 `spectragent benchmark setup <alias>`（AndroidWorld 的检出、venv 与 AVD）。缺了安装，`prepare()` 拒绝并给出命令；缺了数据，在任务加载器读数据之前（组装时）就拒绝，同样给出命令（architecture §4.10.1 "数据"）。
 - **e 段：环境跨任务复用**（另开分支并行做）。两条都成立才复用：环境身份相同，基准的开局布置声明能复位；两条只管任务状态会带到下一个任务的地方（设备、容器）；trace 记下环境服务过几个任务；Android 照 AndroidWorld 官方 harness。browser 的已经有了：`local_chrome.lifetime: experiment` 每个任务一个新的、隔离的 context，不是状态复用，不受这两条约束，仍是 capability 的设置（协调者 2026-11-03 的决定，architecture §4.10.1）。
 

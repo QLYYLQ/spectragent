@@ -751,24 +751,30 @@ class AgentRuntime:
 
         return wrapped_agent
 
-    def _benchmark_setups(self) -> list[BenchmarkSetup]:
-        """The run's benchmark setup component, as a list: ``[]`` with no benchmark or none.
+    def _benchmarks(self) -> list[Benchmark]:
+        """The run's benchmark blocks: none, the one ``--benchmark`` selected, or a branch task's two.
 
-        A run root holds at most one benchmark block (``--benchmark``).
+        A branch task's run root holds its task source (``trace_branches``,
+        which never has a setup component or a verifier of its own) and the
+        benchmark the task belongs to, its source run's
+        (``docs/architecture_design.md`` §4.10.1 "分叉 sweep 是一种任务来源").
         """
-        benchmark = self._run.optional_single("benchmark")
-        setup = getattr(benchmark, "setup", None)
-        return [] if setup is None else [setup]
+        return self._run.instances("benchmark")
+
+    def _benchmark_setups(self) -> list[BenchmarkSetup]:
+        """The run's benchmark setup components: ``[]`` with no benchmark or none (:meth:`_benchmarks`)."""
+        return [benchmark.setup for benchmark in self._benchmarks() if benchmark.setup is not None]
 
     def _live_verifiers(self) -> list[LiveVerifier]:
-        """The run's benchmark's verifiers that judge at the scoring point; ``[]`` with no benchmark.
+        """The run's benchmarks' verifiers that judge at the scoring point; ``[]`` with no benchmark.
 
         Raises:
             TypeError: A verifier needs the live environment and names no
                 capability to host it (``Benchmark.live_verifiers``).
         """
-        benchmark: Benchmark | None = self._run.optional_single("benchmark")
-        return [] if benchmark is None else benchmark.live_verifiers()
+        return [
+            verifier for benchmark in self._benchmarks() for verifier in benchmark.live_verifiers()
+        ]
 
     def seed_messages(self, task: str) -> list[Any]:
         """The run's seed messages for *task*, after :meth:`prepare` (arch §4.2).

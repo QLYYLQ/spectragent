@@ -48,6 +48,7 @@ from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.agent_result import AgentResult
+from spectragent.schemas.benchmark_spec import BenchmarkSpec
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.prompt import ReactPromptContext, RestoredHistory
 from spectragent.schemas.restoration import (
@@ -447,11 +448,14 @@ def build_run(
     config_agent_id: str = FAKE_AGENT_ID,
     env_cls: type[EnvironmentBase] = BranchFakeEnv,
     extra_hooks: Sequence[Any] = (),
+    benchmark: Any = None,
 ) -> tuple[Any, TraceWriter, ScriptedLLM]:
     """One composed stack on the fake site — what a Composer would build — and its writer and teacher.
 
     ``top_level_cfg`` is the resolved configuration a Composer records, so a
-    branch of a run built here can be checked against it (Q10).
+    branch of a run built here can be checked against it (Q10). *benchmark*
+    is the run's benchmark block, whose setup component and live verifiers
+    ``prepare()`` routes to the site.
     """
     writer = TraceWriter(trace_dir=str(trace_root))
     llm = ScriptedLLM(replies)
@@ -463,6 +467,7 @@ def build_run(
         llm=llm,
         memory=memory_strategy,
         hooks=[writer, *extra_hooks],
+        benchmark=benchmark,
     )
     config = FakeConfig(
         agent=[
@@ -507,6 +512,8 @@ async def _drive(
     action_filter: list[str] | None = None,
     extra_hooks: Sequence[Any] = (),
     task: str = TASK,
+    benchmark: Any = None,
+    benchmark_spec: BenchmarkSpec | None = None,
 ) -> BranchRunOutcome:
     run, writer, llm = build_run(
         trace_root,
@@ -519,6 +526,7 @@ async def _drive(
         config_agent_id=config_agent_id,
         env_cls=env_cls,
         extra_hooks=extra_hooks,
+        benchmark=benchmark,
     )
     outcome = BranchRunOutcome(result=None, run_dir=None, llm=llm, cap=cap, agent=agent)
     try:
@@ -534,6 +542,7 @@ async def _drive(
             raise_on_error=raise_on_error,
             env_context=env_context,
             action_filter=action_filter,
+            benchmark_spec=benchmark_spec,
         )
     finally:
         outcome.run_dir = writer.run_dir
@@ -554,19 +563,24 @@ async def record_source(
     env_context: dict[str, Any] | None = None,
     action_filter: list[str] | None = None,
     extra_hooks: Sequence[Any] = (),
+    cap: BranchFakeCap | None = None,
+    benchmark: Any = None,
+    benchmark_spec: BenchmarkSpec | None = None,
 ) -> Path:
     """Run the fake agent through the real runtime and trace writer; return the run dir.
 
     ``env_context`` is the task's environment setup context (recorded as the
     source's ``task_setup``); ``None`` records none. ``action_filter`` is
-    ``AgentRuntime.execute``'s ablation allowlist.
+    ``AgentRuntime.execute``'s ablation allowlist. *benchmark* is the run's
+    benchmark block (its setup component and live verifiers) and
+    *benchmark_spec* how it was selected, recorded as the source's.
     """
     outcome = await _drive(
         tmp_path / "sources",
         loop=loop or ReactLoop(max_steps=10, parse_retries_per_step=1, today_override="2001-02-03"),
         replies=replies,
         agent=BranchFakeAgent(style=style, structured=structured),
-        cap=make_cap(),
+        cap=cap if cap is not None else make_cap(),
         memory=memory,
         window=window,
         run_id=run_id,
@@ -576,6 +590,8 @@ async def record_source(
         env_context=env_context,
         action_filter=action_filter,
         extra_hooks=extra_hooks,
+        benchmark=benchmark,
+        benchmark_spec=benchmark_spec,
     )
     assert outcome.run_dir is not None
     return outcome.run_dir

@@ -5,13 +5,17 @@ lets an agent decide that step again (``BranchLoop``, §4.1). This loader turns
 a directory of recorded runs into such tasks: for every source run it
 selects, every checkpoint step its ``step_selector`` picks among the
 branchable ones, ``branches_per_step`` tasks with the id
-``<source_run_id>/s<t>/b<i>``. Each task hands the run three things
+``<source_run_id>/s<t>/b<i>``. Each task hands the run four things
 (``TaskContext``): the environment part — the source's own setup context,
 plus ``replay_archive`` (the source run directory, so the browser replays
 the recorded network) when the source recorded a network archive
-(``browser.network``); the Loop part — ``checkpoint``; and the branch part —
+(``browser.network``); the Loop part — ``checkpoint``; the branch part —
 :class:`~spectragent.schemas.restoration.BranchProvenance`, recorded as
-``TraceConfig.branch``.
+``TraceConfig.branch``; and the benchmark the task belongs to, its source's,
+as the source trace recorded how it was selected
+(``TraceConfig.benchmark_spec``): the caller composes the branch's run with
+that benchmark, so its setup component, verifiers and part of the
+capability configuration are the source's (§4.10.1 "分叉 sweep 是一种任务来源").
 
 It reads a source only through :class:`RunTrace`, so only what was committed
 exists for it (an uncommitted step file is invisible); ``result.json`` only
@@ -33,8 +37,9 @@ run id it lists is left out with the file's reason. A source
 that matches but cannot be branched — an unreadable trace (one of an older
 format among them), a branch or replay run, a run whose task text a setup
 completed, a missing required archive or
-environment fingerprint, no environment setup context, a run id another
-source shares — is a precondition failure: ``on_unbranchable: raise`` (the
+environment fingerprint, no environment setup context, a benchmark its
+recorded selection no longer finds, a run id another source shares — is a
+precondition failure: ``on_unbranchable: raise`` (the
 default) raises one :class:`BenchmarkDataError` listing every such source;
 ``skip`` leaves them out. Every source or step left out is in
 :attr:`TraceBranchesTaskLoader.skipped` with its reason.
@@ -91,6 +96,7 @@ from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import Field
 
+from spectragent.benchmarks.selection import BenchmarkSelectionError, read_spec
 from spectragent.core.data_loader._common import BenchmarkDataError
 from spectragent.core.data_loader.task._registrar import TaskLoaderBase, TaskLoaderRegistrar
 from spectragent.core.data_loader.task.require_eval import RequireEval
@@ -118,6 +124,7 @@ from spectragent.core.trace.sources import (
     source_pattern_problem,
     unloaded_capture_reason,
 )
+from spectragent.schemas.benchmark_spec import BenchmarkSpec
 from spectragent.schemas.restoration import BranchProvenance, BranchTaskVariant, Checkpoint
 from spectragent.schemas.step_record import StepRecord
 from spectragent.schemas.task import REPLAY_ARCHIVE_KEY, SetupBase, TaskContext, TaskDefinition
@@ -332,8 +339,8 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
         return list(self._tasks)
 
     def get_task_context(self, task_id: str) -> TaskContext:
-        """The branch task's three parts: env (source setup, and ``replay_archive`` when the
-        source recorded a network archive), loop, branch.
+        """The branch task's parts: env (source setup, and ``replay_archive`` when the
+        source recorded a network archive), loop, branch, and its source's benchmark.
 
         An unknown ``task_id`` yields an empty ``TaskContext()``, as for every loader.
         """
@@ -406,6 +413,9 @@ class _Scan:
         self.skipped: dict[str, str] = {}
         #: Source benchmark loaders built to re-resolve setup contexts, by (benchmark, subset).
         self._source_loaders: dict[tuple[str, str], Any] = {}
+        #: Why each source benchmark its selection no longer finds cannot be
+        #: found (``None``: found), by the record of how it was selected.
+        self._benchmarks: dict[BenchmarkSpec, str | None] = {}
         #: The usable task variants still to place, by source run id, then step
         #: (``None``: no ``task_variants`` — every branch keeps its source's task).
         self._variants: dict[str, dict[int, list[TaskVariantEntry]]] | None = None
@@ -581,6 +591,7 @@ class _Scan:
                 f"which makes it anew on every run (docs/architecture_design.md §4.10)"
             )
         self._require_archive(trace, config)
+        self._require_benchmark(config.benchmark_spec)
         env = self._setup_context(config)
 
         manifest = trace.manifest
@@ -689,6 +700,30 @@ class _Scan:
                     f"capability {capability!r}, which {key!r} needs (require_archive)"
                 )
 
+    def _require_benchmark(self, spec: BenchmarkSpec | None) -> None:
+        """Refuse a source whose benchmark its recorded selection no longer finds.
+
+        Its branch tasks belong to that benchmark: each one's run is composed
+        with its block, read again from that selection (``read_spec``). Only
+        the YAML is read here; whether the block composes (its package, its
+        data) is the pre-flight's to say. A source that belonged to no
+        benchmark (*spec* ``None``) has none to find.
+        """
+        if spec is None:
+            return
+        if spec not in self._benchmarks:
+            try:
+                read_spec(spec)
+                self._benchmarks[spec] = None
+            except BenchmarkSelectionError as exc:
+                self._benchmarks[spec] = str(exc)
+        problem = self._benchmarks[spec]
+        if problem is not None:
+            raise _Unbranchable(
+                f"its benchmark {spec.benchmark_id!r}, which its branches belong to, is no longer "
+                f"found by how the run selected it ({spec.describe()}): {problem}"
+            )
+
     def _setup_context(self, config: TraceConfig) -> dict[str, Any]:
         """The source's environment setup context — never a redacted one (§4.10)."""
         setup = config.task_setup
@@ -785,6 +820,7 @@ class _Scan:
                     else None
                 ),
             ),
+            benchmark=config.benchmark_spec,
         )
 
 

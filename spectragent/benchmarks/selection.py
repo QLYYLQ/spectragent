@@ -14,6 +14,12 @@ the command line sets on a benchmark: it is written into the selected block's
 task loader before the run is composed (:func:`read_benchmark`), so the
 resolved configuration and every run's identity record it, as if the YAML had
 said it.
+
+Every run of a benchmark's task records how its benchmark was selected
+(:func:`spec_of`, ``TraceConfig.benchmark_spec``). A branch task belongs to its
+source run's benchmark and finds it again by that record (:func:`read_spec`):
+its run root holds the branch sweep's task source and the source's benchmark
+block (``docs/architecture_design.md`` §4.10.1 "分叉 sweep 是一种任务来源").
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ from typing import Any
 import yaml
 
 from spectragent import REPO_ROOT
+from spectragent.schemas.benchmark_spec import BenchmarkSpec
 
 #: The run root section a benchmark YAML holds, and the only one.
 BENCHMARK_SECTION = "benchmark"
@@ -105,8 +112,42 @@ def read_benchmark(selection: str, *, subset: str | None = None) -> dict[str, An
     return block
 
 
+def spec_of(selection: str, *, benchmark_id: str, subset: str | None = None) -> BenchmarkSpec:
+    """How the benchmark *benchmark_id* was selected: *selection* (``--benchmark``) and *subset*.
+
+    A path is recorded absolute, so a branch sweep run from another directory
+    finds the same file; an alias as it was given.
+    """
+    recorded = str(Path(selection).expanduser().resolve()) if is_path(selection) else selection
+    return BenchmarkSpec(benchmark_id=benchmark_id, selection=recorded, subset=subset)
+
+
+def read_spec(spec: BenchmarkSpec) -> dict[str, Any]:
+    """The benchmark block *spec* records the selection of, read again as :func:`read_benchmark` reads it.
+
+    What a branch task of a run that recorded *spec* composes with: its source
+    run's benchmark, as its YAML says now.
+
+    Raises:
+        BenchmarkSelectionError: The selection no longer reads (what
+            :func:`read_benchmark` refuses), or its block is another
+            benchmark's.
+    """
+    block = read_benchmark(spec.selection, subset=spec.subset)
+    found = block.get("benchmark_id")
+    if found != spec.benchmark_id:
+        raise BenchmarkSelectionError(
+            f"--benchmark {spec.selection}: its block is the benchmark {found!r}, not "
+            f"{spec.benchmark_id!r}, the one the run selected with it"
+        )
+    return block
+
+
 def run_root(raw: object, *benchmarks: dict[str, Any]) -> dict[str, Any]:
     """The run root a run composes: *raw*'s sections, and the *benchmarks* blocks under ``benchmark:``.
+
+    One block, the one ``--benchmark`` selected; for a branch task, the branch
+    sweep's task source and the benchmark the task belongs to (:func:`read_spec`).
 
     Raises:
         ValueError: *raw* is not a mapping.
@@ -135,5 +176,7 @@ __all__ = [
     "aliases",
     "is_path",
     "read_benchmark",
+    "read_spec",
     "run_root",
+    "spec_of",
 ]
