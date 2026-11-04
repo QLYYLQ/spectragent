@@ -222,7 +222,7 @@ function Ledger({ row }) {
   );
 }
 
-function RunList({ revision, selected, setSelected, workspace }) {
+function RunList({ revision, selected, setSelected, workspace, route }) {
   const [view, setView] = useState("tasks");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("");
@@ -381,7 +381,16 @@ function RunList({ revision, selected, setSelected, workspace }) {
                       : "请选择包含运行记录的目录，然后刷新。这里只显示已提交的记录。"}
               </Empty>
             ) : view === "tasks" ? (
-              <TaskGraphs rows={rows} visible={visible} revision={revision} selected={selected} onToggle={toggle} />
+              <TaskGraphs
+                visible={visible}
+                revision={revision}
+                selected={selected}
+                onToggle={toggle}
+                route={route}
+                renderStep={(key, index) => (
+                  <StepDetail key={`${key}#${index}`} runKey={key} index={index} revision={revision} />
+                )}
+              />
             ) : (
               <div className="table-scroll">
                 <table className="runs-table">
@@ -3017,6 +3026,7 @@ function App() {
                     selected={selected}
                     setSelected={setSelected}
                     workspace={workspace.data}
+                    route={route}
                   />
                 )}
               </>

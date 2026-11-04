@@ -13,6 +13,37 @@
   --border: #deded7;
   --muted: #6b7b85;
   --nav: #0a0e14;
+  /* Shared colour tokens: surfaces, text, the task view's lanes and the
+     good / warn / bad / neutral chips. */
+  --bg: #f2efe6;
+  --surface: #fffdf7;
+  --sunk: #f8f6ef;
+  --text: #1a2028;
+  --hover: #ebe8dd;
+  --selected: #f6e7d2;
+  --rail: #b3ad9e;
+  --ghost: #9aa3a9;
+  --lane-0: #cc6532;
+  --lane-1: #4c79a3;
+  --lane-2: #667e52;
+  --lane-3: #a56b89;
+  --lane-4: #a28a35;
+  --lane-5: #497f7b;
+  --good: #236c58;
+  --good-bg: #eef8f2;
+  --good-line: #d9ece1;
+  --warn: #976925;
+  --warn-bg: #fcf6e9;
+  --warn-line: #f0e6cf;
+  --bad: #b44f4d;
+  --bad-bg: #fcf0ef;
+  --bad-line: #f3dddb;
+  --neutral: #5f7381;
+  --neutral-bg: #eff3f5;
+  --neutral-line: #e6edef;
+  --shadow: rgba(32, 42, 50, 0.08);
+  --sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 .strategy-label {
