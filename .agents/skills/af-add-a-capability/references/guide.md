@@ -639,6 +639,17 @@ arguments only (no backend, no connection, no state written); `setup()` may call
 The environment routes the context exactly as setup does, so a key no `setup()` declares is
 refused there too.
 
+**A capability that brings up a device may serve several tasks of a sweep.** Implement the
+optional `ReusableEnvironment` Protocol (`core/capabilities/base.py`: `environment_identity(setup)`,
+reading configuration only, and `bind_handover(handover)`, acquiring nothing); `CapabilityBase`
+gives no default. Only `spectragent bench --reuse-environment` (off by default) keeps an
+environment for the next task, and only when the identities are equal, the benchmark's setup
+component this capability hosts declares `__resets_between_tasks__`, and the task ended cleanly:
+teardown then hands the environment over instead of releasing it, setup takes what the handover
+holds. The trace records `earlier_tasks_on_environment`. A browser context, new for every task,
+carries nothing over and is not this (`core/environment_reuse.py`; design doc §4.10.1
+"环境跨任务复用").
+
 **`teardown` failures are isolated per capability** (`environments/_registrar.py:814-839`).
 Every capability gets its turn even if an earlier one raises; the first error is re-raised
 at the end, the rest logged. Two guarantees, both learned from leaked Chrome processes: it

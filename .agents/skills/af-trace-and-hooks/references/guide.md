@@ -272,11 +272,18 @@ Three layers now (`models.py:437-524`):
   archivers declared; whether any were bound is `negotiation.active_archivers`, and the
   old `env_evidence_recorded` boolean that duplicated it is gone).
 
-Plus two per-task facts. `task_setup` (`TaskSetupRecord`) is the environment setup
+Plus per-task and per-benchmark facts. `task_setup` (`TaskSetupRecord`) is the environment setup
 context `execute()` handed to `setup_environment` (`start_url` …, a relative
 `replay_archive` already made absolute), value-level redacted with its ledger; a branch
 task (M31) re-creates its source environment from it, never from a redacted one.
 `branch` (`BranchProvenance`, M31) says where a branch run came from.
+`earlier_tasks_on_environment` is how many tasks the run's environment served before it
+(a sweep that asked for `--reuse-environment` kept it; `0`, not written, is a new one).
+`data_version` (`DataVersion`, `schemas/data_version.py`) is the version of the benchmark
+data the task loader read, as the fetch that wrote it recorded it in `data_version.json`
+(not written when the run has no benchmark or the data was put there by hand); unlike the
+per-task facts it **is** in the digest, since the same configuration on other data is
+another experiment.
 
 **A per-task or per-feature field is written only when it has a value** (user ruling,
 2026-10-13): `Field(exclude_if=...)` keeps `branch`, `task_setup` and
@@ -293,9 +300,9 @@ configuration ended up recorded nowhere in the first place.
 
 ### The digest has two fidelities and they must not be confused
 
-`configuration_digest` (`models.py:526`) covers identity + benchmark/subset + resolved
+`configuration_digest` (`models.py:526`) covers identity + benchmark/subset/data version + resolved
 config + negotiation, and deliberately **not** `task` / `task_id` / `extra` /
-`task_setup` / `branch` (per task) nor `secrets_recorded` / `env_evidence_privacy` (provenance),
+`task_setup` / `branch` / `earlier_tasks_on_environment` (per task) nor `secrets_recorded` / `env_evidence_privacy` (provenance),
 so two tasks of one sweep share a hash — including two that differ only in `start_url`, or
 two branches of one sweep (`test_run_configuration.py::TestBranchProvenance`).
 Archive settings move the hash through the two existing roads and nothing else: the

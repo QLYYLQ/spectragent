@@ -7,7 +7,7 @@ do not modify source runs, runtime restoration verdicts, matcher rules or task s
 
 ## Prepare aligned pairs
 
-Use current trace format 6 and a replay with explicit branch/source correspondence.
+Use current trace format 9 and a replay with explicit branch/source correspondence.
 Select pairs from its `StepRecord.restoration`, retaining the original machine verdict.
 Write a private JSON input outside the source/replay run directories:
 

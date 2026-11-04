@@ -167,7 +167,11 @@ uv run spectragent run --config configs/flywheel/record_ui_tars_pinned.yaml \
 ```
 
 `--benchmark` takes a shipped alias (`configs/benchmarks/<alias>.yaml`) or the path of a
-benchmark YAML of your own; the data directory is its task loader's knob, `--subset` writes
+benchmark YAML of your own; the data directory is its task loader's knob (left out, it is the
+benchmark's copy in the shared cache, `$SPECTRAGENT_BENCHMARK_DATA` or
+`~/.cache/spectragent/benchmarks`, which `spectragent benchmark fetch <alias>` fills at the
+pinned version and `bench` / `run --fetch` fills when it is missing; without `--fetch`, missing
+data is refused with exit 2), `--subset` writes
 the subset into that task loader before the run is composed (so the resolved configuration
 and the run's identity record it), and a run configuration never holds a benchmark
 (`docs/architecture_design.md` §4.10.1). `--start-url` is a start flag the browser declares
@@ -565,7 +569,7 @@ uv run spectragent run --config configs/flywheel/branch_ui_tars_archive.yaml \
   component or capability part since the source ran (`benchmark_spec.fingerprints`; a
   verifier added later is fine) is unbranchable (`on_unbranchable`), the refusal naming the
   changed parts. The fingerprints do not see the data itself, a `data_dir: null` resolved
-  through the environment, or capability parts computed in code from the data. A branch of
+  through the shared data cache (its version is in `TraceConfig.data_version`), or capability parts computed in code from the data. A branch of
   a run that belonged to no benchmark inherits nothing. `spectragent eval --benchmark
   <source benchmark>` still judges branch runs afterwards
   (architecture §4.10.1 "分叉任务继承源基准落地了什么").
@@ -1424,6 +1428,7 @@ value on an existing one.
 | A summary row says `infrastructure failure: ...` | The environment failed, the model stayed unavailable after the provider's retries, or the run's trace is `incomplete` / never closed (its manifest's `incomplete_reason` says what was lost). The three counters above the rows are the agent's ledger, the environment's and the trace's |
 | `spectragent bench` exits 4: `the sweep reached its token limit after task ...` | The tokens the sweep's traces recorded reached `--token-limit`: the named task finished, the rest never started. The table's `tokens:` line is the total; `no usage reported (not counted)` names calls without usage, `tokens not counted` a task whose trace does not read back |
 | `spectragent flywheel` exits 4: `stopped at the token limit ...` | The runs under the chain root reached `token_limit`; read `chain.json`'s `stopped_by_token_limit` (`stage: null`: reached before this invocation). Raise the limit, then run only the stages not started (`--stages`) |
+| `spectragent run` or `bench` exits 2 naming a benchmark's data (missing, or of another version than the pin) or an installation (AndroidWorld's checkout, venv or forwarder) | The message names the command: `spectragent benchmark fetch <alias>` (or `--fetch` on `run` / `bench`), `spectragent benchmark setup <alias>` for what a benchmark installs; a component's own `Refusal` (`core/refusal.py`) is shown as written and exits 2, where any other constructor error is withheld as `constructor_failed` |
 | `spectragent bench` exits 2: `the pre-flight check refused the configuration for task ...` | The first task's `prepare()` refused the stage YAML before any task ran; the original error follows the colon and names both sides. Check one task with `spectragent run --dry-run` (`--replay-archive DIR` for a replay) |
 | `BrowserCooperationError` naming `browser.network` or `browser.replay_log` beside the network source | A replay binds `browser.replay_log` in `browser.network`'s place; a live run binds no `browser.replay_log` (§2.2) |
 | A replay refused at `prepare()`, naming the tier, shim, viewport or launch flags | `replay/consistency.py::consistency_problems`. The replay YAML must match the recording's tier, seed, user agent, viewport and provider switches |
@@ -1489,7 +1494,7 @@ result contracts. All shipped run YAML uses four actions per step.
   unmeasurable is `null`, which blocks candidate acceptance. Action effects never enter the
   request.
 
-Current traces use format 6, including explicit Chat/Decision call kinds. Keep historical
+Current traces use format 9, including explicit Chat/Decision call kinds. Keep historical
 trace originals and use frozen prepared inputs or their original-version reader; do not
 add a missing-kind-as-Chat compatibility path. Candidate acceptance, further review and
 execution failure are separate facts; missing evidence or a failed call never becomes a
