@@ -25,6 +25,13 @@ from spectragent.core.trace.models import TraceConfig
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.sources import task_identity
 from spectragent.core.trace.usage import recorded_usage
+from spectragent.inspection.graph import (
+    restoration_tally,
+    run_graph,
+    task_graph,
+    task_key,
+    task_keys,
+)
 from spectragent.inspection.marks import (
     ImagePointer,
     MarkRequest,
@@ -48,6 +55,8 @@ from spectragent.schemas.task import REPLAY_ARCHIVE_KEY
 from spectragent.schemas.verdict import Verdict
 
 _IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+#: Row fields the list computes rather than reads from a run's record.
+_RESOLVED = frozenset({"source_key", "source_resolution", "task_key", "task_incomplete"})
 
 
 class RepositoryError(ValueError):
@@ -61,6 +70,7 @@ class RunRepository(Protocol):
     def matches(self, key: str) -> bool: ...
     def run(self, key: str) -> dict[str, Any]: ...
     def graph(self, key: str) -> dict[str, Any]: ...
+    def task_graphs(self, tasks: list[str]) -> list[dict[str, Any]]: ...
     def trajectory(self, key: str, anchor: int) -> dict[str, Any]: ...
     def step_frames(self, key: str, index: int) -> list[dict[str, Any]]: ...
     def step_frame_image(self, key: str, index: int, frame_id: str) -> bytes: ...
@@ -304,6 +314,10 @@ def _summary(trace: RunTrace, key: str, usage: Any = None) -> dict[str, Any]:
         "answer": result.answer if result else "",
         "error": result.error if result else None,
         "branch": _json(config.branch),
+        "task_key": task_key(config),
+        "restoration": restoration_tally(records, config.branch.checkpoint_step)
+        if config.branch
+        else None,
         "verdicts": _verdict_brief(verdicts),
         "verdict_error": verdict_error,
         "read_error": None,
@@ -401,7 +415,12 @@ class _FileRepository:
         except (OSError, UnicodeError, ValueError) as exc:
             raise RepositoryError(f"Cannot read {path.relative_to(self.root)}: {exc}") from exc
 
-    def list_runs(self, search: str = "") -> list[dict[str, Any]]:
+    def _rows(self, *, outside_filters: bool = False) -> list[dict[str, Any]]:
+        """Every run row under the root with its source resolved and its task key.
+
+        Rows the configuration filters leave out are dropped, or kept marked
+        ``context`` with *outside_filters*. Unreadable runs are rows too.
+        """
         rows = []
         # Every readable run under the root, filtered or not: a branch's
         # source is resolved against the root, never against the filter.
@@ -415,6 +434,8 @@ class _FileRepository:
                 keys_by_run_id.setdefault(trace.run_id, []).append(key)
                 if self._matches(trace):
                     rows.append(_summary(trace, key))
+                elif outside_filters:
+                    rows.append({**_summary(trace, key), "context": True})
             except (RepositoryError, TraceSchemaError, OSError) as exc:
                 if self.config_source is not None or self.config_hash is not None:
                     # No readable identity means no evidence of membership.
@@ -428,11 +449,6 @@ class _FileRepository:
                         "verdicts": [],
                     }
                 )
-        needle = search.casefold()
-        if needle:
-            rows = [
-                row for row in rows if needle in " ".join(str(v) for v in row.values()).casefold()
-            ]
         for row in rows:
             if row.get("branch"):
                 # The same resolution ``run`` reports, from the same scan.
@@ -441,7 +457,43 @@ class _FileRepository:
                 row["source_resolution"] = (
                     "found" if len(candidates) == 1 else "ambiguous" if candidates else "missing"
                 )
+        task_keys(rows)
+        return rows
+
+    def list_runs(self, search: str = "") -> list[dict[str, Any]]:
+        rows = self._rows()
+        needle = search.casefold()
+        if needle:
+            # What the list resolved is no recorded text to search.
+            rows = [
+                row
+                for row in rows
+                if needle
+                in " ".join(str(v) for k, v in row.items() if k not in _RESOLVED).casefold()
+            ]
         return sorted(rows, key=lambda row: (row.get("created_at", ""), row["key"]), reverse=True)
+
+    def task_graphs(self, tasks: list[str]) -> list[dict[str, Any]]:
+        """Each of *tasks* (task keys) placed as a graph, from one scan (``graph.task_graph``).
+
+        A branch's source that the configuration filters leave out is kept as
+        context, with its own sources, so the branch still leaves a commit.
+        """
+        rows = self._rows(outside_filters=True)
+        by_key = {row["key"]: row for row in rows}
+        shown = [row for row in rows if not row.get("context")]
+        sources: dict[str, dict[str, Any]] = {}
+        pending = [row for row in shown if row.get("branch")]
+        while pending:
+            source = by_key.get(pending.pop().get("source_key") or "")
+            if source is not None and source.get("context") and source["key"] not in sources:
+                sources[source["key"]] = source
+                pending.append(source)
+        rows = shown + list(sources.values())
+        try:
+            return [task_graph(rows, task) for task in tasks]
+        except LookupError as exc:
+            raise FileNotFoundError(str(exc)) from exc
 
     def run(self, key: str) -> dict[str, Any]:
         trace = self._trace(key)
@@ -606,8 +658,6 @@ class _FileRepository:
         return comparison
 
     def graph(self, key: str) -> dict[str, Any]:
-        from spectragent.inspection.graph import run_graph
-
         try:
             return run_graph(self._trace(key))
         except (TraceSchemaError, KeyError) as exc:

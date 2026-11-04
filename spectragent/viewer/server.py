@@ -157,6 +157,13 @@ def create_app(
     def graph(key: str) -> dict[str, Any]:
         return repository.graph(_key(key))
 
+    @app.get("/api/task-graph")
+    def task_graph(
+        task: Annotated[list[str], Query(min_length=1, max_length=100)],
+    ) -> list[dict[str, Any]]:
+        """Each named task (a run row's ``task_key``) placed as a graph, from one scan."""
+        return repository.task_graphs(task)
+
     @app.get("/api/step")
     def step(key: str, index: Annotated[int, Query(ge=0)]) -> dict[str, Any]:
         return repository.step(_key(key), index)
