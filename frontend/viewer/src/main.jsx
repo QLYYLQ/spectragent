@@ -38,6 +38,7 @@ import { StepLabels } from "./stepLabels.jsx";
 import { MarkLayer, MarkLegend, MarkToggle } from "./marks.jsx";
 import { hasMarks } from "./marks.js";
 import { TaskGraphs } from "./taskGraph.jsx";
+import { tallestRatio } from "./reviewEvidence.js";
 import "./styles.css";
 
 /** Display names for the restorer's verify setting (``strict`` or ``warn``). */
@@ -889,7 +890,10 @@ function RestorationComparison({ step, runKey, index, everywhere }) {
         <ImageViewSwitch view={view} setView={setView} />
         <MarkToggle show={showMarks} onChange={setShowMarks} keycap={false} />
       </div>
-      <div className="compare-row restoration-images" style={{ "--compare-count": 2 }}>
+      <div
+        className="compare-row restoration-images"
+        style={{ "--compare-count": 2, "--compare-ratio": tallestRatio([sourceMarks.data, actualMarks.data]) ?? undefined }}
+      >
         <ComparedScreenshot
           runKey={comparison.source_key}
           step={comparison.source_step}

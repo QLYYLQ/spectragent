@@ -111,3 +111,9 @@ export function observationFacts(fragments = {}) {
   }
   return { front, page, text };
 }
+
+/** The tallest height-over-width among images of known size, for a comparison row's shared box. */
+export function tallestRatio(sizes) {
+  const ratios = sizes.filter((size) => size?.width > 0 && size?.height > 0).map((size) => size.height / size.width);
+  return ratios.length ? Math.max(...ratios) : null;
+}

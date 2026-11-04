@@ -15,6 +15,7 @@ import {
   observationFacts,
   pointerPresentation,
   recordedReply,
+  tallestRatio,
 } from "./reviewEvidence.js";
 
 const originText = { policy: "决策", restored: "恢复", terminal: "终止观测" };
@@ -124,7 +125,7 @@ function StepCard({ data, params, index, steps, show, setShow }) {
           </label>
         )}
       </div>
-      <div className="compare-row" style={{ "--compare-count": figures.length }}>
+      <div className="compare-row" style={{ "--compare-count": figures.length, "--compare-ratio": tallestRatio(figures.map((figure) => figure.marks)) ?? undefined }}>
         {figures.map((figure) => (
           <figure key={figure.key} className="compare-figure">
             <figcaption>{figure.title}<span>{figure.note}</span></figcaption>

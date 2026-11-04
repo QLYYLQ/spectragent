@@ -11,6 +11,7 @@ import {
   pointerPresentation,
   recordedReply,
   sectionEvidence,
+  tallestRatio,
 } from "./reviewEvidence.js";
 
 test("a source comparison never appears in the main evidence, irrespective of its wording", () => {
@@ -107,4 +108,9 @@ test("observation facts come from recorded fields, never from fragment names", (
   assert.equal(browser.page, "Example · https://example.test/");
   assert.deepEqual(browser.text.lines, ["[7] <button> Search"]);
   assert.deepEqual(observationFacts({}), {front: null, page: null, text: null});
+});
+
+test("a comparison row's box takes the tallest known image, and knows nothing without sizes", () => {
+  assert.equal(tallestRatio([{width: 640, height: 400}, {width: 1080, height: 2400}, null, {width: 0, height: 5}]), 2400 / 1080);
+  assert.equal(tallestRatio([{}, null]), null);
 });

@@ -1700,6 +1700,7 @@ pre {
   gap: 6px;
   min-width: 0;
   margin: 0;
+  container-type: inline-size;
 }
 .compare-figure > figcaption {
   font-size: 11px;
@@ -1714,10 +1715,14 @@ pre {
   color: var(--muted);
 }
 .compare-box {
+  /* As tall as the row's tallest image needs at this width (--compare-ratio,
+     height over width), never taller than --compare-height: every box of a
+     row is the same size, since the columns are. */
+  --box-height: min(var(--compare-height), calc((100cqw - 14px) * var(--compare-ratio, 10) + 14px));
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  height: var(--compare-height);
+  height: var(--box-height);
   padding: 6px;
   overflow: hidden;
   background: var(--sunk);
@@ -1737,7 +1742,7 @@ pre {
 .compare-surface img {
   display: block;
   max-width: 100%;
-  max-height: calc(var(--compare-height) - 12px);
+  max-height: calc(var(--box-height) - 14px);
   width: auto;
   height: auto;
 }
