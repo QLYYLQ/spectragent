@@ -470,8 +470,12 @@ uv run spectragent run --config configs/flywheel/branch_ui_tars_archive.yaml \
 - A task id is `<source_run_id>/s<t>/b<i>` (`<source_run_id>/s<t>/v<variant_id>/b<i>` under
   `task_variants`). Its context carries the source's setup context
   (re-resolved through the source benchmark's loader when it is missing or carries
-  redactions), `replay_archive`, the `checkpoint` Loop input, and the branch provenance that
-  only the trace receives.
+  redactions), `replay_archive` when the source recorded an archive its capability declares a
+  branch needs (`BRANCH_ARCHIVES`: the browser's `browser.network`), the `checkpoint` Loop
+  input, and the branch provenance that only the trace receives. A source whose recorded
+  configuration names no capability is refused unless `require_archive` is written. Under
+  `history_source: source` a checkpoint whose source prompt failed (`error_phase: prompt`)
+  is refused at assembly.
 - Candidates are committed policy steps whose prefix is committed, whose observation was
   recorded and that the source's trace is complete through (`complete_through`). The trace's
   own ledger is a hard condition, not a filter: a trace never closed (`writing`) has no
