@@ -295,8 +295,9 @@ class ChatGoogle(ChatModelBase):
         maximum-length generation against an unchanged ceiling.
 
         What the candidate had written goes with the error
-        (``partial_output``, see :func:`_candidate_text`): the step aborts
-        here, so the failure record is the only place it survives.
+        (``partial_output``, see :func:`_candidate_text`): when the Loop ends
+        the run on this error, the failure record is the only place it
+        survives.
         """
         candidates = getattr(response, "candidates", None)
         if not candidates:
