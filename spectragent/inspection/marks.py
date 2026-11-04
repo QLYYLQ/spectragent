@@ -79,7 +79,7 @@ from spectragent.core.capabilities.browser.effects import (
 from spectragent.core.trace.errors import RecordingScopeError, TraceSchemaError
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action, ActionResult
-from spectragent.schemas.observation._registrar import fragment_field_name
+from spectragent.schemas.observation._registrar import ObservationRegistrar, fragment_field_name
 from spectragent.schemas.observation.geometry import PointGrid, ScreenshotGeometry, point_grid
 from spectragent.schemas.step_record import StepRecord
 
@@ -417,10 +417,11 @@ def addressed_elements(trace: RunTrace, record: StepRecord) -> list[AddressedEle
     """For each of *record*'s actions, the element its params named, from its step's observation.
 
     The fragment read is the one the action's element param declares it
-    addresses (``AddressesElement("android.ui_tree")``). ``None`` for an action
-    that names no element. An element of a fragment this view cannot read one
-    from (the browser's are named by its actions' effects) is named by its
-    index alone.
+    addresses (``AddressesElement("android.ui_tree")``), and only when it is
+    one this view can name an element from: the Android UI tree. Any other
+    (the browser's DOM, which can be tens of MB, and whose elements the
+    browser's effects name) is never read, and its element is named by its
+    index alone. ``None`` for an action that names no element.
     """
     found: list[AddressedElement | None] = []
     read: dict[str, Any] = {}
@@ -436,6 +437,9 @@ def addressed_elements(trace: RunTrace, record: StepRecord) -> list[AddressedEle
             if index is None:
                 continue
             for key in sorted(fragments.get(name, ())):
+                fragment = ObservationRegistrar.get_or_none(key)
+                if not (isinstance(fragment, type) and issubclass(fragment, AndroidUITreeObs)):
+                    continue
                 if key not in read:
                     try:
                         read[key] = _fragment(trace, record.step, key)
@@ -668,7 +672,7 @@ def _android(action: Action, result: ActionResult | None, element: AddressedElem
         if point is not None:
             line = f"{verb} {_xy(point)}" + (f" → {target}" if target else "")
         else:
-            line = f"{verb}{target or ''}"
+            line = f"{verb} {target}" if target else verb
         if name == "android.long_press" and touch is not None:
             line += f"，按住 {_seconds(touch.duration_ms / 1000)} 秒"
         return _Css(

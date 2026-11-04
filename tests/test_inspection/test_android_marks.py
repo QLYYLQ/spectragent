@@ -189,3 +189,27 @@ def test_the_run_graph_words_android_commits_with_their_elements(run: RunTrace) 
     texts = [action["text"] for action in graph["steps"][0]["actions"]]
     assert texts[0] == "点击 (900, 200) → #0 按钮“Save”"
     assert texts[4] == "打开应用 Contacts（没有成功）"
+
+
+def test_a_browser_index_click_never_reads_the_dom(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a fragment this view can name an element from is read; a DOM can be tens of MB."""
+    import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers browser.click
+
+    wal = WALWriter(tmp_path, "browser")
+    wal.init_run(TraceConfig())
+    click = Action(name="browser.click", params={"index": 7})
+    wal.commit_step(
+        0, StepRecord(step=0, actions=[click], action_results=[ActionResult(success=True)])
+    )
+    trace = RunTrace(wal.run_dir)
+    record = trace.step(0)
+    assert record is not None
+
+    def forbid(*args: object, **kwargs: object) -> None:
+        pytest.fail("the DOM fragment must not be read")
+
+    monkeypatch.setattr(RunTrace, "observation_fragment", forbid)
+    (element,) = addressed_elements(trace, record)
+    assert element is not None and element.text == "#7"

@@ -204,7 +204,10 @@ function EvidenceFolder({ data, params }) {
   const detail = useRemote(query("review/trajectory-step", { ...params, index: selected }), params.queue_sha256);
   const current = steps.find((step) => step.index === selected);
   useEffect(() => {
-    tabs.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    // Scroll the strip sideways only: scrolling the tab into view would move the page too.
+    const strip = tabs.current;
+    const tab = strip?.querySelector('[aria-selected="true"]');
+    if (strip && tab) strip.scrollLeft = tab.offsetLeft - strip.clientWidth / 2 + tab.clientWidth / 2;
   }, [selected]);
   const move = (offset, focus = false) => {
     const next = folderNeighbour(steps, selected, offset);
