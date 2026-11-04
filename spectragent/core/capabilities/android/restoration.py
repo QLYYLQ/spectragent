@@ -204,10 +204,13 @@ def input_state(tree: AndroidUITreeObs) -> InputState:
 # ── retarget ──────────────────────────────────────────────────────────
 
 
+def _offset(recorded: ProtoRect, restored: ProtoRect) -> int:
+    """How far apart two boxes are: the largest difference of an edge, in pixels."""
+    return max(abs(a - b) for a, b in zip(_box(recorded), _box(restored), strict=True))
+
+
 def _within(recorded: ProtoRect, restored: ProtoRect, tolerance_px: int) -> bool:
-    return all(
-        abs(a - b) <= tolerance_px for a, b in zip(_box(recorded), _box(restored), strict=True)
-    )
+    return _offset(recorded, restored) <= tolerance_px
 
 
 def retarget_action(
@@ -267,9 +270,20 @@ def _retarget_element(
             action=copy, method=GEOMETRY_SIGNATURE, detail=f"element {index} -> {matches[0]} {what}"
         )
     if not matches:
+        alike = [
+            _offset(entry.bounds_in_screen, node.bounds_in_screen)
+            for _, node in restored_tree.tree().element_nodes()
+            if element_identity(node) == identity
+        ]
+        elsewhere = (
+            f"; the nearest element that has them lies {min(alike)} px off"
+            if alike
+            else "; no element has them"
+        )
         return not_found(
             f"no element within {tolerance_px} px of recorded element {index} {what} has its "
-            f"class, resource id, text and description ({len(near)} candidate(s) by position)"
+            f"class, resource id, text and description ({len(near)} candidate(s) by position"
+            f"{elsewhere})"
         )
     return Retarget(
         action=None,

@@ -271,6 +271,12 @@ def test_an_element_that_moved_or_changed_is_not_found() -> None:
     for restored in (moved, renamed):
         result = retarget(click, recorded, observation(screen(restored)))
         assert (result.action, result.failure) == (None, "not_found")
+    # Where the element went says what a swipe's inertia did to the screen.
+    assert (
+        "the nearest element that has them lies 10 px off"
+        in retarget(click, recorded, observation(screen(moved))).detail
+    )
+    assert "no element has them" in retarget(click, recorded, observation(screen(renamed))).detail
     assert retarget(click, recorded, observation(screen(moved)), tolerance_px=10).failure is None
 
 
