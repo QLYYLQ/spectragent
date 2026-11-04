@@ -23,9 +23,10 @@ library. After one task's setup (``MarkorMoveNote``), each app is opened as
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import pytest
 import pytest_asyncio
@@ -81,8 +82,6 @@ class Prepared:
     serial: str
     #: AndroidWorld's app table, as the benchmark hands it to ``open_app``.
     apps: Mapping[str, str]
-    #: The launcher's notes on what it granted.
-    granted: list[str] = field(default_factory=list)
     cycle: int = 0
 
 
@@ -110,7 +109,6 @@ async def prepared(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Pr
             adb=AdbClient(session.endpoint.host, session.endpoint.port),
             serial=session.serial,
             apps=read_open_app_table(data),
-            granted=granted,
         )
     finally:
         await env.teardown()
@@ -185,7 +183,9 @@ async def _click(prepared: Prepared, label: str) -> None:
 async def _mode(prepared: Prepared, package: str) -> str:
     """The All files access app op of *package*'s uid, as ``appops get`` reports it."""
     command = f"appops get --uid {package} MANAGE_EXTERNAL_STORAGE"
-    return (await prepared.adb.shell(prepared.serial, command)).stdout.decode()
+    return (
+        await asyncio.wait_for(prepared.adb.shell(prepared.serial, command), 10)
+    ).stdout.decode()
 
 
 async def _allowed_within(prepared: Prepared, package: str, within_s: float) -> str:
