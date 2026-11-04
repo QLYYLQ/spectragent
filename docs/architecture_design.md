@@ -506,7 +506,7 @@ class BranchLoop(ReactLoop):
 **截断在 completion token 上限的回复（`cut_off_reply`，用户 2026-11-04 的决定）。** provider 看到回复停在 completion token 上限（OpenAI 兼容的 Chat Completions 路由的 `finish_reason: length`、Anthropic 的 `stop_reason: max_tokens`、Gemini 的 `MAX_TOKENS`）时抛 `ModelOutputTruncatedError`，带着停止原因、用量和回复已经生成的文字（`partial_output`）。这段文字只是回复的正文：这三家都不把推理放进去（`reasoning_content`、thinking 块、thought 部分），Anthropic 的强制工具结构化回复是 `tool_use` 的输入；推理用光了整个预算的回复因此没有正文，`partial_output` 是空串或 `None`（DMX 上 deepseek 的一次 MiniWoB 决策用完 32768 个 completion token，录下的是空串）。ReAct 的 `cut_off_reply` 决定怎样处理它：
 
 - `end_run`（默认）：run 在这一步以失败结束（`error_phase="llm"`、`agent_done="error"`、`env_status="success"`），错误写明上限；回复不交给 parser，不重问，不计入连续解析失败。理由：上限是我们的配置，不是模型的错，重问不会好（上限不变、历史更长，重问截断得更早，每次都是最长的生成）；走解析失败的路，run 会记成模型连续几次不按格式写，评测平台上就是把我们的上限算到受测模型头上。
-- `read_as_is`：照基准自己的 harness 读它。AndroidWorld 的 `Gpt4Wrapper` 不看 finish reason，照样返回 content，M3A 再按格式读，读不了就写它自己的历史行、花掉这一步。这里也一样：已经生成的文字（没有文字时是空串）就是这一步的回复，经 `read_reply` 读，与任何回复同一条路：读得出就执行，读不出是解析失败，照常步内重问（`parse_retries_per_step`）、计入 `max_consecutive_parse_errors`，用完记 `error_phase="parse"`，`llm_output` 是那段文字，下一步看到的与任何解析失败相同（M3A 的历史行见下文"M3A"）。
+- `read_as_is`：照基准自己的 harness 读它。AndroidWorld 的 `Gpt4Wrapper` 不看 finish reason，照样返回 content，M3A 再按格式读，读不了就写它自己的历史行、花掉这一步。这里也一样：已经生成的文字（没有文字时是空串）就是这一步的回复，经 `read_reply` 读，与任何回复同一条路：读得出就执行，读不出是解析失败，照常步内重问（`parse_retries_per_step`）、计入 `max_consecutive_parse_errors`，用完记 `error_phase="parse"`，`llm_output` 是那段文字，下一步看到的与任何解析失败相同（M3A 的历史行见下文"M3A"）。读得出的截断回复照常执行，这一步看上去与完整的回复一样，只有那次调用的记录说明它被截断：Anthropic 的强制工具路径上 `partial_output` 是 `tool_use` 输入的 JSON（`json.dumps`），总是合法的 JSON，合输出模型时截断之前写下的动作照常执行。所以训练导出不把这样的步当样本（§4.15"可导出的步与 `CanonicalStepSample`"）。
 
 两种取值下 trace 都记着回复被截断：那次调用的记录是失败的调用（`CallFailure`：`error` 为 `ModelOutputTruncatedError`，带 `stop_reason`、`partial_output` 与用量，§5.3），轻量调用索引里同样是 `failed` 与这个错误类名；`read_as_is` 不改这份记录，只是 Loop 不因它结束 run。分叉按源步当时读的方式重放它（下文 `BranchLoop` 的"source 历史"）。不是每条路由都报截断：Azure 走 Responses API 时把 `status: incomplete` 记作停止原因、照常返回正文；Groq 的两条路径（文本与结构化，`openai_groq.py` 自己发请求）和 Cerebras 的结构化路径（把 schema 写进提示、自己发请求）直接读 `content`，不看 `finish_reason`；Bedrock、Mistral、OCI、Ollama 与 BrowserUse 的 provider 不读停止原因。这些路由上被截断的回复本来就照常交给 parser（Groq 与 Cerebras 的结构化路径在正文为空时抛普通的 provider 错误、结束 run），`cut_off_reply` 管不到它们。
 
@@ -4446,7 +4446,7 @@ benchmark:
 
 #### 可导出的步与 `CanonicalStepSample`
 
-**可导出的步**：`origin == "policy"`、`error_phase` 为空、至少执行了一个动作（`zip(actions, action_results)` 的那些；解析失败的步与零动作的步在 `StepRecord` 上分不开，M31 的未决问题，两者都不导出）。分叉 run 只有它的策略步可导出（检查点步 t 与其后的继续步）；恢复步、终止步从不是样本。不可导出的步不产生样本，并在轨迹里结束当前段（"学生渲染"）。
+**可导出的步**：`origin == "policy"`、`error_phase` 为空、至少执行了一个动作（`zip(actions, action_results)` 的那些；解析失败的步与零动作的步在 `StepRecord` 上分不开，M31 的未决问题，两者都不导出）。被接受的回复截断在 completion token 上限的步也不导出（这一步最后一次决策调用以 `ModelOutputTruncatedError` 失败；`cut_off_reply: read_as_is` 的 run 照常执行读得出的截断回复，§4.1）：那是半条回复，不是要教的答案；截断的第一问之后重问得到完整回复的步照常导出。`is_exportable(trace, record)` 从 trace 读这一步的决策调用（`recorded_chat_decisions`）。分叉 run 只有它的策略步可导出（检查点步 t 与其后的继续步）；恢复步、终止步从不是样本。不可导出的步不产生样本，并在轨迹里结束当前段（"学生渲染"）。
 
 `CanonicalStepSample`（`spectragent/schemas/sample.py`，领域中立：不出现 URL、DOM、bbox 这类字段名，`test_shared_module_is_domain_neutral.py` 覆盖到它；不 import `spectragent.core`）：
 

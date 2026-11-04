@@ -28,7 +28,7 @@ from spectragent.core.capabilities.browser.observations import (
 )
 from spectragent.core.capabilities.browser.platform import BrowserPlatform
 from spectragent.core.capabilities.browser.settle import PageSettle
-from spectragent.core.trace.encoding import TraceFile, encode_fragment
+from spectragent.core.trace.encoding import EncodedLLMCall, TraceFile, encode_fragment
 from spectragent.core.trace.models import (
     TaskSetupRecord,
     TraceConfig,
@@ -113,7 +113,8 @@ class ExportStep:
     ``loop_fragments`` is false. ``failed`` names fragments whose capture
     failed. ``frame`` is the teacher's recorded coordinate frame.
     ``skipped_actions`` is how many of the last actions the Loop skipped
-    after a failed one (``StepRecord.skipped_actions``).
+    after a failed one (``StepRecord.skipped_actions``). ``llm_calls`` are the
+    step's recorded model calls (``trace_builder.completed_call`` and kin).
     """
 
     actions: list[Action] = field(default_factory=list)
@@ -128,6 +129,7 @@ class ExportStep:
     restoration: RestorationCheck | None = None
     frame: PointFrame | None = None
     skipped_actions: int = 0
+    llm_calls: list[EncodedLLMCall] = field(default_factory=list)
 
 
 def setup_record(*, redacted: bool = False) -> TaskSetupRecord:
@@ -265,6 +267,7 @@ def write_run(
                 skipped_actions=spec.skipped_actions,
             ),
             fragments=[item for item in encoded if item is not None],
+            llm_calls=list(spec.llm_calls),
             extra_files=list(spec.extra_files),
         )
     if agent_done is not None:
