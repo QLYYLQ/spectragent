@@ -1,5 +1,6 @@
 """Runtime rejects mismatched execution limits before setup or prompt building."""
 
+import asyncio
 from dataclasses import FrozenInstanceError
 
 import pytest
@@ -16,6 +17,24 @@ class LimitConsumer(SimpleAgent):
 
     def prepare(self, *, task, action_space, execution_limits: ExecutionLimits):
         return [execution_limits]
+
+
+class SettingsChecker(SimpleAgent):
+    """Reads the Loop's cap in ``check_run_settings`` only: its ``prepare`` takes no limits."""
+
+    __execution_limit_fields__ = frozenset({"max_actions_per_step"})
+
+    def __init__(self) -> None:
+        self.asked: list[ExecutionLimits] = []
+
+    def check_run_settings(self, execution_limits: ExecutionLimits) -> None:
+        self.asked.append(execution_limits)
+        limit = execution_limits.max_actions_per_step
+        if limit is None or limit < 2:
+            raise ValueError(f"needs the Loop's max_actions_per_step at 2 or more; it is {limit}")
+
+    def prepare(self, *, task, action_space):
+        return ["seed"]
 
 
 def runtime_for(agent, loop):
@@ -104,3 +123,36 @@ def test_a_limit_left_none_is_provided_only_when_named_unbounded():
         ExecutionLimits(max_consecutive_parse_errors=3, unbounded=unbounded)
     with pytest.raises(ValueError, match="unbounded names only limits left None, not max_steps"):
         ExecutionLimits(unbounded=frozenset({"max_steps"}))
+
+
+def test_run_settings_an_agent_refuses_are_refused_by_prepare_before_anything_starts():
+    """``RunSettingsCheck``: the refusal comes out of ``prepare()``, so ``config check`` and the
+    bench pre-flight see it; ``execute()`` neither negotiates, sets up nor seeds."""
+    agent = SettingsChecker()
+    runtime = runtime_for(agent, ReactLoop(max_actions_per_step=1))
+    env = runtime.env
+    assert env is not None
+    setups: list[object] = []
+
+    async def setup(context=None, **kwargs):
+        setups.append(context)
+
+    env.setup = setup
+
+    with pytest.raises(ValueError, match="max_actions_per_step at 2 or more; it is 1"):
+        runtime.prepare()
+    with pytest.raises(ValueError, match="max_actions_per_step at 2 or more; it is 1"):
+        asyncio.run(runtime.execute("task", raise_on_error=False))
+
+    assert [limits.max_actions_per_step for limits in agent.asked] == [1, 1]
+    assert runtime.negotiated_observation is None and setups == []
+
+
+def test_limits_the_check_alone_consumes_are_asked_for_and_not_handed_to_prepare():
+    agent = SettingsChecker()
+    runtime = runtime_for(agent, ReactLoop(max_actions_per_step=2))
+
+    runtime.prepare()
+
+    assert [limits.max_actions_per_step for limits in agent.asked] == [2]
+    assert runtime.seed_messages("task") == ["seed"]

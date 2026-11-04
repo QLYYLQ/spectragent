@@ -1,10 +1,14 @@
-"""Typed execution limits supplied by a Loop and consumed by an Agent."""
+"""Typed execution limits supplied by a Loop and consumed by an Agent.
+
+Beside them, the optional check of the run's settings that
+``AgentRuntime.prepare()`` makes (:class:`RunSettingsCheck`).
+"""
 
 from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, fields
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -45,6 +49,31 @@ class ExecutionLimits:
         return frozenset(set_ones) | self.unbounded
 
 
+@runtime_checkable
+class RunSettingsCheck(Protocol):
+    """Optional, for an Agent: refuse in ``AgentRuntime.prepare()`` run settings it cannot work with.
+
+    An Agent that only works under some settings of its run (M3A: the
+    Loop's ``max_actions_per_step`` at 2 or more, and a memory that keeps
+    one message) is handed the Loop's execution limits right after they are
+    checked against its ``__execution_limit_fields__``, and reads its own
+    configured parts (its memory) off itself. A misfit is then refused before
+    anything is negotiated, before a trace is opened and before the
+    environment is set up (AGENTS.md §2.3), so ``spectragent config check``
+    and ``spectragent bench``'s pre-flight refuse it too, not
+    ``seed_messages`` at the start of every run. An Agent without it is not
+    asked.
+    """
+
+    def check_run_settings(self, execution_limits: ExecutionLimits) -> None:
+        """Raise ``ValueError`` naming the setting, its value and what this Agent needs.
+
+        Reads only the limits its ``__execution_limit_fields__`` declares,
+        and its own configuration; writes no state.
+        """
+        ...
+
+
 class IncompatibleExecutionLimitsError(Exception):
     """The agent's declared consumption does not match the Loop's limits."""
 
@@ -55,11 +84,13 @@ class IncompatibleExecutionLimitsError(Exception):
 
 
 def validate_execution_limits(agent: Any, loop_id: str, limits: ExecutionLimits) -> bool:
-    """Check the explicit consumption contract; return whether to pass limits.
+    """Check the explicit consumption contract; return whether ``prepare`` takes the limits.
 
-    A named ``execution_limits`` parameter is required for agents consuming
-    any fields. ``**kwargs`` cannot stand in for the declaration or parameter.
-    An agent with an explicit empty declaration may keep a narrow ``prepare``
+    An agent consuming any fields reads them in its ``prepare`` seed slot,
+    which then names an ``execution_limits`` parameter, or in its
+    ``check_run_settings`` (:class:`RunSettingsCheck`), or both.
+    ``**kwargs`` cannot stand in for the declaration or parameter. An agent
+    with an explicit empty declaration may keep a narrow ``prepare``
     signature because it deliberately consumes no limits.
     """
     agent_name = type(agent).__name__
@@ -94,12 +125,16 @@ def validate_execution_limits(agent: Any, loop_id: str, limits: ExecutionLimits)
     if not declared:
         return False
     prepare = getattr(agent, "prepare", None)
-    if not callable(prepare):
-        raise incompatible("consuming limits requires a callable prepare method")
-    parameter = inspect.signature(prepare).parameters.get("execution_limits")
-    if parameter is None or parameter.kind not in (
+    parameter = (
+        inspect.signature(prepare).parameters.get("execution_limits") if callable(prepare) else None
+    )
+    takes = parameter is not None and parameter.kind in (
         inspect.Parameter.POSITIONAL_OR_KEYWORD,
         inspect.Parameter.KEYWORD_ONLY,
-    ):
-        raise incompatible("prepare must explicitly accept execution_limits by keyword")
-    return True
+    )
+    if not takes and not isinstance(agent, RunSettingsCheck):
+        raise incompatible(
+            "prepare must explicitly accept execution_limits by keyword, or the agent must "
+            "check them in check_run_settings"
+        )
+    return takes
