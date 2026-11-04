@@ -304,7 +304,9 @@ class AndroidWorldSetup(BenchmarkSetupBase):
         tear-down, AndroidWorld's reset, must succeed: the service is
         returned, still running, for the next task's :meth:`start`; when the
         tear-down fails or no task was initialized, the service is stopped
-        and the error raised. Safe to repeat: a second call finds nothing.
+        and the error raised. A cancellation that arrives while it ends the
+        task waits for that, then stops a service it kept, since nobody takes
+        it. Safe to repeat: a second call finds nothing.
 
         Raises:
             AndroidWorldError: With *keep*: no task was initialized on the
@@ -319,6 +321,13 @@ class AndroidWorldSetup(BenchmarkSetupBase):
             self._stopping = stopping = asyncio.ensure_future(self._stop(service, keep=keep))
         try:
             kept = await finish(stopping)
+        except asyncio.CancelledError:
+            # The reset finished and kept the service, and nobody takes it now.
+            if not stopping.cancelled() and stopping.exception() is None:
+                left = stopping.result()
+                if left is not None:
+                    await finish(asyncio.ensure_future(left.close()))
+            raise
         finally:
             self._service = None
             self._task = None

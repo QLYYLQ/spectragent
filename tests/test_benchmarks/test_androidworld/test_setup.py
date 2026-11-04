@@ -1299,6 +1299,26 @@ async def test_a_service_with_no_task_initialized_is_never_kept(root: Path, tmp_
     assert await _service_is_gone(root)
 
 
+async def test_a_reset_cut_short_by_cancellation_stops_the_service_it_kept(
+    root: Path, tmp_path: Path
+) -> None:
+    """The tear-down still answers after the cancellation; the service it kept is nobody's then."""
+    write_behaviour(root, {"/task/tear_down": {"delay_s": 0.5}})
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _task())
+    stopping = asyncio.create_task(setup.stop(keep=True))
+    for _ in range(500):  # until the tear-down reached the service
+        if any(path == "/task/tear_down" for _, path, _ in _calls(root)):
+            break
+        await asyncio.sleep(0.01)
+
+    stopping.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stopping
+
+    assert await _service_is_gone(root)
+
+
 async def test_a_kept_service_is_the_components_even_when_its_task_is_refused(
     root: Path, tmp_path: Path
 ) -> None:

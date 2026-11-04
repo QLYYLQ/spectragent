@@ -19,7 +19,8 @@ can change an endpoint's answer while the service runs: per path, ``{"status": 5
 answers an error and then logs a traceback, as uvicorn logs one after Starlette
 has answered (``"log"`` is the text it logs, ``"log_after_s"`` how long after
 the answer; ``"log_before"`` is text it logs before it answers, as AndroidWorld
-logs while it handles the request), ``{"hang": true}`` never answers, ``{"text": ...}`` answers
+logs while it handles the request), ``{"hang": true}`` never answers,
+``{"delay_s": ...}`` answers that much later, ``{"text": ...}`` answers
 that text, ``{"json": ...}`` answers that object, ``{"json_in_turn": [...]}``
 answers the path's first request with the first object, its second with the
 second, and every later one with the last (a goal AndroidWorld rewrites at
@@ -165,6 +166,7 @@ def _serve(argv: list[str]) -> None:
             rule = json.loads((root / "behaviour.json").read_text()).get(url.path, {})
             if rule.get("hang"):
                 time.sleep(3600)
+            time.sleep(rule.get("delay_s", 0))
             status, body, kind = (
                 200,
                 json.dumps(DEFAULT_ANSWERS.get(url.path, {})),
