@@ -449,6 +449,18 @@ def test_a_space_without_an_action_m3as_prompt_teaches_is_refused() -> None:
         M3AAgent().check_action_space(narrowed)
 
 
+def test_prepare_refuses_a_run_filtered_to_leave_out_an_action_m3a_teaches() -> None:
+    """``AgentRuntime.prepare()`` makes M3A's ``check_action_space`` (``ActionSpaceCheck``): the
+    refusal comes before anything is set up, not at the first prompt."""
+    full = AgentRuntime.for_agent(_assembly(), AGENT_ID)
+    full.prepare(task_id="assembly")
+    without_open_app = sorted(full.action_space.allowed_actions - {"android.open_app"})
+    runtime = AgentRuntime.for_agent(_assembly(), AGENT_ID)
+
+    with pytest.raises(ValueError, match="this run's action space has no open_app"):
+        runtime.prepare(task_id="assembly", action_filter=without_open_app)
+
+
 #: The Loop settings M3A runs on: AndroidWorld's (``M3AAgent.check_run_settings``).
 _ANDROIDWORLD_LOOP: dict[str, Any] = {
     "max_actions_per_step": 2,
