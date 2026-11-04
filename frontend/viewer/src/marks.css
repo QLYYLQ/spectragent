@@ -95,7 +95,7 @@
   align-items: center;
   gap: 6px;
   font-weight: 600;
-  color: var(--ink, #1d2430);
+  color: var(--ink, var(--text));
 }
 
 .mark-swatch {
@@ -152,7 +152,7 @@
 
 .mark-note,
 .mark-problem {
-  color: var(--muted, #687385);
+  color: var(--muted, var(--text-2));
   font-size: 12px;
 }
 
@@ -171,14 +171,14 @@
 
 .screenshot .mark-legend {
   padding: 0 14px 10px;
-  background: #fffcf4;
+  background: var(--surface);
 }
 
 .board-panel .mark-legend {
   margin: 0;
   padding: 6px 10px;
-  border-bottom: 1px solid #e5e1d6;
-  background: #fffdf7;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
 }
 
 .image-tools {
