@@ -3,6 +3,7 @@
 agent:
   - agent_id: browser_use.dom
     id: main
+    flash_mode: true      # the agent's default until 2026-11-04 (now false, as in browser-use)
     agent_loop:
       loop_id: react
       max_steps: 30

@@ -159,7 +159,18 @@ class BrowserUseAgent(AgentBase):
     # deliberately absent: the Loop owns and enforces them. AgentRuntime
     # hands the loop's limits to ``prepare()`` so the prompt advertises
     # exactly what will be executed.
-    flash_mode: Annotated[bool, PydanticField(description="Skip thinking for speed")] = True
+    # browser-use's own default (``AgentSettings.flash_mode``, browser-use
+    # ``browser_use/agent/views.py:72``), so a run that leaves it out runs the
+    # official prompt (user ruling 2026-11-04).
+    flash_mode: Annotated[
+        bool,
+        PydanticField(
+            description=(
+                "Flash mode: the reply drops the thinking, evaluation and next-goal fields, "
+                "and the system prompt is the flash one. Off (the default), as in browser-use."
+            )
+        ),
+    ] = False
     use_thinking: Annotated[bool, PydanticField(description="Enable extended thinking")] = True
     is_browser_use_model: Annotated[
         bool, PydanticField(description="Using fine-tuned browser-use model")
