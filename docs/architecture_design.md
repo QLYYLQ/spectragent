@@ -4998,7 +4998,7 @@ class WALWriter:
         """write_durable config.json（按需建 run 目录和 traces/），建 steps/ observations/ messages/ metrics/，
         把这些目录项一批 fsync：run 目录，加上为它新建的每个目录的父目录（traces/；这个 run
         新建了 traces/ 时再加 traces/ 的父目录），然后才 atomic_write 初始 manifest
-        （format_version=8，last_step_completed=-1，complete_through=-1，status=writing）。
+        （format_version=9，last_step_completed=-1，complete_through=-1，status=writing）。
         先有 config.json 才有 manifest：run 存在了，它的配置就一定在。之后的提交只 fsync run 目录
         之内的目录，run 目录自己的名字只在这里落盘。manifest 写成之前任何一步失败，都不留下 run。"""
 
@@ -5127,7 +5127,7 @@ traces/
   ├── suite_index.json                  # 可选：后置生成的聚合索引
   │
   └── {run_id}/
-      ├── manifest.json                 # 提交点（每次提交原子重写），format_version: 8；trace 自己那本账
+      ├── manifest.json                 # 提交点（每次提交原子重写），format_version: 9；trace 自己那本账
       ├── config.json                   # TraceConfig 快照（init_run 写一次）
       ├── result.json                   # AgentResult（run 结束时写一次）；agent 那本账
       ├── task_text.json                # setup 补全的任务文本（SetupTaskText，§4.10）；任务文本没有由 setup 补全就没有
@@ -5260,7 +5260,7 @@ traces/
 - **记录类型**：`Verdict`（`schemas/verdict.py`，与 `schemas/restoration.py`、`schemas/agent_result.py` 一样不 import `spectragent.core`，`tests/test_schemas/test_verdict.py` 守着），取代 `EvalResult` 与 `OracleScore`；字段见下面"记录类型"。
 - **谁写**：判分时间点的由 TraceWriter 写：它经 AOP 拦截 `verify_live`（§4.2），收尾时在写 `result.json` 之前把每一份写进去，早到 `result.json` 的记录健康说得出每一份写没写成。它不受 RecordingPlan 的通道选择影响：它很小，判分离不开它，而且事后再也问不出来。离线的由 `VerificationRunner` 写（§4.11）：只写判了的，判不了的不写，trace 还在，随时可以再判。
 - **答案不抄进判定**：判分时交给裁判的答案（§4.2）就是 `result.json` 的 `answer`（`agent_done: done` 时；别的结局与没有文字的 `done` 交的是 `None`），要文字就读那里。按答案判分的裁判在判定的 `evidence` 里记下有没有答案可判（§4.9）。environment 不为此加字段：哪些分数取决于答案只有裁判知道（AndroidWorld 只有信息检索任务），environment 记一个"交了答案"，会让不读答案的分数看起来也取决于它。
-- **读侧**：`RunTrace.verdicts()` 取代了 `oracle_scores()` 与 `evals()`（§5.5），仍是唯一按目录列文件的访问器。manifest 不再有 `oracle_scores` 字段，trace 格式升到 8；格式 7 及更早的 trace 被拒（点名判定存放，重录），旧的判定不转换。
+- **读侧**：`RunTrace.verdicts()` 取代了 `oracle_scores()` 与 `evals()`（§5.5），仍是唯一按目录列文件的访问器。manifest 不再有 `oracle_scores` 字段，trace 格式升到 8；格式 7 及更早的 trace 被拒（点名判定存放，重录），旧的判定不转换。之后格式又因 `TraceConfig.benchmark_spec` 升到 9（上面"实验身份"）。
 - **判定只存这一份**：`spectragent bench` 不再有 `--evals-dir`，`spectragent eval --out` 只放这一批的报告（分母、覆盖、失败），按 run 与 slug 指向判定（§4.11）。离线判分因此要写 run 目录。
 
 **setup 补全的任务文本（`task_text.json`，用户 2026-11-03 的裁决）。** 任务文本由 setup 补全的 run（§4.10）多一份 run 级记录：
@@ -5300,7 +5300,7 @@ class TraceStatus(StrEnum):            # trace 自己那本账，不是 agent �
     INCOMPLETE = "incomplete"
 
 class TraceManifest(BaseModel):
-    format_version: int = 1            # 缺字段仍可识别为旧数据；init_run 写 8，RunTrace 只接受 8
+    format_version: int = 1            # 缺字段仍可识别为旧数据；init_run 写 9，RunTrace 只接受 9
     run_id: str
     last_step_completed: int = -1            # 最大已提交步号，不是计数
     expected_steps: int = 0
@@ -5485,17 +5485,27 @@ class TraceConfig(BaseModel):
     task_setup: TaskSetupRecord | None = Field(None, exclude_if=<None>)        # None：execute() 没有收到 env_context
     max_steps: int | None = Field(None, exclude_if=<None>)                     # 这个任务的步数预算（Loop 的 step_budget）；None：没有记录
     task_text_setter: str | None = Field(None, exclude_if=<None>)              # setup 补全任务文本的 capability（§4.10）；None：加载器的文本就是 run 的
+    benchmark_spec: BenchmarkSpec | None = Field(None, exclude_if=<None>)      # 任务所属的基准是怎样选的（下文"实验身份"）；None：不属于任何基准
 ```
 
-**按任务、按功能的字段，有值才写（用户 2026-10-13 的裁决）。** `branch` 只在分叉 run 里写，`task_setup` 只在任务带着 setup context 起的时候写，`max_steps` 只在 Loop 有步数预算时写（下面），`task_text_setter` 只在 setup 会补全任务文本时写（上面 `task_text.json`），`env_evidence_privacy` 只在绑定了归档器时写（绑定了、但归档器什么标记都没声明时写 `[]`），`extra` 只在调用方给了时写。普通 run 的 `config.json` 里因此没有 `"branch": null` 这类占位。读侧不用改：缺的键读回来就是字段的默认值，也不升 `format_version`。原先的 `env_evidence_recorded` 删掉了：它与 `negotiation.active_archivers` 是否为空重复，也没有读者。
+**按任务、按功能的字段，有值才写（用户 2026-10-13 的裁决）。** `branch` 只在分叉 run 里写，`task_setup` 只在任务带着 setup context 起的时候写，`max_steps` 只在 Loop 有步数预算时写（下面），`task_text_setter` 只在 setup 会补全任务文本时写（上面 `task_text.json`），`env_evidence_privacy` 只在绑定了归档器时写（绑定了、但归档器什么标记都没声明时写 `[]`），`benchmark_spec` 只在任务属于一个基准时写（下文"实验身份"），`extra` 只在调用方给了时写。普通 run 的 `config.json` 里因此没有 `"branch": null` 这类占位。读侧不用改：缺的键读回来就是字段的默认值，也不升 `format_version`。原先的 `env_evidence_recorded` 删掉了：它与 `negotiation.active_archivers` 是否为空重复，也没有读者。
 
-`TraceNegotiation.from_results(observation=None, action=None, archive=None)` 多收一个归档结果，三个都为 `None` 时才返回 `None`；绑定表原样记录（值都是 registry key，不是用户起的实例 id），排序的理由与另外两条轴相同。`task_setup` 回答的是"这个任务的环境是怎么起的"：分叉任务（M31）要靠它在没有源 benchmark 数据的情况下重建环境，所以从 M28 起就记录；它是按任务变化的数据，脱敏规则见 §5.6；其中相对的 `replay_archive` 在记录之前已经解析成绝对路径（§4.10）。`env_evidence_privacy` 是 provenance，和 `secrets_recorded` 一样回答"这个目录能不能直接分享"。
+`TraceNegotiation.from_results(observation=None, action=None, archive=None)` 多收一个归档结果，三个都为 `None` 时才返回 `None`；绑定表原样记录（值都是 registry key，不是用户起的实例 id），排序的理由与另外两条轴相同。`task_setup` 回答的是"这个任务的环境是怎么起的"：分叉任务（M31）要靠它在没有源 benchmark 数据的情况下重建环境，所以从 M28 起就记录（源 run 属于一个基准时，分叉 run 照样与源基准的块一起组装，组装要读那个基准的数据，下文"实验身份"）；它是按任务变化的数据，脱敏规则见 §5.6；其中相对的 `replay_archive` 在记录之前已经解析成绝对路径（§4.10）。`env_evidence_privacy` 是 provenance，和 `secrets_recorded` 一样回答"这个目录能不能直接分享"。
 
 `TraceConfig.max_steps: int | None`（2026-11-02）回答"这个任务最多走几个策略步"：Loop 按这个任务的 loop 输入给出的 `step_budget`，Runtime 按名字交给 `on_run_start`（§4.1 "任务自己的步数预算"）。ReactLoop 的是配置的 `max_steps`，被任务自己的预算降低（AndroidWorld 的 `int(10 × complexity)`，§11.2）；分叉 run 的是 `1 + continue_steps`，在配置的上限之内。离线的评测器因此不读 benchmark 的数据就知道一个 run 有多少步；配置的上限照旧在 `resolved` 里。`None`（不写）是没有记录：Loop 没有步数预算，或者 trace 早于这个字段（那时 ReAct run 的预算就是 `resolved` 里配置的 `max_steps`）。新增的带默认值字段，不升 `format_version`。
 
 **摘要（`config_hash`）不为归档开任何特例。** 归档设置经两条现成的路进入 `configuration_digest`：`negotiation`（`active_archivers` / `archive_bindings`）和 `resolved`（M29 起归档器的旋钮在 trace hook 的配置里）。`task_setup`、`max_steps` 与 `task_text_setter` 按任务变化，`env_evidence_privacy` 是 provenance，都不进摘要，所以同一次 sweep 里只差 `start_url` 或步数预算的两个任务共享一个 `config_hash`。代价写明：`TraceNegotiation` 多了两个字段，M28 之后写的 trace 与同一配置在 M28 之前写的 trace 摘要不同；读者比较的是同一个框架版本写下的 manifest。
 
-**实验身份（用户 2026-11-03 的裁决，§4.10.1；a、b、c 段的部分已实施）。** `config_hash` 覆盖 agent、合并后的 capability 配置（§4.10.1 "capability 配置合并"）、基准的任务来源（含数据版本）与它的开局布置组件。基准层 c 段起，`resolved` 照旧记下基准块的 `capability` 列表，摘要却不读它：合并后的 capability 块已经含着这些设置，再读一遍会让同一份合并配置因写在哪一边而得到两个摘要（`TraceConfig.configuration_digest`）。a 段：基准 YAML 与运行配置合成一个运行根，`resolved` 里有 `benchmark` 段，任务来源（加载器与它的旋钮）经 `resolved` 进摘要，分叉 YAML 的也一样；下面的 `benchmark_spec` 还没有。b 段把判分器写进了基准块，它们不随 `resolved` 进摘要：`ComposedRun.run_configuration()` 交给 trace 的配置里，每个基准块的 `verifiers` 记成 `null`（`config.json` 的 `resolved` 因此也不带判分器），所以列不列判分器、列哪些，`config_hash` 都不变（`tests/test_benchmarks/test_registrar.py` 守着）。判分器（不论挂在哪个挂接点）与按任务的数据不在其中；判分器的身份写在它的每份判定里（上文"判定统一存放"）。判分器只写要求、不写设置（§4.10.1 "capability 配置合并"），所以合并后的配置与判分器无关。这条裁决列的是基准层新加进来的部分，已有的部分照旧不变：经 `negotiation` 进摘要的协商结果与归档绑定，以及 trace 的设置（trace hook 的配置）（协调者 2026-11-03 确认）。提议：`TraceConfig` 多一个 `benchmark_spec` 记录（提议名；`benchmark_id`、怎样选的（alias 或 path）、数据源与核对过的版本、开局布置组件的配置），任务来源与开局布置经它进摘要，判分器的配置不记在这里。已有的 `TraceConfig.benchmark`（字符串）照旧是数据的连接键，分叉、导出的切分与参考答案的查找都按它找源任务，不改。分叉 run（§4.10.1 "分叉 sweep 是一种任务来源"）的提议：它的 `benchmark_spec` 就是源 run 的那一份，从源 trace 原样抄来，所以 `config_hash` 覆盖继承来的源基准（任务来源与数据版本、开局布置组件）；分叉 YAML 的旋钮与今天加载器的配置一样经 `resolved` 进摘要，运行配置里的分叉 Loop 与 hook 也照旧。分叉来源（`TraceConfig.branch`）照旧不进摘要（下文 `TraceConfig.branch`）。照这个提议，混着几个源基准的分叉 sweep 按源基准各有一个 `config_hash`。环境复用（§4.10.1）落地时再加一个按任务的字段，记下这个环境已经服务过几个任务，不进摘要。
+**实验身份（用户 2026-11-03 的裁决，§4.10.1；a、b、c 段的部分与 `benchmark_spec` 已实施，数据版本在 d 段）。** `config_hash` 覆盖 agent、合并后的 capability 配置（§4.10.1 "capability 配置合并"）、基准的任务来源（含数据版本）与它的开局布置组件。基准层 c 段起，`resolved` 照旧记下基准块的 `capability` 列表，摘要却不读它：合并后的 capability 块已经含着这些设置，再读一遍会让同一份合并配置因写在哪一边而得到两个摘要（`TraceConfig.configuration_digest`）。a 段：基准 YAML 与运行配置合成一个运行根，`resolved` 里有 `benchmark` 段，任务来源（加载器与它的旋钮）经 `resolved` 进摘要，分叉 YAML 的也一样。b 段把判分器写进了基准块，它们不随 `resolved` 进摘要：`ComposedRun.run_configuration()` 交给 trace 的配置里，每个基准块的 `verifiers` 记成 `null`（`config.json` 的 `resolved` 因此也不带判分器），所以列不列判分器、列哪些，`config_hash` 都不变（`tests/test_benchmarks/test_registrar.py` 守着）。判分器（不论挂在哪个挂接点）与按任务的数据不在其中；判分器的身份写在它的每份判定里（上文"判定统一存放"）。判分器只写要求、不写设置（§4.10.1 "capability 配置合并"），所以合并后的配置与判分器无关。这条裁决列的是基准层新加进来的部分，已有的部分照旧不变：经 `negotiation` 进摘要的协商结果与归档绑定，以及 trace 的设置（trace hook 的配置）（协调者 2026-11-03 确认）。已有的 `TraceConfig.benchmark`（字符串）照旧是数据的连接键，分叉、导出的切分与参考答案的查找都按它找源任务，不改。
+
+`benchmark_spec` 落地的样子（2026-11-04；原提议它记 `benchmark_id`、选法、数据源与版本和开局布置组件的配置，任务来源与开局布置经它进摘要，实施时调整成下面这样）：
+
+- **记什么**：`TraceConfig.benchmark_spec: BenchmarkSpec | None`（`schemas/benchmark_spec.py`），只记基准是怎样选的：`benchmark_id`、`selection`（alias 原样；path 记成绝对路径，从别的目录跑分叉 sweep 也找得到同一个文件）与 `subset`（`--subset`，没给时 `null`：用基准 YAML 自己的）。`spectragent bench` 与 `spectragent run --task-id` 给它们跑的每个基准任务记它（`benchmarks/selection.py::spec_of`）；命令行自己写的任务（`--task`）不属于任何基准，不写这个键。
+- **不进摘要**：任务来源与开局布置组件的配置已经在 `resolved` 的基准块里（a 段起），合并后的 capability 配置在 capability 块里，再经 `benchmark_spec` 读一遍是重复；选法本身与 `config_source` 一样只说配置从哪里来，同一个基准 YAML 用 alias 选还是用路径选、放在谁的目录下，都不该让摘要不同（`TraceConfig.configuration_digest` 的"不进摘要"一栏）。数据源与核对过的版本是 d 段的事：那时它们作为基准的事实进摘要。
+- **格式升到 9**：格式 8 的 `config.json` 没有这个键，读回来分不出"不属于任何基准"与"那时还没记"，分叉会悄悄不继承源基准，所以格式 8 的 trace 被拒（重录），不转换。
+- **分叉 run**：它的 `benchmark_spec` 就是源 run 的那一份，从源 trace 原样抄来（经任务上下文的 `benchmark` 部分，§4.10 `trace_branches`）；源 run 不属于任何基准时分叉 run 也不属于，绝不记成分叉 YAML 的选法（分叉 sweep 不是基准，§4.10.1）。分叉 run 的运行根是运行配置、分叉 YAML 的 `trace_branches` 块与按这份记录重新读出的源基准块（§4.10.1 "分叉任务继承源基准落地了什么"），所以 `resolved` 里有这两块：分叉 YAML 的旋钮与继承来的源基准（任务来源、开局布置组件）都经 `resolved` 进 `config_hash`，判分器照旧记成 `null`，源基准写的那部分 capability 配置经合并后的 capability 块进摘要；运行配置里的分叉 Loop 与 hook 也照旧。分叉来源（`TraceConfig.branch`）照旧不进摘要（下文 `TraceConfig.branch`）。混着几个源基准的分叉 sweep 因此按源基准各有一个 `config_hash`。
+
+环境复用（§4.10.1）落地时再加一个按任务的字段，记下这个环境已经服务过几个任务，不进摘要。
 
 **`verdicts/` 也是原子写。** 判分时间点的 TraceWriter 与离线的 `VerificationRunner` 都经 `core/trace/verdicts.py::write_verdict` 写 `verdicts/<slug>.json`，都走 `fsio.atomic_write`：半写的判定文件会被下一个读者当成损坏的判定。权限与普通写入相同（§5.2），重新判分也不改动已有文件的权限。判定不进 manifest。
 
@@ -5537,7 +5547,7 @@ class RestorationCheck(BaseModel):
 
 - `origin`：`policy` 是 Loop 自己的 agent 决定的一步；`restored` 是分叉 run 恢复出来的前缀步（实际 retarget 后动作及结果，旧回复只在 `source_history` 来源材料中，§4.1 `BranchLoop`）；`terminal` 是终止观测（§4.1，没有动作、没有 LLM 调用）。`AgentMetrics.steps` 与 `max_steps` 只数 `policy`。
 - `restoration`：恢复出来的第 k 步带它自己的校验；分叉的策略步（第 t 步）带 obs_t 的校验，因为这一步是在那个被校验过的状态上做的决定；`strict` 下发散的那一条（`origin="restored"`、`error_phase="restore"`）带不通过的那次校验。原因的判定：先是每份证据自己的检查（`failed_checks()`，按证据的顺序、每份按它的 `REASONS` 的顺序；browser 的五个检查与规则见 §4.14 "恢复：重定位与校验"）——恢复出的观测已经离开了录下的样子，就说明了之后动作的结果；然后是恢复器从动作得出的：重定位 `not_found` / `ambiguous` → `retarget_*`；动作成败与录下的不同、或执行抛错 → `action_failed`。两个 capability 的检查同名时 `reasons` 里只记一次（证据里分得出是谁的）。值为 `None` 的量不参与判定。读回时 `reasons` 必须互不重复、按这个顺序，每个原因要么是框架的、要么是这一步某份证据的类型声明的检查，`reason` 是第一个、`verdict` 与它一致，否则是 `TraceSchemaError`。
-- 当前 `AgentResult.schema_version` 为 `5.0`（4.0：`agent_reported_success` 取自结束动作结果的 `reported_success`，§4.1"agent 的任务结论"；5.0：删掉 `action_history`，它是 trace 出现之前留下的、把每个动作拼成 Python repr 字符串的副本，动作只在步记录里，评测读 `TraceView.action_history`），trace `format_version` 为 `7`（7：每一步记下它的坐标系 `StepRecord.frame`，run 配置里的动作空间带 `coordinate_space`，§4.1"坐标系归框架"；6 的步没有说它的回复在哪个网格上写点，读取时拒绝）；执行耗时、未知用量、记录范围与稀疏提交采用同一当前合同。旧数据可重建，不为保留旧 trace 维持格式或别名。恢复证据按 capability 分型（2026-11-02，§4.9）不升格式版本，也不动 `AgentResult`：步记录的形状不变，`evidence` 的每一项按 `capability_id` 读回成它的 capability 自己的类型；browser 的证据多了两个必填的上限字段（`screenshot_max_distance`、`media_time_tolerance_s`），原因的顺序改为证据的检查在前、动作的在后。这次改动之前写下的分叉 run 读到恢复校验时报 `TraceSchemaError`（测试数据可丢弃，不设兼容路径）；不分叉的 run 没有恢复校验，照常读。`agent_done` 多一个取值 `episode_over`（环境结束了 episode，§4.1，用户 2026-11-03 的裁决），`AgentResult` 不升版本：旧结果里从没有它，原有的取值意思也不变（`done` 仍是 agent 的 `loop.done`，`max_steps` 仍是步数用完）。那时的 Loop 不问环境，旧结果照实说它怎么结束，与 `skipped_actions` 同一条规则；setup 补全的任务文本见上面 `task_text.json`，同样不升格式。
+- 当前 `AgentResult.schema_version` 为 `5.0`（4.0：`agent_reported_success` 取自结束动作结果的 `reported_success`，§4.1"agent 的任务结论"；5.0：删掉 `action_history`，它是 trace 出现之前留下的、把每个动作拼成 Python repr 字符串的副本，动作只在步记录里，评测读 `TraceView.action_history`），trace `format_version` 为 `9`（7：每一步记下它的坐标系 `StepRecord.frame`，run 配置里的动作空间带 `coordinate_space`，§4.1"坐标系归框架"；6 的步没有说它的回复在哪个网格上写点，读取时拒绝；8：判定不在 manifest 里，上面"判定统一存放"；9：`TraceConfig.benchmark_spec`，上面"实验身份"，8 没说 run 属不属于基准，读取时拒绝）；执行耗时、未知用量、记录范围与稀疏提交采用同一当前合同。旧数据可重建，不为保留旧 trace 维持格式或别名。恢复证据按 capability 分型（2026-11-02，§4.9）不升格式版本，也不动 `AgentResult`：步记录的形状不变，`evidence` 的每一项按 `capability_id` 读回成它的 capability 自己的类型；browser 的证据多了两个必填的上限字段（`screenshot_max_distance`、`media_time_tolerance_s`），原因的顺序改为证据的检查在前、动作的在后。这次改动之前写下的分叉 run 读到恢复校验时报 `TraceSchemaError`（测试数据可丢弃，不设兼容路径）；不分叉的 run 没有恢复校验，照常读。`agent_done` 多一个取值 `episode_over`（环境结束了 episode，§4.1，用户 2026-11-03 的裁决），`AgentResult` 不升版本：旧结果里从没有它，原有的取值意思也不变（`done` 仍是 agent 的 `loop.done`，`max_steps` 仍是步数用完）。那时的 Loop 不问环境，旧结果照实说它怎么结束，与 `skipped_actions` 同一条规则；setup 补全的任务文本见上面 `task_text.json`，同样不升格式。
 - 这两个字段都不渲染进 prompt：`StepRecord` 是 `HistoryObs` 的载荷，agent 只渲染动作、结果与回复（`test_the_stamp_does_not_reach_the_prompt` 同样钉住 `origin` / `restoration`）。
 
 **步的坐标系（2026-10-23）**：`StepRecord.frame: PointFrame | None`（`schemas/observation/geometry.py`），JSON 为 `{"space": ..., "grid": {"space", "width", "height", "viewport_width", "viewport_height"} | null}`：这一步写点的网格铺在它给模型看的截图上（§4.1"坐标系归框架"）。Loop 在 Agent 决定的步上写它（解析失败的步也写），restored 历史下的恢复步写本次恢复观测的坐标系；`None` 表示 run 的点就是 capability 的单位，或这一步没有给模型看过点（终止观测、prompt 之前就失败的步、source 历史下的恢复步）。它随 `HistoryObs` 到 Agent 手里，与 `origin` / `restoration` 一样不是渲染的内容，而是渲染这一步的点要用的坐标系。trace 读者靠它把 `llm_output` 里的点与 `actions` 的点对上，不用知道 agent 的配置。
@@ -5713,7 +5723,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | 归档元数据不合法 | extra 索引里一条记录的 `meta["archive"]` 不能按 `ArchiveMeta` 校验通过；点名那个索引文件 |
 | 记录与位置不符 | step 文件里的 `step`、调用记录里的 `step` 与 manifest 提交它的那一步不符；一步里有两个截图 fragment（协商只允许一个） |
 | fragment key 不认识 | 懒发现之后注册表里仍然没有这个 key；或 payload 的 `fragment_id` 与 key 不符 |
-| `format_version` 不支持 | 不是 8（更旧、更新、或不是整数）：构造 `RunTrace` 时就抛，在校验 manifest 的其余字段之前；格式 7 的消息说判分时间点的判分在它的 manifest 里，当前格式把每份判定放在判定存放 |
+| `format_version` 不支持 | 不是 9（更旧、更新、或不是整数）：构造 `RunTrace` 时就抛，在校验 manifest 的其余字段之前；格式 8 的消息说它没记下基准是怎样选的、分叉找不到源基准的开局布置组件与判分器，格式 7 的消息说判分时间点的判分在它的 manifest 里，当前格式把每份判定放在判定存放 |
 
 把前两者都塌缩成 `None`，会让一批旧 schema 的 trace 静默地表现为“agent 没跑完”。`AgentResult.schema_version` 只接受当前版本：旧版本字段名对不上，接受它只会换来一条指着某个被改名字段的 pydantic 报错，而不是“这个 trace 太旧”。
 

@@ -58,6 +58,7 @@ from spectragent.core.trace.redaction import redact_config, trace_safe
 from spectragent.core.trace.verdicts import write_verdict
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas.agent_result import AgentUsage
+from spectragent.schemas.benchmark_spec import BenchmarkSpec
 from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.recording import (
     ExecutionError,
@@ -314,6 +315,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         env_evidence_privacy: Sequence[str] | None = None,
         task_setup: Mapping[str, Any] | None = None,
         branch: BranchProvenance | None = None,
+        benchmark_spec: BenchmarkSpec | None = None,
         config_source: ConfigSource | None = None,
         call_context: RunCallContext | None = None,
         action_space: Any = None,
@@ -361,6 +363,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                 else None,
                 task_setup=_task_setup_record(task_setup, record_secrets=self.record_secrets),
                 branch=branch,
+                benchmark_spec=benchmark_spec,
                 max_steps=step_budget,
                 task_text_setter=task_text_setter,
                 config_source=config_source,

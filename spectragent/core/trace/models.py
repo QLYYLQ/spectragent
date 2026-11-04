@@ -29,6 +29,7 @@ from spectragent.core.llm.messages import BaseMessage, ToolCall
 from spectragent.core.llm.views import ModelInvokeUsage
 from spectragent.schemas._types import UTCDatetime
 from spectragent.schemas.action_space import ActionSpace
+from spectragent.schemas.benchmark_spec import BenchmarkSpec
 from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.recording import RecordingPlan, RecordingProblem
 from spectragent.schemas.restoration import BranchProvenance
@@ -55,10 +56,14 @@ from spectragent.schemas.restoration import BranchProvenance
 #: step leaves the grid of its reply unsaid. Format 8 keeps no verdict in the
 #: manifest: the scoring point's verdicts, like every other, are in the run's
 #: verdict store (``verdicts/``, outside the manifest), and a format-7 manifest
-#: may point to an ``oracle_scores.json`` no reader reads. A format-2
-#: ``error`` meant either outcome, and a format-3 call record holds its
-#: images inline: ``RunTrace`` refuses every version but this one.
-TRACE_FORMAT_VERSION = 8
+#: may point to an ``oracle_scores.json`` no reader reads. Format 9 records
+#: how a run's benchmark was selected (``TraceConfig.benchmark_spec``), absent
+#: only when the run belongs to no benchmark: a format-8 configuration leaves
+#: unsaid whether it had one, so a branch of it could not find its source
+#: benchmark's setup component and verifiers. A format-2 ``error`` meant
+#: either outcome, and a format-3 call record holds its images inline:
+#: ``RunTrace`` refuses every version but this one.
+TRACE_FORMAT_VERSION = 9
 
 
 class TraceStatus(StrEnum):
@@ -682,11 +687,13 @@ class TraceConfig(BaseModel):
     under ``env/`` — the state of the world the agent acted in,
     privacy-marked on its own terms.
 
-    Four per-task facts sit beside the layers: :attr:`task_setup`, the
+    Five per-task facts sit beside the layers: :attr:`task_setup`, the
     environment setup context the task started from, redacted by value;
     :attr:`branch`, where a branch run came from; :attr:`max_steps`, the
-    step budget the Loop ran the task under; and :attr:`task_text_setter`,
-    the capability whose setup completes the task's text.
+    step budget the Loop ran the task under; :attr:`task_text_setter`,
+    the capability whose setup completes the task's text; and
+    :attr:`benchmark_spec`, how the benchmark the task belongs to was
+    selected.
 
     **A per-task or per-feature field is written only when it has a
     value** (``docs/architecture_design.md`` §5.3): ``branch`` only in a
@@ -694,6 +701,7 @@ class TraceConfig(BaseModel):
     context, ``max_steps`` only when the Loop has a step budget,
     ``task_text_setter`` only when a setup completes the task's text,
     ``env_evidence_privacy`` only when archivers were bound,
+    ``benchmark_spec`` only when the task belongs to a benchmark,
     ``extra`` only when the caller passed some. A placeholder such as
     ``"branch": null`` in every other run's ``config.json`` would be one
     more thing to explain. An absent key reads back as the field's
@@ -792,6 +800,16 @@ class TraceConfig(BaseModel):
     #: Absent for callers and older traces without explicit source provenance.
     #: Source location/version never changes the effective configuration digest.
     config_source: ConfigSource | None = Field(default=None, exclude_if=_absent)
+    #: How the benchmark this run's task belongs to was selected
+    #: (``--benchmark``, ``--subset``), or ``None`` (not written) when it
+    #: belongs to none: a task written on the command line, or a branch of
+    #: such a run. A branch run's is its source run's, copied from the source
+    #: trace (``docs/architecture_design.md`` §4.10.1): its task belongs to
+    #: that benchmark, never to the branch sweep's task source. Where the
+    #: benchmark block came from, as ``config_source`` says where the
+    #: configuration did, so not part of the digest: the block itself is in
+    #: :attr:`resolved`.
+    benchmark_spec: BenchmarkSpec | None = Field(default=None, exclude_if=_absent)
 
     def configuration_digest(self, *, resolved: dict[str, Any] | None = None) -> str:
         """Stable hash of *how this run was configured*.
@@ -808,9 +826,11 @@ class TraceConfig(BaseModel):
         ``archive_bindings``) moves it through the latter, with no special
         case. Excluded: ``task`` / ``task_id`` (which task, not which
         configuration), ``extra``, ``task_setup``, ``branch``,
-        ``max_steps`` and ``task_text_setter`` (per-task data) and the
+        ``max_steps`` and ``task_text_setter`` (per-task data), the
         provenance fields
-        ``config_source`` / ``secrets_recorded`` / ``env_evidence_privacy``.
+        ``config_source`` / ``secrets_recorded`` / ``env_evidence_privacy``,
+        and ``benchmark_spec`` (where the benchmark block came from; the
+        block is in the resolved config).
         Also left out: each benchmark block's ``capability`` list, its part
         of a capability's configuration. The resolved capability blocks
         already hold it merged (``docs/architecture_design.md`` §4.10.1), so

@@ -77,6 +77,7 @@ if TYPE_CHECKING:
     from spectragent.benchmarks._setup_registrar import BenchmarkSetup
     from spectragent.core.environments.base import Environment
     from spectragent.core.llm.base import BaseChatModel
+    from spectragent.schemas.benchmark_spec import BenchmarkSpec
     from spectragent.schemas.restoration import BranchProvenance
     from spectragent.verifiers.base import LiveVerifier
 
@@ -817,6 +818,7 @@ class AgentRuntime:
         env_context: Mapping[str, Any] | None = None,
         loop_inputs: Mapping[str, Any] | None = None,
         branch: BranchProvenance | None = None,
+        benchmark_spec: BenchmarkSpec | None = None,
         config_source: ConfigSource | None = None,
         action_filter: list[str] | None = None,
         config: dict[str, Any] | None = None,
@@ -922,6 +924,11 @@ class AgentRuntime:
                 handed to ``on_run_start`` by name and recorded as
                 ``TraceConfig.branch``; the runtime does not read it.
                 ``None`` for every other run.
+            benchmark_spec: How the benchmark this task belongs to was
+                selected, handed to ``on_run_start`` by name and recorded as
+                ``TraceConfig.benchmark_spec``; the runtime does not read it.
+                A branch task's is its source run's (``TaskContext.benchmark``).
+                ``None`` for a task that belongs to no benchmark.
             action_filter: Optional extra narrowing of the action space.
             config_source: Explicit source YAML file identity, if the caller has one.
                 Passed through to persistence; never inferred from the resolved settings.
@@ -1016,6 +1023,7 @@ class AgentRuntime:
                 ),
                 task_setup=self._prepared_setup.recordable if has_env_context else None,
                 branch=branch,
+                benchmark_spec=benchmark_spec,
                 config_source=config_source,
             )
 
