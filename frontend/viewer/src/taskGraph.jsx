@@ -353,7 +353,7 @@ function TaskSection({ group, graph, error, folded, onFold, ctx }) {
             <span><b>{summary.branches}</b> 个分叉</span>
             <span className="tg-harness-who">{summary.agents.join("、") || "智能体未记录"} · {summary.models.join("、") || "模型未记录"} · 配置 {summary.configs.join("、") || "未记录"}</span>
             <span className="tg-tally">
-              {summary.verdicts.map((chip) => <span key={chip.text} className={`tg-chip ${chip.tone}`} title={chip.title}>{chip.text} ×{chip.count}</span>)}
+              {summary.verdicts.map((chip) => <span key={chip.key} className={`tg-chip ${chip.tone}`} title={chip.title}>{chip.text} ×{chip.count}</span>)}
               {summary.unjudged > 0 && <span className="tg-chip neutral">{summary.unjudged} 次没有判定</span>}
             </span>
           </div>

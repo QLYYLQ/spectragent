@@ -50,17 +50,26 @@ export function verdictChip(verdict) {
   return { tone: "neutral", text: `${who} ${score}`, title: verdict.slug };
 }
 
-/** What a folded task says: who ran it, how many runs and branches, and each verdict's outcomes. */
+/**
+ * What a folded task says: who ran it, how many runs and branches, and each
+ * verdict's outcomes, counted per slug (one verifier with one set of
+ * settings), never merged across judges of one kind. A verifier that judged
+ * under several slugs in this task is named by its slug.
+ */
 export function taskSummary(group) {
   const branches = group.runs.filter((row) => row.branch).length;
+  const verdicts = group.runs.flatMap((row) => row.verdicts || []);
+  const slugs = new Map();
+  for (const verdict of verdicts) slugs.set(verdict.verifier_id, new Set([...(slugs.get(verdict.verifier_id) || []), verdict.slug]));
   const tally = new Map();
-  for (const row of group.runs)
-    for (const verdict of row.verdicts || []) {
-      const chip = verdictChip(verdict);
-      const entry = tally.get(chip.text) || { ...chip, count: 0 };
-      entry.count += 1;
-      tally.set(chip.text, entry);
-    }
+  for (const verdict of verdicts) {
+    const named = slugs.get(verdict.verifier_id).size > 1 ? { ...verdict, verifier_id: verdict.slug } : verdict;
+    const chip = verdictChip(named);
+    const key = `${verdict.slug}\u0000${chip.text}`;
+    const entry = tally.get(key) || { ...chip, key, count: 0 };
+    entry.count += 1;
+    tally.set(key, entry);
+  }
   return {
     agents: unique(group.runs.map((row) => row.agent_id)),
     models: unique(group.runs.map((row) => row.model)),

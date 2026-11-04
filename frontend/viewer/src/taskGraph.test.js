@@ -208,3 +208,18 @@ test("a refresh reads a task's placement again only when its runs changed, and n
   assert.deepEqual(placementsToRead([{ key: TASK, signature: written }], { [TASK]: { signature } }), [TASK]);
   assert.notEqual(runSignature({ key: "a", trace_status: "writing" }), runSignature({ key: "a", trace_status: "complete" }));
 });
+
+test("the task header never merges two judges of one kind", () => {
+  const judged = (slug, label) => ({ verifier_id: "judge", slug, status: "judged", label, score: label });
+  const group = { runs: [
+    live("a", { verdicts: [judged("judge_aaa", 1), judged("judge_bbb", 0)] }),
+    live("b", { verdicts: [judged("judge_aaa", 1)] }),
+    live("c", { verdicts: [{ verifier_id: "androidworld", slug: "androidworld_1", status: "judged", label: null, score: 1 }] }),
+  ] };
+  const chips = taskSummary(group).verdicts.map((chip) => [chip.title, chip.text, chip.count]);
+  assert.deepEqual(chips, [
+    ["judge_aaa", "judge_aaa 成功", 2],
+    ["judge_bbb", "judge_bbb 失败", 1],
+    ["androidworld_1", "androidworld 分数 1", 1],
+  ]);
+});
