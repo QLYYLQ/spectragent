@@ -60,6 +60,8 @@ from spectragent.core.capability_merge import (
     CapabilityMerge,
     CapabilityMergeError,
     Contribution,
+    MergedSections,
+    UnusedOptions,
 )
 from spectragent.core.composition_evidence import (
     CompositionEvidence,
@@ -109,6 +111,15 @@ class DuplicateInstanceIdError(ComposeError):
 
 class UnknownPackageError(ComposeError):
     """A configuration names a capability or an agent family that has no package."""
+
+
+class ValidatedConfig(NamedTuple):
+    """A configuration validated against a Composer's schema, and the options its capability merge left unused."""
+
+    config: BaseModel
+    #: Options a benchmark sets on list entries the run's lists leave out
+    #: (``docs/architecture_design.md`` §4.2 "c 段落地的").
+    unused_options: tuple[UnusedOptions, ...]
 
 
 @dataclass(frozen=True)
@@ -422,7 +433,11 @@ class ConfigComposer:
         )
 
     def validate(self, raw: object) -> BaseModel:
-        """*raw* validated against this Composer's schema.
+        """*raw* validated against this Composer's schema (:meth:`validated`)."""
+        return self.validated(raw).config
+
+    def validated(self, raw: object) -> ValidatedConfig:
+        """*raw* validated against this Composer's schema, with the options its merge left unused.
 
         What this build holds no implementation for is refused in plain words
         rather than pydantic's: a written section whose layer was left out
@@ -436,15 +451,17 @@ class ConfigComposer:
         """
         problems: list[_Problem] = []
         sections = raw
+        unused: tuple[UnusedOptions, ...] = ()
         if isinstance(raw, Mapping):
             problems = [
                 self._left_out_problem(str(layer))
                 for layer in sorted(raw, key=str)
                 if layer in self._left_out
             ]
-            sections = self._merged(
+            merged = self._merged(
                 {str(key): value for key, value in raw.items() if key not in self._left_out}
             )
+            sections, unused = merged.sections, merged.unused
         try:
             cfg = self.top_level_type.model_validate(sections)
         except ValidationError as exc:
@@ -454,9 +471,9 @@ class ConfigComposer:
             raise _refusal(problems) from exc
         if problems:
             raise _refusal(problems)
-        return cfg
+        return ValidatedConfig(cfg, unused)
 
-    def _merged(self, sections: dict[str, object]) -> dict[str, object]:
+    def _merged(self, sections: dict[str, object]) -> MergedSections:
         """*sections* with the benchmark's parts merged into the run's capability blocks.
 
         Only a run that starts an environment (it writes ``environment`` or
@@ -465,13 +482,15 @@ class ConfigComposer:
         benchmark blocks are validated first: what a benchmark computes in code
         reads its validated block.
 
+        Options a part sets on a list entry the run's list leaves out are not
+        used, and returned with the sections.
+
         Raises:
             ValidationError: A benchmark block is invalid.
             ComposeError: A part breaks its capability's schema, names a
                 capability the run has no block of, writes a field the run
                 configuration or another part writes differently, or sets
-                options on a list entry the run's capability block does not
-                hold.
+                options on a list the run writes in a top-level section.
         """
         benchmarks = sections.get(BENCHMARK_LAYER)
         if not (
@@ -480,7 +499,7 @@ class ConfigComposer:
             and BENCHMARK_LAYER in self._registrars
             and (ENVIRONMENT_SECTION in sections or CAPABILITY_SECTION in sections)
         ):
-            return sections
+            return MergedSections(sections)
         validated = getattr(
             self.top_level_type.model_validate({BENCHMARK_LAYER: benchmarks}), BENCHMARK_LAYER
         )
@@ -498,7 +517,7 @@ class ConfigComposer:
                 for part in computed
             ]
         if not contributions:
-            return sections
+            return MergedSections(sections)
         merge = CapabilityMerge(self._catalog, self._registrars)
         try:
             for contribution in contributions:
@@ -1222,10 +1241,6 @@ def _refusal(problems: list[_Problem]) -> ComposeError:
 #: How to put right each kind of merge problem (``MergeProblem.code``).
 _MERGE_REMEDIES = {
     "capability_setting_conflict": "Leave the setting out of one side, or write the same value on both",
-    "capability_entry_not_listed": (
-        "Add the entry to the run configuration's list, or remove its options from the "
-        "benchmark's part"
-    ),
     "capability_list_in_top_level_section": (
         "Move the entries of the top-level section into the list in the capability block"
     ),
@@ -1355,5 +1370,6 @@ __all__ = [
     "UnknownPackageError",
     "UnresolvedWiringError",
     "NamedPackages",
+    "ValidatedConfig",
     "named_packages",
 ]

@@ -12,7 +12,8 @@ table read from beside its task lists:
 - a field two sides write differently is refused naming the field and both
   sides, two strategies for one receptor at the discriminator;
 - a list (``actions``) is the run configuration's or, left out, every action:
-  a part sets options on an entry there and never adds or removes one;
+  a part sets options on an entry there and never adds or removes one, and
+  its options on an entry the run's list leaves out are not used, and named;
 - a part that breaks the capability's schema is refused where it writes it,
   and one for a capability the run has no block of is refused;
 - a required setting neither side writes is refused naming it, with or
@@ -39,6 +40,7 @@ from spectragent.core.capability_merge import (
     CapabilityMerge,
     CapabilityMergeError,
     Contribution,
+    UnusedOptions,
 )
 from spectragent.core.composer import ComposeError, ConfigComposer
 from spectragent.core.data_loader._common import BenchmarkDataError
@@ -176,6 +178,35 @@ def test_the_table_sets_open_app_in_the_run_configurations_own_list(tmp_path: Pa
     ]
 
 
+def test_options_on_entries_the_runs_list_leaves_out_are_not_used(tmp_path: Path) -> None:
+    """An ablation without ``open_app`` still runs the benchmark: the table and any option on an
+    action the run leaves out are skipped, not refused, and each skip is named (user ruling
+    2026-11-04)."""
+    listed: list[JsonValue] = [{"action_id": "android.click_coordinate"}]
+    part: Block = {"capability_id": "android", "actions": [{"action_id": "android.scroll"}]}
+    raw = _run(_android(actions=listed), _table(tmp_path), part)
+
+    validated = ConfigComposer.for_config(raw).validated(raw)
+
+    dumped = validated.config.model_dump(mode="json", exclude_unset=True)
+    assert dumped["environment"][0]["capabilities"][0]["actions"] == listed, "nothing added"
+    entry = "environment[0].capabilities[0].actions"
+    assert validated.unused_options == (
+        UnusedOptions(
+            f"{entry}[android.scroll]",
+            f"the benchmark androidworld (benchmark[0].capability[0]) sets options on "
+            f"android.scroll; this run's actions list ({entry}) leaves it out, so they are not "
+            f"used",
+        ),
+        UnusedOptions(
+            f"{entry}[android.open_app]",
+            f"the benchmark androidworld, computed in code (benchmark[0]) sets options on "
+            f"android.open_app; this run's actions list ({entry}) leaves it out, so they are not "
+            f"used",
+        ),
+    )
+
+
 def test_the_merged_block_is_what_the_run_builds_and_records(tmp_path: Path) -> None:
     raw = _run(
         _android(backend=None),
@@ -287,21 +318,6 @@ def test_two_small_maps_in_conflict_are_shown_whole(tmp_path: Path) -> None:
         "androidworld, computed in code (benchmark[0]) writes {'clock': 'com.a', 'markor': "
         "'com.b'}; a run takes each setting from one side only: leave it out of one of them, or "
         "write the same value in both."
-    )
-
-
-def test_a_list_left_without_the_entry_the_benchmark_sets_is_refused(tmp_path: Path) -> None:
-    raw = _run(_android(actions=[{"action_id": "android.click_coordinate"}]), _table(tmp_path))
-
-    refused = _refused(raw)
-
-    assert refused.issue is not None and refused.issue.code == "capability_entry_not_listed"
-    assert refused.issue.path == "environment[0].capabilities[0].actions[android.open_app]"
-    assert "sets options on 'android.open_app', and the run configuration's actions" in str(refused)
-    assert "never adds or removes one" in str(refused)
-    assert refused.issue.remedy == (
-        "Add the entry to the run configuration's list, or remove its options from the "
-        "benchmark's part."
     )
 
 
