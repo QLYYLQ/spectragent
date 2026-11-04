@@ -189,7 +189,11 @@ def test_options_on_entries_the_runs_list_leaves_out_are_not_used(tmp_path: Path
     action the run leaves out are skipped, not refused, and each skip is named (user ruling
     2026-11-04)."""
     listed: list[JsonValue] = [{"action_id": "android.click_coordinate"}]
-    part: Block = {"capability_id": "android", "actions": [{"action_id": "android.scroll"}]}
+    unlisted: list[JsonValue] = [
+        {"action_id": "android.scroll", "duration_ms": 300},
+        {"action_id": "android.wait"},
+    ]
+    part: Block = {"capability_id": "android", "actions": unlisted}
     raw = _run(_android(actions=listed), _table(tmp_path), part)
 
     validated = ConfigComposer.for_config(raw).validated(raw)
@@ -200,17 +204,15 @@ def test_options_on_entries_the_runs_list_leaves_out_are_not_used(tmp_path: Path
     assert validated.unused_options == (
         UnusedOptions(
             f"{entry}[android.scroll]",
-            f"the benchmark androidworld (benchmark[0].capability[0]) sets options on "
-            f"android.scroll; this run's actions list ({entry}) leaves it out, so they are not "
-            f"used",
+            f"the benchmark androidworld (benchmark[0].capability[0]) sets duration_ms on "
+            f"android.scroll, which this run's actions list ({entry}) leaves out",
         ),
         UnusedOptions(
             f"{entry}[android.open_app]",
-            f"the benchmark androidworld, computed in code (benchmark[0]) sets options on "
-            f"android.open_app; this run's actions list ({entry}) leaves it out, so they are not "
-            f"used",
+            f"the benchmark androidworld, computed in code (benchmark[0]) sets apps on "
+            f"android.open_app, which this run's actions list ({entry}) leaves out",
         ),
-    )
+    ), "android.wait sets no options, so nothing of it goes unused"
 
 
 def test_config_explain_shows_the_options_the_merge_left_unused(tmp_path: Path) -> None:
@@ -237,9 +239,9 @@ def test_config_explain_shows_the_options_the_merge_left_unused(tmp_path: Path) 
     provenance = explain_config(run, benchmark=str(benchmark))["provenance"]
 
     note = (
-        "the benchmark androidworld, computed in code (benchmark[0]) sets options on "
-        "android.open_app; this run's actions list (environment[0].capabilities[0].actions) "
-        "leaves it out, so they are not used"
+        "the benchmark androidworld, computed in code (benchmark[0]) sets apps on "
+        "android.open_app, which this run's actions list (environment[0].capabilities[0].actions) "
+        "leaves out"
     )
     assert provenance["unused_options"] == [
         {"path": "environment[0].capabilities[0].actions[android.open_app]", "message": note}

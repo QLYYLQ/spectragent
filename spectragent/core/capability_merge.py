@@ -379,7 +379,8 @@ class CapabilityMerge:
         The entries are the run configuration's list, or the whole default
         list when it leaves the list out: every key the receptor takes, in
         its order. Options on an entry the list leaves out are not used: they
-        go to the block's ``unused``.
+        go to the block's ``unused``, named field by field (an entry that sets
+        none is left out).
         """
         layer = entry.spec.registry_name
         discriminator = _discriminator(self._registrars.get(layer))
@@ -429,13 +430,19 @@ class CapabilityMerge:
             seen.add(key)
             existing = entries.get(key)
             if existing is None:
-                target.unused.append(
-                    UnusedOptions(
-                        f"{target.path}.{where}",
-                        f"{side} sets options on {key}; this run's {name} list "
-                        f"({target.path}.{at}) leaves it out, so they are not used",
+                options = [
+                    option
+                    for option, setting in item.items()
+                    if option != discriminator and setting is not None
+                ]
+                if options:
+                    target.unused.append(
+                        UnusedOptions(
+                            f"{target.path}.{where}",
+                            f"{side} sets {', '.join(options)} on {key}, which this run's {name} "
+                            f"list ({target.path}.{at}) leaves out",
+                        )
                     )
-                )
                 continue
             definition = self._definition(layer, key)
             if definition is None:
