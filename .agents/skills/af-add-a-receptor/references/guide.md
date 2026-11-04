@@ -405,7 +405,9 @@ and scans only on first use. conscribe does not change this lifecycle requiremen
 - **User types and defaults are faithful in conscribe 2.0.** A nested `BaseModel` or
   pydantic dataclass is imported as its original type; ordinary `BaseModel` values reach
   constructors as model instances. `tuple[str, ...]` defaults render correctly, so
-  `sources` and `require_archive` use immutable tuple defaults instead of null sentinels.
+  `sources` uses an immutable tuple default instead of a null sentinel. `require_archive`
+  is the other kind: `None` (not written) decides per source from what each capability
+  declares, and its description says what that is (design doc §4.2.1 spelling rules).
   Constraints including nested `Annotated[int, Field(ge=1)] | Unlimited` and `min_length`
   survive generated source and JSON Schema. Prefer actual defaults and keep constructor
   validation when direct Python construction also needs it.

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
 
 import pytest
 
@@ -609,7 +609,33 @@ class TestPreconditions:
             on_unbranchable="skip",
         )
         assert tasks.task_ids() == ["run-b/s0/b0"]
-        assert "did not record 'browser.network'" in tasks.skipped["run-a"]
+        assert tasks.skipped["run-a"] == (
+            "it did not record 'browser.network', which require_archive names; archivers it "
+            "bound: none"
+        )
+
+    def test_not_written_each_source_needs_what_its_capabilities_declare(
+        self, tmp_path: Path
+    ) -> None:
+        """A browser branch replays the recorded network; an Android branch needs no archive."""
+        write_source(tmp_path, "browser-run", steps=1, archivers=())
+        write_source(tmp_path, "android-run", steps=1, archivers=(), env_type="android")
+        tasks = loader(tmp_path, on_unbranchable="skip")
+        assert tasks.task_ids() == ["android-run/s0/b0"]
+        assert tasks.skipped["browser-run"] == (
+            "it did not record 'browser.network', which a branch of a browser recording needs "
+            "(the browser capability declares it; require_archive is not written); archivers "
+            "it bound: none"
+        )
+
+    def test_the_field_says_what_not_writing_it_means(self) -> None:
+        """A default that does not show what it decides would trap whoever leaves it out."""
+        hint = get_type_hints(TraceBranchesTaskLoader.__init__, include_extras=True)
+        (field,) = [
+            item for item in hint["require_archive"].__metadata__ if hasattr(item, "description")
+        ]
+        assert "None (the default, not written)" in field.description
+        assert "android needs nothing; browser needs browser.network" in field.description
 
     def test_failed_scan_publishes_nothing(self, tmp_path: Path) -> None:
         write_source(tmp_path, "run-ok", steps=1)
@@ -739,7 +765,7 @@ class TestKnobs:
 
     def test_defaults(self) -> None:
         built = TraceBranchesTaskLoader()
-        assert built.sources == ("*",) and built.require_archive == ("browser.network",)
+        assert built.sources == ("*",) and built.require_archive is None
         assert (built.branches_per_step, built.agent_outcome, built.on_unbranchable) == (
             1,
             "any",

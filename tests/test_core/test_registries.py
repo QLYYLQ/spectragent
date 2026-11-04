@@ -26,6 +26,7 @@ from spectragent.core.registries import (
     TemplateFlag,
     capability_declarations,
     collect_registrars,
+    declared_branch_archives,
     start_flags,
     template_flags,
 )
@@ -143,6 +144,10 @@ def test_a_layer_two_owners_declare_is_refused(monkeypatch: pytest.MonkeyPatch) 
         ("TEMPLATE_FLAGS", None),
         ("TEMPLATE_FLAGS", [TemplateFlag("--backend", "backend", "which provider")]),
         ("TEMPLATE_FLAGS", (StartFlag("--backend", "backend", "which provider"),)),
+        ("BRANCH_ARCHIVES", None),
+        ("BRANCH_ARCHIVES", ["browser.network"]),
+        # Only its own archivers: what another capability's branch needs is that one's to say.
+        ("BRANCH_ARCHIVES", ("android.ui_tree_raw",)),
     ],
 )
 def test_a_malformed_declaration_is_refused(
@@ -259,3 +264,10 @@ def test_one_template_flag_two_capabilities_declare_is_refused(
     monkeypatch.setattr(android_declarations, "TEMPLATE_FLAGS", (flag,))
     with pytest.raises(ValueError, match="'android' and 'browser' both declare the template flag"):
         template_flags()
+
+
+def test_the_branch_archives_read_without_importing_agree_with_the_declarations() -> None:
+    """The ``trace_branches`` description reads them from source; the reader imports and checks."""
+    imported = {item.capability_id: item.branch_archives for item in capability_declarations()}
+    assert declared_branch_archives() == imported
+    assert imported["browser"] == ("browser.network",) and imported["android"] == ()

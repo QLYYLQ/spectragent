@@ -183,6 +183,13 @@ def write_source(
             branch=branch,
             task_text_setter=task_text_setter,
             benchmark_spec=benchmark_spec,
+            # The capability it ran, named where the schema puts it: what a
+            # branch of it needs is that capability's declaration.
+            resolved={
+                "environment": [
+                    {"env_type": env_type, "capabilities": [{"capability_id": env_type}]}
+                ]
+            },
         )
     )
     for index, spec in enumerate(specs):

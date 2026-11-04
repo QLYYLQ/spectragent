@@ -50,6 +50,7 @@ _PROBE_PACKAGE = {
         START_FLAGS = ()
         TEMPLATE_BLOCK = {}
         TEMPLATE_FLAGS = ()
+        BRANCH_ARCHIVES = ()
     """,
     "observations.py": """
         from typing import Literal

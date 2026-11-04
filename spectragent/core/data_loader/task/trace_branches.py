@@ -110,7 +110,11 @@ from spectragent.core.data_loader.task.step_selector import (  # noqa: F401 — 
     default_step_selector,
 )
 from spectragent.core.data_loader.task.task_variants import TaskVariantEntry, read_task_variants
-from spectragent.core.registries import setup_class_for_env
+from spectragent.core.registries import (
+    capability_declarations,
+    declared_branch_archives,
+    setup_class_for_env,
+)
 from spectragent.core.trace.errors import RecordingScopeError, TraceSchemaError
 from spectragent.core.trace.models import TraceConfig, TraceManifest
 from spectragent.core.trace.reader import RunTrace
@@ -142,6 +146,16 @@ CHECKPOINT_KEY = "checkpoint"
 NETWORK_ARCHIVER = "browser.network"
 
 
+#: The field description's account of the default, what each capability package
+#: declares a branch of its recordings needs (``BRANCH_ARCHIVES``): read from the
+#: declarations' source, so describing it imports no package a run does not name,
+#: and a package added later is described without editing this loader.
+_DECLARED_BRANCH_ARCHIVES = "; ".join(
+    f"{capability_id} needs {', '.join(keys) or 'nothing'}"
+    for capability_id, keys in declared_branch_archives().items()
+)
+
+
 class TraceBranchesTaskLoader(TaskLoaderBase):
     """Branch tasks from recorded runs: ``<source_run_id>/s<t>/b<i>`` (module docstring).
 
@@ -162,7 +176,7 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
     branches_per_step: int
     agent_outcome: AgentOutcomeFilter
     require_eval: RequireEval | None
-    require_archive: tuple[str, ...]
+    require_archive: tuple[str, ...] | None
     on_unbranchable: Literal["raise", "skip"]
     task_variants: str | None
     exclude_runs: str | None
@@ -225,16 +239,18 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
             ),
         ] = None,
         require_archive: Annotated[
-            tuple[str, ...],
+            tuple[str, ...] | None,
             Field(
                 description=(
                     "Precondition: archiver keys each source must have recorded, with "
-                    "their capability's environment fingerprint committed. Default: "
-                    "['browser.network'], what an offline browser branch "
-                    "replays from; [] requires none."
+                    "their capability's environment fingerprint committed. None (the "
+                    "default, not written): for each source, the archives a branch of each "
+                    "capability it ran needs, as that capability declares them: "
+                    f"{_DECLARED_BRANCH_ARCHIVES}. A list replaces that for every source; "
+                    "[] requires none."
                 ),
             ),
-        ] = (NETWORK_ARCHIVER,),
+        ] = None,
         on_unbranchable: Annotated[
             Literal["raise", "skip"],
             Field(
@@ -310,7 +326,7 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
         self.branches_per_step = branches_per_step
         self.agent_outcome = agent_outcome
         self.require_eval = require_eval
-        self.require_archive = tuple(require_archive)
+        self.require_archive = None if require_archive is None else tuple(require_archive)
         self.on_unbranchable = on_unbranchable
         self.task_variants = task_variants
         self.exclude_runs = exclude_runs
@@ -683,11 +699,11 @@ class _Scan:
         negotiation = config.negotiation
         active = set(negotiation.active_archivers) if negotiation is not None else set()
         bindings = negotiation.archive_bindings if negotiation is not None else {}
-        for key in self.loader.require_archive:
+        for key, why in self._required_archives(config):
             if key not in active:
                 bound = ", ".join(sorted(active)) or "none"
                 raise _Unbranchable(
-                    f"it did not record {key!r} (require_archive); archivers it bound: {bound}"
+                    f"it did not record {key!r}, which {why}; archivers it bound: {bound}"
                 )
             capability = bindings.get(key, key.partition(".")[0])
             try:
@@ -697,8 +713,35 @@ class _Scan:
             if fingerprint is None:
                 raise _Unbranchable(
                     f"it has no committed environment fingerprint (run record) for "
-                    f"capability {capability!r}, which {key!r} needs (require_archive)"
+                    f"capability {capability!r}, which {key!r} needs ({key!r}: {why})"
                 )
+
+    def _required_archives(self, config: TraceConfig) -> list[tuple[str, str]]:
+        """Each archive *config*'s source must have recorded, and who requires it, in words.
+
+        ``require_archive`` written: its keys, for every source. Not written:
+        what each capability the source ran declares a branch of its
+        recordings needs (``BRANCH_ARCHIVES``).
+        """
+        written = self.loader.require_archive
+        if written is not None:
+            return [(key, "require_archive names") for key in written]
+        try:
+            declared = capability_declarations(recorded_capabilities(config.resolved))
+        except Exception as exc:  # a package this source ran is gone, or declares wrongly
+            raise _Unbranchable(
+                f"the archives a branch of it needs cannot be read from the declarations "
+                f"of the capabilities it ran: {type(exc).__name__}: {exc}"
+            ) from exc
+        return [
+            (
+                key,
+                f"a branch of a {item.capability_id} recording needs (the {item.capability_id} "
+                f"capability declares it; require_archive is not written)",
+            )
+            for item in declared
+            for key in item.branch_archives
+        ]
 
     def _require_benchmark(self, spec: BenchmarkSpec | None) -> None:
         """Refuse a source whose benchmark its recorded selection no longer finds.
@@ -870,3 +913,32 @@ def _setup_for(env_type: str, env: Mapping[str, Any]) -> SetupBase | None:
 
 
 __all__ = ["TraceBranchesTaskLoader"]
+
+
+def recorded_capabilities(resolved: Mapping[str, Any]) -> list[str]:
+    """The ``capability_id`` of every capability block a run's resolved configuration holds.
+
+    The blocks of the top-level ``capability`` section and of each
+    environment's ``capabilities``, where the schema puts them; only their
+    discriminator is read.
+    """
+
+    def listed(value: object) -> list[object]:
+        return value if isinstance(value, list) else []
+
+    blocks = [
+        *listed(resolved.get("capability")),
+        *(
+            block
+            for environment in listed(resolved.get("environment"))
+            if isinstance(environment, Mapping)
+            for block in listed(environment.get("capabilities"))
+        ),
+    ]
+    return sorted(
+        {
+            block["capability_id"]
+            for block in blocks
+            if isinstance(block, Mapping) and isinstance(block.get("capability_id"), str)
+        }
+    )

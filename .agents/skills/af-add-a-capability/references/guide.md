@@ -380,7 +380,7 @@ outside the package may wire to the package's own keys (Step 6, the environment)
 spectragent/core/capabilities/docker/
 ├── __init__.py          # imports nothing: declarations.py must stay light
 ├── declarations.py      # STRATEGY_AXES, TASK_SETUP, OPTIONAL_EXTRA_MODULES, START_FLAGS,
-│                        # TEMPLATE_BLOCK, TEMPLATE_FLAGS
+│                        # TEMPLATE_BLOCK, TEMPLATE_FLAGS, BRANCH_ARCHIVES
 ├── task_setup.py        # DockerSetup(SetupBase), registered by subclassing
 ├── capability.py        # the DockerCapability class
 ├── environment.py       # DockerEnvironment, its single-capability environment
@@ -417,6 +417,8 @@ START_FLAGS = (  # single-task start flags `spectragent run` generates; () when 
 TEMPLATE_BLOCK: Mapping[str, JsonValue] = {}
 # The capability's `config template` flags; () when none.
 TEMPLATE_FLAGS: tuple[TemplateFlag, ...] = ()
+# The archives a branch of its recordings needs; () when none. A literal tuple.
+BRANCH_ARCHIVES: tuple[str, ...] = ()
 ```
 
 - **`STRATEGY_AXES`** — every internal registrar YAML chooses from, keyed by the
@@ -456,8 +458,17 @@ TEMPLATE_FLAGS: tuple[TemplateFlag, ...] = ()
   capability, refused when the template has no block of this capability; a flag two
   packages declare, or one the command already takes, is refused. `()` when none.
 
+- **`BRANCH_ARCHIVES`** — the archiver keys, all your own (`docker.<id>`), that a source
+  run must have recorded for a branch of it to restore (browser: `("browser.network",)`,
+  what an offline branch replays the network from; Android: `()`). `trace_branches`
+  requires them of each source that ran your capability when its `require_archive` is not
+  written, and its skip reasons name the capability that required them. Write a literal
+  tuple: the loader's field description lists every package's declaration and reads it
+  from the source without importing the package (`declared_branch_archives`), and a test
+  checks that reading against the imported one (design doc §4.2.1, §4.10).
+
 The reader (`core/registries.py::_read_declarations`) refuses a module missing any of
-these six names, so `run`, `config check` and `config explain` fail until all are there.
+these seven names, so `run`, `config check` and `config explain` fail until all are there.
 
 Importing any module of the package runs every `__init__.py` on the way, so none of them
 imports an implementation; import from the defining module instead.
@@ -891,7 +902,7 @@ Before you call a capability done:
 - [ ] Every `ArchiveFile` carries `meta` (`captured_at`, `cycle`, `ids`), a `capability_id` that is this capability's own, and a single-segment `name` of at most 255 bytes of UTF-8 (`MAX_SEGMENT_BYTES`; derive names from URLs or titles only after shortening them); every string it carries (`name`, `media_type`, `ids`) encodes as UTF-8, so decode CDP payloads strictly rather than leaving lone surrogates; at most one JSON run record per batch
 - [ ] If a recorded run can resume here: `RestorationSupport` (and, for state that moves on its own clock, `RestorationAlignment`) implemented as pure measurements and requests; unknown values never decide
 - [ ] All registry keys fully qualified; `__wiring__` *requires* stay relative
-- [ ] `declarations.py` names every internal registrar (`STRATEGY_AXES`, the backend registrar included), the task setup class (`TASK_SETUP`), any module that imports an optional extra at top level (`OPTIONAL_EXTRA_MODULES`), its single-task start flags (`START_FLAGS`, `()` when none), the block a new `config template` starts from (`TEMPLATE_BLOCK`, `{}` when none) and its template flags (`TEMPLATE_FLAGS`, `()` when none); the package's `__init__.py` files import no implementation; no framework file edited
+- [ ] `declarations.py` names every internal registrar (`STRATEGY_AXES`, the backend registrar included), the task setup class (`TASK_SETUP`), any module that imports an optional extra at top level (`OPTIONAL_EXTRA_MODULES`), its single-task start flags (`START_FLAGS`, `()` when none), the block a new `config template` starts from (`TEMPLATE_BLOCK`, `{}` when none), the archives a branch of its recordings needs (`BRANCH_ARCHIVES`, `()` when none) and its template flags (`TEMPLATE_FLAGS`, `()` when none); the package's `__init__.py` files import no implementation; no framework file edited
 - [ ] `uv run pytest tests/test_core/test_capabilities/test_capability_declarations.py` passes
 - [ ] `uv run spectragent config generate`, then `uv run pytest tests/test_generated/`
 - [ ] `uv run pyright spectragent tests` — only the four known metaclass artifacts

@@ -450,7 +450,8 @@ benchmark:
       branches_per_step: 3               # the shipped value; the branches differ only by sampling
       agent_outcome: any                 # done | max_steps | error | timeout | vetoed (result.json)
       require_eval: null                 # {verifier_id, label: 1, slug: null}: a judged verdict in verdicts/
-      # require_archive: [browser.network]   # the default; []: none
+      # require_archive: [browser.network]   # not written: what each source's capabilities declare
+      #                                     # (browser: browser.network; android: nothing); []: none
       on_unbranchable: raise             # skip
       task_variants: null                # a task-variants-1 file: another task per checkpoint
       exclude_runs: null                 # a run-exclusions-1 file: recorded run ids not to branch
@@ -479,7 +480,8 @@ uv run spectragent run --config configs/flywheel/branch_ui_tars_archive.yaml \
   `exclude_runs` filters out the run ids a `run-exclusions-1` file lists (`lookahead health`
   writes one for recordings that are not usable as data), with the file's reason. A source
   that cannot be branched (it does not read back — an older trace format included — is
-  itself a branch or replay run, lacks a `require_archive` archiver or its fingerprint, has
+  itself a branch or replay run, lacks a required archiver or its fingerprint (`require_archive`,
+  or, not written, what each capability it ran declares in `BRANCH_ARCHIVES`), has
   no recoverable setup context, or shares its `run_id`) stops the sweep with every reason at
   once, or is left out under `on_unbranchable: skip`.
 - Unloaded checkpoints (architecture §4.4 "初次加载是否完成", §4.10). With
@@ -1396,7 +1398,7 @@ value on an existing one.
     a word. `branch.py` imports `Annotated` and `Field` under exactly those names because the
     strings it inherits from `react.py` resolve there.
   - A list knob with a non-empty default is `list[str] | None = None`, `None` meaning the
-    documented default (`sources`, `require_archive`). A list default in a signature is a
+    documented default (`sources`). A list default in a signature is a
     shared mutable default, and `tuple[str, ...]` is generated as `tuple[str, Ellipsis]`,
     which pyright rejects.
   - `Field(min_length=...)` on a top-level knob is dropped from the generated config; enforce
