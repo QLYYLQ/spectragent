@@ -45,6 +45,7 @@ from spectragent.core.composer import ConfigComposer
 from spectragent.core.hooks.base import PromptModelOwner
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.llm.call_context import CallAttribution, RunCallContext
+from spectragent.core.llm.exceptions import ModelOutputTruncatedError
 from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartImageParam,
@@ -517,6 +518,58 @@ async def test_a_run_types_into_an_element_presses_enter_summarizes_and_claims_s
         (1, "agent", "step_summary"),
         (1, "agent", "agent_decision"),
     ]
+
+
+async def test_a_reply_cut_off_at_the_ceiling_spends_its_step_as_androidworld_does(
+    tmp_path: Path,
+) -> None:
+    """With ``cut_off_reply: read_as_is``, a decision whose reasoning spent the whole budget
+    is the empty reply AndroidWorld reads: M3A's line for it, no summary, and the run goes on.
+    The trace still says the reply was cut off."""
+    phone = ScriptedPhone(screen=_png())
+    phone.forest = settings_forest(("Network & internet", (0, 300, 1080, 450)))
+    cut_off = ModelOutputTruncatedError(
+        model="scripted",
+        stop_reason="length",
+        ceiling_field="max_completion_tokens",
+        ceiling=32768,
+        partial_output="",
+    )
+    model = ScriptedModel(
+        cut_off, "Reason: Done.\nAction: {'action_type': 'status', 'goal_status': 'complete'}"
+    )
+    async with phone_server(phone) as adb:
+        capability = AndroidCapability(
+            service_apk=str(fake_service_apk(tmp_path)), settle_max_wait_s=0
+        )
+        configured(capability, adb)
+        env = make_env(AndroidEnvironment, {"android#0": capability})
+        writer = TraceWriter(trace_dir=str(tmp_path / "traces"))
+        run = make_run(
+            agent=M3AAgent(),
+            loop=ReactLoop(**_ANDROIDWORLD_LOOP, cut_off_reply="read_as_is"),
+            env=env,
+            llm=model,
+            memory=SlidingWindowMemory(window_size=1),
+            hooks=[writer],
+        )
+        result = await AgentRuntime.for_agent(run, AGENT_ID).execute(_GOAL, timeout=30)
+
+    assert result.agent_done == "done", result.error
+    _cut, last = model.calls
+    assert f"Step 1- {NOT_IN_FORMAT}" in _text(last[0]), "M3A's own line, and no summary call"
+    assert writer.run_dir is not None
+    trace = RunTrace(writer.run_dir)
+    spent = trace.step(0)
+    assert spent is not None
+    assert (spent.error_phase, spent.error, spent.llm_output) == ("parse", NOT_IN_FORMAT, "")
+    (call,) = trace.llm_messages(0)
+    assert call.status == "failed" and call.failure is not None
+    assert (call.failure.error, call.failure.stop_reason, call.failure.partial_output) == (
+        "ModelOutputTruncatedError",
+        "length",
+        "",
+    )
 
 
 # ── Its prompt tree (``test_prompt_tree.py``'s invariants, per step) ──

@@ -52,7 +52,11 @@ The Loop never asks again within a step (``parse_retries_per_step: 0``) and
 never ends the run on replies it cannot read (``max_consecutive_parse_errors:
 null``), only on its step budget: AndroidWorld spends the step on such a
 reply, its history says so, and the run goes on. A re-ask would also see only
-its feedback, the window holding nothing else.
+its feedback, the window holding nothing else. A reply cut off at the
+completion-token ceiling is one such reply to AndroidWorld, which reads its
+content whatever the finish reason; a run reads it so when it sets the Loop's
+``cut_off_reply: read_as_is``. That setting is the run's and is not checked
+here: the Loop's default ends the run on a cut-off reply, naming the ceiling.
 
 **The history is M3A's own, and its lines come from a second model call.**
 After a step's action ran, AndroidWorld asks the same model to summarize the
