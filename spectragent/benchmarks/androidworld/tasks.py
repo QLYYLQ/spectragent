@@ -22,10 +22,13 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
+from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, model_validator
+
+from spectragent.core.data_loader._common import BenchmarkDataError, validation_summary
 
 #: The ``format`` a task list declares.
 TASK_LIST_FORMAT = "androidworld-tasks-2"
@@ -131,3 +134,22 @@ class AndroidWorldTaskList(BaseModel):
 
     format: Literal["androidworld-tasks-2"]
     tasks: list[AndroidWorldTask]
+
+
+def read_task_list(path: Path) -> AndroidWorldTaskList:
+    """The task list at *path*, read strictly.
+
+    Raises:
+        BenchmarkDataError: It cannot be read, is not JSON, or is not a task
+            list of :data:`TASK_LIST_FORMAT`; the message says to fetch it again.
+    """
+    try:
+        return AndroidWorldTaskList.model_validate_json(path.read_bytes())
+    except OSError as exc:
+        raise BenchmarkDataError(f"cannot read the AndroidWorld task list {path}: {exc}") from exc
+    except ValidationError as exc:
+        raise BenchmarkDataError(
+            f"{path} is not an AndroidWorld task list of format {TASK_LIST_FORMAT} "
+            f"({validation_summary(exc)}): fetch it again with spectragent benchmark fetch "
+            f"androidworld"
+        ) from exc

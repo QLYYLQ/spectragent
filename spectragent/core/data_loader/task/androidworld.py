@@ -41,14 +41,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
-from pydantic import ValidationError
-
 from spectragent.core.data_loader._common import (
     BenchmarkDataError,
     read_data_version,
     resolve_data_dir,
     resolve_split_file,
-    validation_summary,
 )
 from spectragent.core.data_loader.task._registrar import TaskLoaderBase
 from spectragent.core.registries import setup_class_for_env
@@ -85,26 +82,11 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
         return context
 
     def _load(self) -> None:
-        from spectragent.benchmarks.androidworld.tasks import (
-            TASK_LIST_FORMAT,
-            UNREPRODUCIBLE,
-            AndroidWorldTaskList,
-        )
+        from spectragent.benchmarks.androidworld.tasks import UNREPRODUCIBLE, read_task_list
 
         root = resolve_data_dir(self.env_type, self.__registry_key__, self.data_dir)
         path = resolve_split_file(root, self.subset)
-        try:
-            listing = AndroidWorldTaskList.model_validate_json(path.read_bytes())
-        except OSError as exc:
-            raise BenchmarkDataError(
-                f"cannot read the AndroidWorld task list {path}: {exc}"
-            ) from exc
-        except ValidationError as exc:
-            raise BenchmarkDataError(
-                f"{path} is not an AndroidWorld task list of format {TASK_LIST_FORMAT} "
-                f"({validation_summary(exc)}): fetch it again with spectragent benchmark fetch "
-                f"androidworld"
-            ) from exc
+        listing = read_task_list(path)
         setup_type = setup_class_for_env(self.env_type).__registry_key__
         tasks: dict[str, TaskDefinition] = {}
         step_budgets: dict[str, int] = {}

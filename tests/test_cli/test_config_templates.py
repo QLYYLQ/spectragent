@@ -928,7 +928,6 @@ def test_m3a_on_androidworld_writes_its_official_values_and_none_the_benchmark_s
     scroll_entry = ("actions", ("action_id", "android.scroll"))
     assert {setting.path for setting in supplied} >= {
         ("settle_max_wait_s",),
-        ("settle_quiet_ms",),
         ("typing_backend", "typing_id"),
         ("typing_backend", "fold_accents"),
         (*scroll_entry, "swipe_to"),
@@ -936,12 +935,16 @@ def test_m3a_on_androidworld_writes_its_official_values_and_none_the_benchmark_s
         ("backend", "avd"),
     }
     android = _android(raw)
-    assert not {"settle_max_wait_s", "settle_quiet_ms", "typing_backend"} & set(android)
+    assert not {"settle_max_wait_s", "typing_backend"} & set(android)
+    # The still period stays the capability's own: AndroidWorld's is a different measure.
+    assert android["settle_quiet_ms"] == 300
     # M3A's own 2 s pause after an action (AndroidWorld's agents/m3a.py:342, 540).
     assert android["settle_min_after_action_ms"] == 2000
     scroll = next(a for a in android["actions"] if a["action_id"] == "android.scroll")
     assert not {"swipe_to", "duration_ms"} & set(scroll)
-    assert "# settle_max_wait_s: 6.0, from the benchmark androidworld; left out here." in text
+    assert (
+        "# settle_max_wait_s: 6.0, from the benchmark androidworld, computed in code; left out here."
+    ) in text
     assert (
         "# typing_backend.fold_accents: true, from the benchmark androidworld; left out here."
     ) in text
@@ -953,7 +956,7 @@ def test_m3a_on_androidworld_writes_its_official_values_and_none_the_benchmark_s
     assert {key: agent["agent_loop"][key] for key in loop} == loop
     # Composed with the benchmark, the run gets AndroidWorld's settings.
     capability = composer.compose(run_root(raw, block)).single("capability")
-    assert (capability.settle_max_wait_s, capability.settle_quiet_ms) == (6.0, 1000)
+    assert (capability.settle_max_wait_s, capability.settle_quiet_ms) == (6.0, 300)
     assert capability.settle_min_after_action_ms == 2000
     assert capability.typing_backend.fold_accents is True
     scroll = next(a for a in capability.actions if a.action_id == "android.scroll")
