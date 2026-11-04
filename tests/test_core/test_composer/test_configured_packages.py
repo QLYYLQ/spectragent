@@ -48,6 +48,8 @@ _PROBE_PACKAGE = {
         TASK_SETUP = ProbeSetup
         OPTIONAL_EXTRA_MODULES = ()
         START_FLAGS = ()
+        TEMPLATE_BLOCK = {}
+        TEMPLATE_FLAGS = ()
     """,
     "observations.py": """
         from typing import Literal

@@ -6,6 +6,10 @@ registrar definitions and the setup schema, never the implementation
 (``tests/test_core/test_capabilities/test_capability_declarations.py``).
 """
 
+from collections.abc import Mapping
+
+from pydantic import JsonValue
+
 from spectragent.core.capabilities.android.backends._registrar import AndroidProviderRegistrar
 from spectragent.core.capabilities.android.input._registrar import (
     AndroidTapInjectorRegistrar,
@@ -17,6 +21,7 @@ from spectragent.core.capabilities.android.ui_tree._registrar import (
     AndroidUITreeSerializerRegistrar,
     AndroidUITreeSourceRegistrar,
 )
+from spectragent.core.registries import TemplateFlag
 from spectragent.schemas.task import StartFlag
 
 #: The Android capability's internal strategy axes, layer name → registrar: the
@@ -49,6 +54,28 @@ START_FLAGS: tuple[StartFlag, ...] = (
         ),
     ),
 )
+
+#: Where ``spectragent config template`` starts the Android block of a new
+#: template (§4.17 "capability 的模板起点"): the choices the repository runs M3A
+#: on AndroidWorld with, the official emulator, touches injected by the shell
+#: helper, text typed as key events, AndroidWorld's elements printed as M3A
+#: reads them. These are the template's starting choices, written into the YAML
+#: it prints, not defaults: a run still names each of these receptors itself
+#: (§4.2.1). The AVD and the service APK are the machine's own, and the schema
+#: requires both, so they start as placeholders the YAML shows: ``config check``
+#: refuses the APK placeholder, and a run refuses the AVD placeholder when it
+#: boots the emulator.
+TEMPLATE_BLOCK: Mapping[str, JsonValue] = {
+    "service_apk": "<the path the device APK build prints>",
+    "backend": {"provider_id": "local_emulator", "avd": "<an AVD name emulator -list-avds prints>"},
+    "tap_injector": {"injector_id": "shell_injection"},
+    "typing_backend": {"typing_id": "key_events"},
+    "ui_tree_cleaner": {"cleaner_id": "androidworld"},
+    "ui_tree_serializer": {"serializer_id": "m3a"},
+}
+
+#: No ``config template`` flags: the Android block's choices are edited in the YAML.
+TEMPLATE_FLAGS: tuple[TemplateFlag, ...] = ()
 
 #: No module of this package needs an optional extra.
 OPTIONAL_EXTRA_MODULES: tuple[str, ...] = ()
