@@ -337,7 +337,8 @@ SOFTWARE.
   before it runs the action and takes the element with that index in the new list
   (another element when the screen changed after the agent saw it); typing waits for a
   text field with focus and is refused when none takes it, where AndroidWorld types
-  regardless; the
+  regardless; a refused type stops its step, so the Enter `input_text` presses after the
+  text is skipped, where AndroidWorld always presses it; the
   action types the prompt does not teach (`double_tap`, `swipe`, `unknown`), and
   `input_text` without text, `scroll` without a direction, `click` or `long_press` with
   neither an index nor a point, and `open_app` without an app name, are refused before
