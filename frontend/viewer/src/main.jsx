@@ -724,7 +724,7 @@ function Screenshot({ runKey, step, view = "agent", marks = null }) {
         <span className="screenshot-marked">
           <img
             src={src}
-            alt={`第 ${step} 步的${view === "agent" ? "智能体观测" : "浏览器状态"}`}
+            alt={`第 ${step} 步的${view === "agent" ? "智能体观测" : "原始画面"}`}
             onError={() => setFailed(true)}
           />
           {marks && <MarkLayer data={marks} />}
@@ -732,7 +732,7 @@ function Screenshot({ runKey, step, view = "agent", marks = null }) {
       </a>
       <figcaption>
         <Icon name="image" />
-        {view === "agent" ? "智能体观测" : "浏览器状态"} · 第 {step} 步
+        {view === "agent" ? "智能体观测" : "原始画面"} · 第 {step} 步
         <a href={src} target="_blank" rel="noreferrer">
           查看原图 ↗
         </a>
@@ -769,7 +769,7 @@ function ImageViewSwitch({ view, setView }) {
     <div className="tabs compact image-switch" aria-label="截图视图">
       {[
         ["agent", "智能体观测"],
-        ["browser", "浏览器状态 · 原始画面"],
+        ["browser", "原始画面 · 不加标记"],
       ].map(([key, label]) => (
         <button
           key={key}
