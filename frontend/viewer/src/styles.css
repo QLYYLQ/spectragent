@@ -1705,3 +1705,10 @@ pre {
     overflow-x: auto;
   }
 }
+.compare-legend {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.compare-legend .mark-legend {
+  font-size: 11px;
+}
