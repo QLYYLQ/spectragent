@@ -133,7 +133,6 @@ class _Sweep:
             "task_loader": {
                 "benchmark_name": "trace_branches",
                 "data_dir": str(self.sources),
-                "require_archive": [],
                 "step_selector": {"selector_id": "explicit", "steps": [1]},
             },
         }

@@ -7,9 +7,10 @@ selects, every checkpoint step its ``step_selector`` picks among the
 branchable ones, ``branches_per_step`` tasks with the id
 ``<source_run_id>/s<t>/b<i>``. Each task hands the run four things
 (``TaskContext``): the environment part — the source's own setup context,
-plus ``replay_archive`` (the source run directory, so the browser replays
-the recorded network) when the source recorded a network archive
-(``browser.network``); the Loop part — ``checkpoint``; the branch part —
+plus ``replay_archive`` (the source run directory) when the source recorded
+an archive a branch of it restores from, as the capability that recorded it
+declares (``BRANCH_ARCHIVES``: the browser's network archive, which it
+replays offline); the Loop part — ``checkpoint``; the branch part —
 :class:`~spectragent.schemas.restoration.BranchProvenance`, recorded as
 ``TraceConfig.branch``; and the benchmark the task belongs to, its source's,
 as the source trace recorded how it was selected
@@ -137,13 +138,6 @@ logger = logging.getLogger(__name__)
 
 #: The Loop-input key ``BranchLoop`` declares.
 CHECKPOINT_KEY = "checkpoint"
-
-#: The archiver whose evidence an offline replay serves the recorded network from
-#: (``browser.network``, §4.14). Only a source that recorded it gets ``replay_archive``:
-#: without it there is nothing to replay, and an environment with no network replay
-#: (Android's) has no capability whose ``setup()`` takes the key, so a branch task
-#: carrying it would be refused at ``prepare()`` (§11.2).
-NETWORK_ARCHIVER = "browser.network"
 
 
 #: The field description's account of the default, what each capability package
@@ -356,7 +350,8 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
 
     def get_task_context(self, task_id: str) -> TaskContext:
         """The branch task's parts: env (source setup, and ``replay_archive`` when the
-        source recorded a network archive), loop, branch, and its source's benchmark.
+        source recorded an archive a branch of it restores from), loop, branch, and its
+        source's benchmark.
 
         An unknown ``task_id`` yields an empty ``TaskContext()``, as for every loader.
         """
@@ -417,6 +412,8 @@ class _Placement:
     run_id: str
     config: TraceConfig
     env: dict[str, Any]
+    #: Whether its branch tasks get ``replay_archive`` (:meth:`_Scan._replays`).
+    replays: bool
 
 
 class _Scan:
@@ -607,6 +604,7 @@ class _Scan:
                 f"which makes it anew on every run (docs/architecture_design.md §4.10)"
             )
         self._require_archive(trace, config)
+        replays = self._replays(config)
         self._require_benchmark(config.benchmark_spec)
         env = self._setup_context(config)
 
@@ -623,7 +621,7 @@ class _Scan:
                 "whose observation was recorded and that the trace is complete through)"
             )
             return
-        source = _Placement(rel, directory, trace.run_id, config, env)
+        source = _Placement(rel, directory, trace.run_id, config, env, replays)
         selected = self.loader.step_selector.select(candidates)
         unloaded = self._unloaded(trace, [step for step in selected if step in candidates])
         if self._variants is not None:
@@ -726,13 +724,22 @@ class _Scan:
         written = self.loader.require_archive
         if written is not None:
             return [(key, "require_archive names") for key in written]
+        # Local: the composer imports the task loaders' registrar.
+        from spectragent.core.composer import named_packages
+
         try:
-            declared = capability_declarations(recorded_capabilities(config.resolved))
+            capabilities = named_packages(config.resolved).capabilities
+            declared = capability_declarations(capabilities)
         except Exception as exc:  # a package this source ran is gone, or declares wrongly
             raise _Unbranchable(
                 f"the archives a branch of it needs cannot be read from the declarations "
                 f"of the capabilities it ran: {type(exc).__name__}: {exc}"
             ) from exc
+        if not capabilities:
+            raise _Unbranchable(
+                "its configuration names no capability, so what a branch of it needs is "
+                "unknown; write require_archive"
+            )
         return [
             (
                 key,
@@ -742,6 +749,33 @@ class _Scan:
             for item in declared
             for key in item.branch_archives
         ]
+
+    def _replays(self, config: TraceConfig) -> bool:
+        """Whether *config*'s source recorded an archive a branch of it restores from.
+
+        That is an archive the capability that recorded it declares a branch of
+        its recordings needs (``BRANCH_ARCHIVES``: the browser's network
+        archive, which an offline branch replays the network from); its branch
+        tasks then get ``replay_archive``, the source run directory. A source
+        with none gets no such key: a capability that restores without an
+        archive (Android's) takes none in ``setup()``, and a task carrying it
+        would be refused at ``prepare()`` (§11.2).
+        """
+        negotiation = config.negotiation
+        if negotiation is None or not negotiation.active_archivers:
+            return False
+        bindings = negotiation.archive_bindings
+        recorded = {
+            key: bindings.get(key, key.partition(".")[0]) for key in negotiation.active_archivers
+        }
+        try:
+            declared = capability_declarations(set(recorded.values()))
+        except Exception as exc:  # a package that recorded it is gone, or declares wrongly
+            raise _Unbranchable(
+                f"whether a branch of it restores from its archives cannot be read from the "
+                f"declarations of the capabilities that recorded them: {type(exc).__name__}: {exc}"
+            ) from exc
+        return any(key in item.branch_archives for item in declared for key in recorded)
 
     def _require_benchmark(self, spec: BenchmarkSpec | None) -> None:
         """Refuse a source whose benchmark its recorded selection no longer finds.
@@ -831,8 +865,7 @@ class _Scan:
         self.tasks[task_id] = TaskDefinition(**fields)
         source_dir = str(source.directory)
         task_env = dict(env)
-        recorded = config.negotiation.active_archivers if config.negotiation is not None else []
-        if NETWORK_ARCHIVER in recorded:
+        if source.replays:
             task_env[REPLAY_ARCHIVE_KEY] = source_dir
         self.contexts[task_id] = TaskContext(
             env=task_env,
@@ -913,32 +946,3 @@ def _setup_for(env_type: str, env: Mapping[str, Any]) -> SetupBase | None:
 
 
 __all__ = ["TraceBranchesTaskLoader"]
-
-
-def recorded_capabilities(resolved: Mapping[str, Any]) -> list[str]:
-    """The ``capability_id`` of every capability block a run's resolved configuration holds.
-
-    The blocks of the top-level ``capability`` section and of each
-    environment's ``capabilities``, where the schema puts them; only their
-    discriminator is read.
-    """
-
-    def listed(value: object) -> list[object]:
-        return value if isinstance(value, list) else []
-
-    blocks = [
-        *listed(resolved.get("capability")),
-        *(
-            block
-            for environment in listed(resolved.get("environment"))
-            if isinstance(environment, Mapping)
-            for block in listed(environment.get("capabilities"))
-        ),
-    ]
-    return sorted(
-        {
-            block["capability_id"]
-            for block in blocks
-            if isinstance(block, Mapping) and isinstance(block.get("capability_id"), str)
-        }
-    )

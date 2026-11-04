@@ -628,6 +628,33 @@ class TestPreconditions:
             "it bound: none"
         )
 
+    def test_a_source_whose_configuration_names_no_capability_needs_require_archive(
+        self, tmp_path: Path
+    ) -> None:
+        """A run assembled without the Composer records no capability: what its branch needs is unknown."""
+        write_source(tmp_path, "run-a", steps=1, archivers=(), names_capability=False)
+        tasks = loader(tmp_path, on_unbranchable="skip")
+        assert tasks.task_ids() == []
+        assert tasks.skipped["run-a"] == (
+            "its configuration names no capability, so what a branch of it needs is unknown; "
+            "write require_archive"
+        )
+        assert loader(tmp_path, require_archive=()).task_ids() == ["run-a/s0/b0"]
+
+    def test_replay_archive_goes_with_an_archive_a_branch_restores_from(
+        self, tmp_path: Path
+    ) -> None:
+        """The browser's network archive is replayed; an Android archive restores nothing."""
+        write_source(tmp_path, "browser-run", steps=1)
+        write_source(
+            tmp_path, "android-run", steps=1, archivers=("android.ui_tree_raw",), env_type="android"
+        )
+        tasks = loader(tmp_path)
+        browser = tasks.get_task_context("browser-run/s0/b0").env
+        android = tasks.get_task_context("android-run/s0/b0").env
+        assert browser["replay_archive"] == str((tmp_path / "browser-run").resolve())
+        assert "replay_archive" not in android
+
     def test_the_field_says_what_not_writing_it_means(self) -> None:
         """A default that does not show what it decides would trap whoever leaves it out."""
         hint = get_type_hints(TraceBranchesTaskLoader.__init__, include_extras=True)
