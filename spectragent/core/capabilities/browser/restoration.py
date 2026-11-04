@@ -32,7 +32,7 @@ it.
 **Measure** (:func:`measure`). URL equality (leaving out the query
 parameters the replay's page-URL rules declare), the multiset of interactive
 element signatures, the Hamming distance between the two screenshots'
-64-bit difference hashes (:func:`dhash`), the main-frame document
+64-bit difference hashes (``core/image_hash.py``), the main-frame document
 misses the capability counted since its last measurement, and the two
 screenshots' media playback states with the media alignment done before the
 restored capture (:func:`media_measure`, ``media.py``). Every measure is
@@ -62,13 +62,11 @@ still measured and kept; the media check does not judge it on such a page.
 from __future__ import annotations
 
 import hashlib
-import io
-import logging
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, Final, Literal
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image
 
 from spectragent.core.actions.params import element_params
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMRect
@@ -99,11 +97,10 @@ from spectragent.core.capabilities.browser.restoration_evidence import (
     MediaAreaEvidence,
     MediaEvidence,
 )
+from spectragent.core.image_hash import dhash, grayscale, hamming, image_dhash
 from spectragent.schemas.action import Action
 from spectragent.schemas.observation._registrar import fragment_field_name
 from spectragent.schemas.restoration import IDENTITY, Retarget
-
-logger = logging.getLogger(__name__)
 
 #: The action whose ``target_id`` is a per-browser CDP targetId.
 SWITCH_TAB: Final = "browser.switch_tab"
@@ -330,52 +327,6 @@ def _retarget_tab(action: Action, recorded: Any, restored: Any) -> Retarget:
 # ── measure ───────────────────────────────────────────────────────────
 
 
-def _grayscale(image_bytes: bytes) -> Image.Image | None:
-    """The image in grayscale, or ``None`` (with a warning) when the bytes do not decode."""
-    try:
-        with Image.open(io.BytesIO(image_bytes)) as image:
-            return image.convert("L")
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
-        logger.warning("screenshot does not decode for the perceptual hash: %s", exc)
-        return None
-
-
-def _gray_dhash(gray: Image.Image) -> int:
-    small = gray.resize((9, 8), Image.Resampling.LANCZOS)
-    pixels = small.tobytes()  # mode "L": one byte per pixel, row by row
-    bits = 0
-    for row in range(8):
-        for col in range(8):
-            left, right = pixels[row * 9 + col], pixels[row * 9 + col + 1]
-            bits = (bits << 1) | int(left > right)
-    return bits
-
-
-def dhash(image_bytes: bytes) -> int | None:
-    """The 64-bit difference hash of an image, or ``None`` when the bytes do not decode.
-
-    Grayscale, resized to 9x8 (Lanczos, so the hash does not depend on a
-    library default), and one bit per horizontally adjacent pixel pair:
-    set when the left one is brighter.
-    """
-    gray = _grayscale(image_bytes)
-    return _gray_dhash(gray) if gray is not None else None
-
-
-def image_dhash(image: Image.Image) -> int:
-    """The :func:`dhash` of an image already decoded, in any mode (converted to grayscale first).
-
-    For a reader that changes the image before hashing it, such as one that
-    masks its media areas (``media_mask.py``).
-    """
-    return _gray_dhash(image if image.mode == "L" else image.convert("L"))
-
-
-def hamming(a: int, b: int) -> int:
-    """How many bits differ between two hashes."""
-    return (a ^ b).bit_count()
-
-
 def screenshot_distance(recorded: Any, restored: Any) -> int | None:
     """Hamming distance of the two screenshots' :func:`dhash`, or ``None`` without both images."""
     shots = (screenshot_fragment(recorded), screenshot_fragment(restored))
@@ -459,7 +410,7 @@ def media_area_measure(recorded: Any, restored: Any, rule_ids: Sequence[str]) ->
             notes.append(note)
     pair: list[tuple[Image.Image, ScreenshotObs]] = []
     for shot in (recorded_shot, restored_shot):
-        gray = _grayscale(shot.image_bytes) if shot is not None and shot.image_bytes else None
+        gray = grayscale(shot.image_bytes) if shot is not None and shot.image_bytes else None
         if shot is not None and gray is not None:
             pair.append((gray, shot))
     if len(pair) != 2:
@@ -480,8 +431,8 @@ def media_area_measure(recorded: Any, restored: Any, rule_ids: Sequence[str]) ->
         rule_ids=list(rule_ids),
         areas=areas,
         masked_share=share,
-        unmasked_distance=hamming(_gray_dhash(pair[0][0]), _gray_dhash(pair[1][0])),
-        masked_distance=hamming(_gray_dhash(masked[0][0]), _gray_dhash(masked[1][0])),
+        unmasked_distance=hamming(image_dhash(pair[0][0]), image_dhash(pair[1][0])),
+        masked_distance=hamming(image_dhash(masked[0][0]), image_dhash(masked[1][0])),
         mask_applied=applied,
         detail="; ".join(notes),
     )
@@ -588,11 +539,8 @@ __all__ = [
     "TEXT_DEPTH_LIMIT",
     "ElementSignature",
     "bounds_within",
-    "dhash",
     "dom_fragment",
     "element_signature",
-    "hamming",
-    "image_dhash",
     "measure",
     "media_area_measure",
     "media_measure",

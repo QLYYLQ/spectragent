@@ -20,7 +20,8 @@ from typing import Any, Literal
 from PIL import Image, ImageChops, ImageDraw, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
 
-from spectragent.core.capabilities.browser.restoration import dhash, hamming, observation_url
+from spectragent.core.capabilities.browser.restoration import observation_url
+from spectragent.core.image_hash import dhash, hamming
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.flywheel.metrics import ChainLayout, ChainRuns, Run, open_role
 from spectragent.schemas.restoration import RestorationCheck
