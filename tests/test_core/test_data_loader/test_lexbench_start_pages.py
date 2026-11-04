@@ -39,8 +39,8 @@ from tests._helpers.browser_archive import OwnedBrowser
 
 pytestmark = pytest.mark.usefixtures("archive_fakes")
 
-#: The seven L1 tasks whose start page is text or several sites (the 2026-10-14 screening).
-L1_NOT_A_URL = {"5", "7", "216", "217", "218", "221", "223"}
+#: The tasks of the public dataset's subset All whose start page is text or several sites.
+ALL_NOT_A_URL = {"5", "7", "216", "217", "218", "221", "223", "233", "236", "240", "241", "292"}
 
 
 @pytest.mark.parametrize(
@@ -78,7 +78,7 @@ def test_anything_else_is_left_as_written(written: str) -> None:
     assert complete_start_page(written) == written
 
 
-def _write_split(root: Path, records: list[dict[str, Any]], *, split: str = "L1") -> Path:
+def _write_split(root: Path, records: list[dict[str, Any]], *, split: str = "All") -> Path:
     root.mkdir(parents=True, exist_ok=True)
     name = f"{split.lower()}.jsonl"
     (root / "data_info.json").write_text(json.dumps({"split": {split: name}}))
@@ -92,7 +92,7 @@ def _record(task_id: str, start_url: str, **extra: Any) -> dict[str, Any]:
 
 @pytest.fixture
 def lexbench(tmp_path: Path) -> LexBenchBrowserTaskLoader:
-    """A LexBench L1 split written the way the shipped one is."""
+    """A LexBench subset in the normalized record shape."""
     root = _write_split(
         tmp_path / "lexbench_browser",
         [
@@ -108,7 +108,7 @@ def lexbench(tmp_path: Path) -> LexBenchBrowserTaskLoader:
             },
         ],
     )
-    return LexBenchBrowserTaskLoader(subset="L1", data_dir=str(root))
+    return LexBenchBrowserTaskLoader(subset="All", data_dir=str(root))
 
 
 def _start_url(loader: LexBenchBrowserTaskLoader, task_id: str) -> Any:
@@ -144,9 +144,9 @@ class TestTheLoader:
             problem = start_page_problem(written)
             assert problem is not None and problem.startswith(f"start_url {written!r}")
 
-    def test_the_upstream_record_shape_is_completed_too(self, tmp_path: Path) -> None:
+    def test_the_datasets_own_record_shape_is_completed_too(self, tmp_path: Path) -> None:
         root = _write_split(
-            tmp_path / "private",
+            tmp_path / "dataset_shape",
             [
                 {
                     "id": 1,
@@ -155,15 +155,15 @@ class TestTheLoader:
                     "login_required": True,
                 }
             ],
-            split="private",
         )
-        loader = LexBenchBrowserTaskLoader(subset="private", data_dir=str(root))
+        loader = LexBenchBrowserTaskLoader(subset="All", data_dir=str(root))
         assert _start_url(loader, "1") == "https://www.jd.com"
 
 
 @pytest.mark.requires_benchmark_data("browser/lexbench_browser")
-def test_every_shipped_l1_start_page_opens_or_is_refused_by_name() -> None:
-    loader = LexBenchBrowserTaskLoader(subset="L1")
+def test_every_public_start_page_opens_or_is_refused_by_name() -> None:
+    """Over the fetched public dataset's All: 198 of its 210 start pages open."""
+    loader = LexBenchBrowserTaskLoader(subset="All")
     refused = set()
     for task_id in loader.task_ids():
         start_url = _start_url(loader, task_id)
@@ -171,8 +171,8 @@ def test_every_shipped_l1_start_page_opens_or_is_refused_by_name() -> None:
             assert urlsplit(start_url).scheme == "https" and urlsplit(start_url).hostname
         else:
             refused.add(task_id)
-    assert refused == L1_NOT_A_URL
-    assert len(loader) - len(refused) == 176
+    assert refused == ALL_NOT_A_URL
+    assert len(loader) - len(refused) == 198
 
 
 async def test_the_trace_records_the_completed_start_page_and_its_site(

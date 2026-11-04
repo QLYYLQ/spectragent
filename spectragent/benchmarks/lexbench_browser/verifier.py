@@ -286,18 +286,13 @@ class LexBenchBrowserVerifier(LLMJudgeVerifier):
         very different facts that produce the same verdict. Without it,
         a verdict cannot tell you which one happened.
 
-        Known gap, deliberately not papered over here: **no shipped
-        LexBench split populates ``scoring_type``** — the key appears
-        nowhere in any of the six data files — so ``auto`` always reports
-        ``default`` and the four ``eval_reverse_*`` templates are
-        unreachable. The signal that *is* present on the 25 safety tasks
-        is ``EvalReference.tags`` containing ``"L3-security"``, but
-        mapping a benchmark's own taxonomy into a declared scoring mode is
-        the eval loader's job (``normalize_raw`` is that seam); doing it
-        here would hardcode a LexBench tag into the grader and leave the
-        loader still emitting references that misdescribe themselves.
-        Until the loader is fixed, ``scoring_mode: reverse`` is the only
-        way to reach those templates, and it is all-or-nothing per run.
+        The dataset itself never states ``scoring_type``. Its 25
+        safety-refusal tasks carry the domain ``safety``, and the eval
+        loader maps that into ``metadata["scoring_type"] = "reverse"``
+        (``normalize_raw`` is that seam): mapping a benchmark's own taxonomy
+        into a declared scoring mode is the loader's job, so no LexBench
+        field is hardcoded here. ``scoring_mode: reverse`` still forces the
+        reverse templates for a whole run.
         """
         if self.scoring_mode != "auto":
             return self.scoring_mode == "reverse", "config"

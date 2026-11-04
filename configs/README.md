@@ -790,6 +790,7 @@ A benchmark pins where its data comes from, and nothing is downloaded unless you
 
 ```bash
 uv run spectragent benchmark fetch browsecomp       # OpenAI's file, checked against its SHA-256
+uv run spectragent benchmark fetch lexbench_browser # the public LexBench-Browser v1.0
 HF_TOKEN=... uv run spectragent benchmark fetch online_mind2web   # gated on Hugging Face
 uv run spectragent benchmark setup androidworld     # its checkout, venv and forwarder
 uv run spectragent benchmark fetch androidworld     # its task lists, made in that install
@@ -800,8 +801,7 @@ A fetch checks the download against the pin and writes the version beside the da
 part of `config_hash`. `run`, `bench`, `config check`/`explain`, `eval`, `export` and
 `config template --benchmark` refuse a benchmark whose cached data is missing or of another
 version, naming the exact `spectragent benchmark fetch <alias|path>` to run; `run` and
-`bench` fetch it first when given `--fetch`. `lexbench_browser` pins no source: put its data
-in `<root>/browser/lexbench_browser` yourself. `spectragent benchmark setup` installs what
+`bench` fetch it first when given `--fetch`. `spectragent benchmark setup` installs what
 a benchmark needs beside its data and names what only you can install (AndroidWorld: ffmpeg,
 and the AVD its one-time setup prepares); a run without the installation is refused by
 `prepare()`, naming that command.

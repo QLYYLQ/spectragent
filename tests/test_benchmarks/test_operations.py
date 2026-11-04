@@ -129,9 +129,24 @@ def test_a_data_dir_of_ones_own_is_read_as_it_is(root: Path, tmp_path: Path) -> 
     assert isinstance(loader, dict) and loader["data_dir"] == str(tmp_path / "mine")
 
 
-def test_a_benchmark_that_pins_nothing_is_not_checked(root: Path) -> None:
-    """LexBench-Browser's data is put in place by hand; its loader says what is missing."""
-    require_data("lexbench_browser", read_benchmark("lexbench_browser"))
+def _branches(tmp_path: Path) -> str:
+    """A branch sweep's task source: it reads recorded runs and pins no data."""
+    path = tmp_path / "branches.yaml"
+    loader = {
+        "benchmark_name": "trace_branches",
+        "data_dir": str(tmp_path / "runs"),
+        "step_selector": {"selector_id": "last"},
+    }
+    path.write_text(
+        yaml.safe_dump({"benchmark": [{"benchmark_id": "trace_branches", "task_loader": loader}]})
+    )
+    return str(path)
+
+
+def test_a_benchmark_that_pins_nothing_is_not_checked(root: Path, tmp_path: Path) -> None:
+    """Its loader says what is missing, if anything."""
+    branches = _branches(tmp_path)
+    require_data(branches, read_benchmark(branches))
 
 
 def test_with_fetch_missing_data_is_fetched_and_its_version_recorded(
@@ -191,12 +206,12 @@ def test_a_failed_fetch_leaves_no_version_and_the_old_files(
     ], "the staging directory is gone; the record of the copy that is still there stays"
 
 
-def test_a_benchmark_that_pins_nothing_has_nothing_to_fetch(root: Path) -> None:
+def test_a_benchmark_that_pins_nothing_has_nothing_to_fetch(root: Path, tmp_path: Path) -> None:
     with pytest.raises(BenchmarkDataError) as refused:
-        fetch_benchmark("lexbench_browser", lambda line: None)
+        fetch_benchmark(_branches(tmp_path), lambda line: None)
     assert str(refused.value).startswith(
-        "the benchmark lexbench_browser pins no data source to fetch: its task loader reads "
-        f"{root / 'browser' / 'lexbench_browser'}"
+        f"the benchmark trace_branches pins no data source to fetch: its task loader reads "
+        f"{tmp_path / 'runs'}"
     )
 
 

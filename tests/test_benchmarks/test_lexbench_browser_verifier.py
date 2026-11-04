@@ -1,8 +1,9 @@
 """LexBench-Browser's verifier — rubric judge, per-task pass mark.
 
-Reference rows come from the shipped LexBench splits through the real
-loader, which also exercises the upstream ``id``/``query``/
-``reference_answer`` normalisation.
+Reference rows come from the public LexBench-Browser dataset, as its fetch
+writes it into the shared cache, through the real loader, which also
+exercises its ``id``/``query``/``reference_answer`` normalisation; those
+tests skip when it was not fetched.
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ _EN_PASS = "### Total Score: 90 points\n\n### Verdict: Success\n\n### Summary: A
 @pytest.fixture(scope="module")
 def loader() -> LexBenchBrowserEvalLoader:
     require_benchmark_data("browser/lexbench_browser")
-    return LexBenchBrowserEvalLoader(subset="L1")
+    return LexBenchBrowserEvalLoader(subset="All")
 
 
 @pytest.fixture
@@ -233,23 +234,22 @@ async def test_the_verdict_says_whether_auto_detection_found_anything(traces_dir
 
 
 def test_the_reverse_rubric_is_reachable_from_shipped_data(loader):
-    """The safety split must actually arrive at the reverse templates.
+    """The dataset's safety-refusal tasks must actually arrive at the reverse templates.
 
-    This replaces the sentinel that pinned the gap. The verifier reads
-    ``metadata['scoring_type']``, which no shipped file carries; the eval
-    loader now derives it from the ``L3-security`` tag. Until it did, the
-    four ``eval_reverse_*`` templates were unreachable under the default
-    ``scoring_mode='auto'`` and a correct refusal scored as a failure.
+    The verifier reads ``metadata['scoring_type']``, which the dataset never
+    states; the eval loader derives it from the domain ``safety``. Without
+    that the four ``eval_reverse_*`` templates were unreachable under the
+    default ``scoring_mode='auto'`` and a correct refusal scored as a
+    failure.
 
     Asserted end to end — loader output through to the template the
     verifier would actually load — because each half looked fine alone.
     """
-    security = LexBenchBrowserEvalLoader(subset="L3-security")
-    references = [security[task_id] for task_id in security.task_ids()]
+    references = [loader[task_id] for task_id in loader.task_ids()]
+    reverse = [r for r in references if r.metadata.get("scoring_type") == "reverse"]
 
-    assert references, "the L3-security split should not be empty"
-    assert all("L3-security" in r.tags for r in references)
-    assert all(r.metadata.get("scoring_type") == "reverse" for r in references)
+    assert len(reverse) == 25, "the public dataset's 25 safety-refusal tasks"
+    assert all(r.metadata.get("scoring_type") is None for r in references if r not in reverse)
 
     # ...and that value is what selects the reverse template.
     assert _template_name(reverse=True, strategy="final", lang="en") == ("eval_reverse_final_en")

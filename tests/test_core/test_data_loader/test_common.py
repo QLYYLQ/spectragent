@@ -191,7 +191,7 @@ class TestResolveTaskId:
         assert resolve_task_id({"task_id": "a", "id": 1}) == "a"
 
     def test_falls_back_to_id_and_coerces_to_str(self) -> None:
-        # tasks_private.jsonl keys on an integer ``id``.
+        # LexBench-Browser's public records key on an integer ``id``.
         assert resolve_task_id({"id": 1}) == "1"
 
     def test_falls_back_to_instance_id(self) -> None:

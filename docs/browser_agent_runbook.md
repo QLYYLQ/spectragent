@@ -318,7 +318,7 @@ network_source: { source_id: live }
 
 ## 跑数据集
 
-需要数据集身份、任务起始 URL、逐任务 trace 时，用 `spectragent bench --benchmark`。基准是一份只有 `benchmark:` 一段的 YAML，写着任务从哪里来（任务加载器与它的 subset、数据目录）；`--benchmark` 收发布的别名（`configs/benchmarks/` 下的 `online_mind2web`、`browsecomp`、`lexbench_browser`、`androidworld`）或自己写的基准 YAML 的路径。运行配置只写 agent、环境与 hook，写了 `benchmark:` 段会被拒绝。基准数据不包含在安装包中，放在仓库之外的共用缓存里：`$SPECTRAGENT_BENCHMARK_DATA`，没设时是 `~/.cache/spectragent/benchmarks`，目录约定为 `<root>/browser/<benchmark>/data_info.json`。基准钉住它的数据来源与版本，`spectragent benchmark fetch <别名>` 下载、核对并记下版本（Online-Mind2Web 在 Hugging Face 上要先接受条款，再给 `HF_TOKEN`）；缺了数据，`bench` 与 `run` 在组装之前拒绝并给出这条命令，带 `--fetch` 时先下载。LexBench-Browser 不钉来源，数据自己放进 `<root>/browser/lexbench_browser`（architecture §4.10.1 "d 段落地了什么"）。
+需要数据集身份、任务起始 URL、逐任务 trace 时，用 `spectragent bench --benchmark`。基准是一份只有 `benchmark:` 一段的 YAML，写着任务从哪里来（任务加载器与它的 subset、数据目录）；`--benchmark` 收发布的别名（`configs/benchmarks/` 下的 `online_mind2web`、`browsecomp`、`lexbench_browser`、`androidworld`）或自己写的基准 YAML 的路径。运行配置只写 agent、环境与 hook，写了 `benchmark:` 段会被拒绝。基准数据不包含在安装包中，放在仓库之外的共用缓存里：`$SPECTRAGENT_BENCHMARK_DATA`，没设时是 `~/.cache/spectragent/benchmarks`，目录约定为 `<root>/browser/<benchmark>/data_info.json`。基准钉住它的数据来源与版本，`spectragent benchmark fetch <别名>` 下载、核对并记下版本（Online-Mind2Web 在 Hugging Face 上要先接受条款，再给 `HF_TOKEN`）；缺了数据，`bench` 与 `run` 在组装之前拒绝并给出这条命令，带 `--fetch` 时先下载。LexBench-Browser 是 Hugging Face 上公开的 v1.0（210 个任务，子集 `All`、`global`、`lexmount`、`sample50`），同样经 `benchmark fetch` 取（architecture §4.10.1 "d 段落地了什么"）。
 
 ```bash
 export OPENAI_API_KEY="你的密钥"
