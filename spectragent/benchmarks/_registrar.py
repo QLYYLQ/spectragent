@@ -225,21 +225,14 @@ class BenchmarkBase(metaclass=BenchmarkRegistrar.Meta):
         """Its primary verdict among a run's *verdicts* (slug → verdict); ``None`` when there is none.
 
         The verdict of the first verifier its block lists of its primary kind
-        (``__primary_verifier__``); when the block lists none of that kind,
-        the run's one live verdict of that kind, judged at the scoring point.
+        (``__primary_verifier__``); ``None`` when the block lists none of that
+        kind.
         """
         kind = self.primary_verifier
         if kind is None:
             return None
         listed = [v.identity().slug for v in self.verifiers or [] if v.verifier_id == kind]
-        if listed:
-            return verdicts.get(listed[0])
-        live = [
-            verdict
-            for verdict in verdicts.values()
-            if verdict.verifier.verifier_id == kind and verdict.attachment == "live"
-        ]
-        return live[0] if len(live) == 1 else None
+        return verdicts.get(listed[0]) if listed else None
 
     def success(self, verdict: Verdict, result: AgentResult | None) -> float | None:
         """Its success rule: how far the run succeeded by its primary *verdict*, from 0 to 1.

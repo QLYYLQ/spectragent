@@ -260,18 +260,6 @@ def test_the_primary_verdict_is_the_first_listed_verifier_of_the_primary_kind() 
     assert benchmark.primary_verdict(verdicts) is None
 
 
-def test_with_none_listed_the_primary_verdict_is_the_one_live_verdict_of_its_kind() -> None:
-    from spectragent.benchmarks.androidworld.benchmark import AndroidWorldBenchmark
-
-    benchmark = AndroidWorldBenchmark()
-    live = _judged("androidworld", attachment="live", score=1.0)
-    other = _judged("exact_match", label=1)
-    assert benchmark.primary_verdict({live.slug: live, other.slug: other}) == live
-    assert benchmark.primary_verdict({other.slug: other}) is None
-    second = _judged("androidworld", attachment="live", score=0.0, config={"x": 1})
-    assert benchmark.primary_verdict({live.slug: live, second.slug: second}) is None
-
-
 def test_androidworlds_listed_verifier_gives_its_primary_verdict_from_the_scoring_point() -> None:
     """Listed in its block, the live verifier's verdict is found by its slug, as any listed one's."""
     from spectragent.benchmarks.androidworld.benchmark import AndroidWorldBenchmark
