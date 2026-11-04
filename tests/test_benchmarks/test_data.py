@@ -233,3 +233,22 @@ def test_browsecomp_rows_become_its_loaders_tasks_still_encrypted() -> None:
     ]
     with pytest.raises(BenchmarkDataError, match="has no column canary"):
         tasks_jsonl("problem,answer\nq,a\n")
+
+
+def test_a_program_that_runs_too_long_is_stopped_and_refused() -> None:
+    import sys
+
+    from spectragent.benchmarks.data import ProgramError, run_program
+
+    with pytest.raises(ProgramError, match="did not finish within 0.5 s and was stopped"):
+        run_program([sys.executable, "-c", "import time; time.sleep(30)"], "wait", timeout_s=0.5)
+
+
+def test_git_never_waits_for_a_password() -> None:
+    """A fetch or an installation runs unattended: git fails instead of prompting."""
+    import sys
+
+    from spectragent.benchmarks.data import run_program
+
+    check = "import os, sys; sys.exit(os.environ.get('GIT_TERMINAL_PROMPT') != '0')"
+    run_program([sys.executable, "-c", check], "check the environment")

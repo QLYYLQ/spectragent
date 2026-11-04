@@ -206,7 +206,7 @@ def test_setup_installs_the_checkout_the_venv_and_the_forwarder_then_skips_them(
         ]
         + ["--quiet", "--detach", PINNED_COMMIT],
         [str(bin_dir / "uv"), "venv", "--quiet", "--python", "3.11", str(root / ".venv")],
-        [str(bin_dir / "uv"), "pip", "install", "--python", str(python), "-r", str(LOCK)],
+        [str(bin_dir / "uv"), "pip", "sync", "--python", str(python), str(LOCK)],
         [str(bin_dir / "uv"), "pip", "install", "--python", str(python), "--no-deps", "-e"]
         + [str(root / "src")],
         ["download", install.FORWARDER_URL],
@@ -217,9 +217,9 @@ def test_setup_installs_the_checkout_the_venv_and_the_forwarder_then_skips_them(
 
     installer.ran.clear()
     set_up_benchmark("androidworld", said.append)
-    assert [command[1] for command in installer.ran] == ["pip", "pip"], (
-        "a checkout at the commit, a venv and a cached forwarder are kept; the packages are "
-        "installed again, which changes nothing when they are there"
+    assert [command[1:3] for command in installer.ran] == [["pip", "sync"], ["pip", "install"]], (
+        "a checkout at the commit, a venv and a cached forwarder are kept; the venv is synced to "
+        "the lock again, which removes what is not in it and changes nothing else"
     )
 
 

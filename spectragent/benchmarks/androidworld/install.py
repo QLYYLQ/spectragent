@@ -6,10 +6,12 @@ by default ``android/androidworld/installation`` in the shared cache:
 
 1. ``src/``: AndroidWorld's repository, cloned and checked out at the pinned
    commit (fetched first when a checkout there is at another commit);
-2. ``.venv/``: a CPython 3.11 venv made by ``uv``, holding exactly the
-   packages of ``androidworld_service/requirements.lock.txt``, then the
-   checkout itself, editable and without its dependencies (that build
-   compiles its two protocol buffers into ``src/``);
+2. ``.venv/``: a CPython 3.11 venv made by ``uv``, synced to the packages
+   of ``androidworld_service/requirements.lock.txt`` (``uv pip sync``: what
+   the lock lists is installed at its version, and anything else removed),
+   then the checkout itself, editable and without its dependencies (that
+   build compiles its two protocol buffers into ``src/``); so after every
+   setup the venv holds the lock and the checkout, nothing more;
 3. ``cache/a11y/``: the accessibility forwarder android_env installs on the
    device, downloaded once and checked against its SHA-256, so the service
    need not download it at every start.
@@ -138,10 +140,9 @@ class AndroidWorldInstallation:
             run_program(
                 [uv, "venv", "--quiet", "--python", PYTHON, venv], "make AndroidWorld's venv"
             )
-        say(f"installing AndroidWorld's dependencies into {venv} from {LOCK.name}")
+        say(f"syncing AndroidWorld's dependencies in {venv} to {LOCK.name}")
         run_program(
-            [uv, "pip", "install", "--python", python, "-r", LOCK],
-            "install AndroidWorld's dependencies",
+            [uv, "pip", "sync", "--python", python, LOCK], "install AndroidWorld's dependencies"
         )
         run_program(
             [uv, "pip", "install", "--python", python, "--no-deps", "-e", self.installation.src],

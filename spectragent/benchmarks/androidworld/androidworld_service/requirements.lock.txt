@@ -1,8 +1,8 @@
 # The packages AndroidWorld's venv holds, as resolved for commit 55ddaf5 from its
 # requirements.txt and pyproject.toml (whose fastapi and uvicorn requirements.txt
 # lacks) and run on macOS arm64 with CPython 3.11 since 2026-11-01. `spectragent
-# benchmark setup androidworld` installs exactly these, then the checkout itself
-# without its dependencies (docs/architecture_design.md §11.2).
+# benchmark setup androidworld` syncs the venv to exactly these (uv pip sync), then
+# installs the checkout itself without its dependencies (docs/architecture_design.md §11.2).
 absl-py==2.1.0
 android-env==1.2.3
 annotated-doc==0.0.5

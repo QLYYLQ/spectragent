@@ -3313,12 +3313,12 @@ c 段没做、留给后面的：`benchmark_spec` 记录与分叉任务继承源�
 AndroidWorld 的安装（`spectragent/benchmarks/androidworld/install.py`，默认在缓存里的 `android/androidworld/installation`，即开局布置组件省略 `root` 时找的地方）：
 
 1. `src/`：克隆仓库、检出钉住的 commit（已有检出在别的 commit 上时先 fetch 那个 commit；那里有个不是 git 检出的目录时拒绝，不碰它）；
-2. `.venv/`：`uv venv --python 3.11`，装 `androidworld_service/requirements.lock.txt` 里的包（随包发布，是 2026-11-01 起本机实际跑着的那 91 个，含 `requirements.txt` 没列的 fastapi 与 uvicorn），再以可编辑、不带依赖的方式装检出本身（这一步把它的两个 protobuf 编译进 `src/`）；
+2. `.venv/`：`uv venv --python 3.11`，用 `uv pip sync` 对齐到 `androidworld_service/requirements.lock.txt`（随包发布，是 2026-11-01 起本机实际跑着的那 91 个，含 `requirements.txt` 没列的 fastapi 与 uvicorn；锁里的装成锁里的版本，锁里没有的卸掉），再以可编辑、不带依赖的方式装检出本身（这一步把它的两个 protobuf 编译进 `src/`），所以每次 setup 之后 venv 里恰好是锁里的包加检出；
 3. `cache/a11y/`：android_env 装到设备上的无障碍转发器，从它的地址下载一次，核对 SHA-256。
 
-每一步已经做好就跳过（包每次都再装一遍，已装好时什么也不变）。装不了的点名：`PATH` 上的 ffmpeg；基准块里 `local_emulator` 点名的 AVD（`AndroidWorldAvd`）不在时，说照 AndroidWorld 的 README 建它（Pixel 6、API 33、Google APIs，Apple 芯片用 arm64-v8a）、在 `config.ini` 里设 `hw.keyboard=yes`、以可写方式带 gRPC 启动、在检出里用安装的解释器跑 AndroidWorld 的一次性 setup（`run.py --perform_emulator_setup`）。建 AVD 与一次性 setup 都要启动模拟器，这个命令不启动，所以没做成自动的：这一点比裁决说的"AVD 走 `benchmark setup`"少，只核对与说明。
+每一步已经做好就跳过（venv 每次都再对齐到锁一遍，已对齐时什么也不变）。git 与 uv 都经 `run_program` 跑，各限 30 分钟，git 不问密码（`GIT_TERMINAL_PROMPT=0`）。装不了的点名：`PATH` 上的 ffmpeg；基准块里 `local_emulator` 点名的 AVD（`AndroidWorldAvd`）不在时，说照 AndroidWorld 的 README 建它（Pixel 6、API 33、Google APIs，Apple 芯片用 arm64-v8a）、在 `config.ini` 里设 `hw.keyboard=yes`、以可写方式带 gRPC 启动、在检出里用安装的解释器跑 AndroidWorld 的一次性 setup（`run.py --perform_emulator_setup`）。建 AVD 与一次性 setup 都要启动模拟器，这个命令不启动，所以没做成自动的：这一点比裁决说的"AVD 走 `benchmark setup`"少，只核对与说明。
 
-实测（2026-11-04，这台 Mac，没启动模拟器）：`spectragent benchmark setup androidworld` 装进共用缓存：克隆、检出钉住的 commit，`uv` 建 Python 3.11.15 的 venv、装锁文件里的 91 个包（uv 的缓存里都有，337 ms）、可编辑地装检出，下载转发器并核对 SHA-256；`PATH` 上有 ffmpeg、`AndroidWorldAvd` 在，所以说已装好。再跑 `spectragent benchmark fetch androidworld`：`All` 116 个任务（91 个 Android、25 个信息检索），`miniwob` 92 个，名称表 117 个名字，都是钉住的 commit；与 2026-11-01 手工生成的列表比，116 个里 115 个目标与参数相同，不同的那个是 `MarkorCreateFolder`（它的文件夹名取自生成时的时钟，`UNREPRODUCIBLE` 里的那个，加载器本来就跳过它）。`tmp/androidworld` 里手工准备的那份没动。
+实测（2026-11-04，这台 Mac，没启动模拟器；改成 `uv pip sync` 之后又跑了一遍，它卸掉检出、照锁对齐、再装回检出）：`spectragent benchmark setup androidworld` 装进共用缓存：克隆、检出钉住的 commit，`uv` 建 Python 3.11.15 的 venv、装锁文件里的 91 个包（uv 的缓存里都有，337 ms）、可编辑地装检出，下载转发器并核对 SHA-256；`PATH` 上有 ffmpeg、`AndroidWorldAvd` 在，所以说已装好。再跑 `spectragent benchmark fetch androidworld`：`All` 116 个任务（91 个 Android、25 个信息检索），`miniwob` 92 个，名称表 117 个名字，都是钉住的 commit；与 2026-11-01 手工生成的列表比，116 个里 115 个目标与参数相同，不同的那个是 `MarkorCreateFolder`（它的文件夹名取自生成时的时钟，`UNREPRODUCIBLE` 里的那个，加载器本来就跳过它）。`tmp/androidworld` 里手工准备的那份没动。
 
 d 段没做、留给后面的：BrowseComp 的 `source: url` 与 LexBench-Browser 钉哪份数据等用户定；`exact_match` 判 BrowseComp 与 BrowseComp 的空 `task_text`（§4.11）；建 AVD 与 AndroidWorld 的一次性 setup 的自动化。
 

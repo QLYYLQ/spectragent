@@ -50,6 +50,9 @@ HF_TOKEN_ENV = "HF_TOKEN"
 _HUGGING_FACE = "https://huggingface.co"
 #: How long one download may take to connect and between reads.
 _DOWNLOAD_TIMEOUT_S = 60.0
+#: How long a program a fetch or an installation runs may take: installing
+#: AndroidWorld's packages without a warm cache is the longest, minutes.
+PROGRAM_TIMEOUT_S = 1800.0
 
 
 class PinnedData(Protocol):
@@ -101,19 +104,35 @@ class ProgramError(Refusal, RuntimeError):
     """A program a fetch or an installation runs could not start or failed; the message names it."""
 
 
-def run_program(argv: Sequence[str | Path], purpose: str, *, cwd: Path | None = None) -> None:
+def run_program(
+    argv: Sequence[str | Path],
+    purpose: str,
+    *,
+    cwd: Path | None = None,
+    timeout_s: float = PROGRAM_TIMEOUT_S,
+) -> None:
     """Run *argv* for *purpose* (``check out AndroidWorld``), its output on this process's stderr.
 
     Stdout is left to the command's one result (``--json``), so the program
     writes both of its streams to file descriptor 2, whatever ``sys.stderr``
-    is.
+    is. It gets *timeout_s* (killed after it), and git asks for no password:
+    a fetch or an installation runs unattended.
 
     Raises:
-        ProgramError: It could not start, or exited with a status other than 0.
+        ProgramError: It could not start, ran out of time, or exited with a
+            status other than 0.
     """
     command = [str(part) for part in argv]
+    environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     try:
-        completed = subprocess.run(command, stdout=2, stderr=2, cwd=cwd, check=False)
+        completed = subprocess.run(
+            command, stdout=2, stderr=2, cwd=cwd, env=environment, timeout=timeout_s, check=False
+        )
+    except subprocess.TimeoutExpired:
+        raise ProgramError(
+            f"cannot {purpose}: {shlex.join(command)} did not finish within {timeout_s:g} s and "
+            f"was stopped"
+        ) from None
     except OSError as exc:
         raise ProgramError(f"cannot {purpose}: {command[0]} does not start: {exc}") from exc
     if completed.returncode != 0:
@@ -250,6 +269,7 @@ def _raise_for(response: httpx.Response, what: str) -> None:
 
 __all__ = [
     "HF_TOKEN_ENV",
+    "PROGRAM_TIMEOUT_S",
     "BenchmarkInstallation",
     "BenchmarkSetupError",
     "PinnedData",
