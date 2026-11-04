@@ -619,6 +619,107 @@ def test_an_agents_sampling_values_go_into_the_provider_chosen_where_it_has_the_
     composer.compose(raw)
 
 
+# ── an agent's start for its capability blocks (user ruling 2026-11-04) ──
+
+
+@pytest.mark.parametrize("agent_id", ["skyvern.dom", "skyvern.dom_vision"])
+def test_skyvern_starts_the_browser_block_reading_the_page_as_skyvern_does(composer, agent_id):
+    """Skyvern's own DOM extraction printed as HTML, not the browser package's BrowserUse/text."""
+    raw = yaml.safe_load(
+        render_config_template(TemplateChoices(agent=agent_id, model="m"), composer=composer)
+    )
+    browser = _browser(raw)
+    assert browser["dom_cleaner"]["cleaner_type"] == "skyvern"
+    assert browser["dom_serializer"]["serializer_type"] == "html"
+    run = composer.compose(raw)
+    assert run.single("capability").dom_cleaner.cleaner_type == "skyvern"
+
+
+def test_browser_use_starts_the_page_text_limit_where_browser_use_cuts_it(composer):
+    """browser-use's max_clickable_elements_length, 40000 (agent/views.py:91)."""
+    raw = yaml.safe_load(render_config_template(TemplateChoices(model="m"), composer=composer))
+    assert _browser(raw)["dom_max_serialized_chars"] == 40000
+    ui_tars = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="ui_tars", environment="browser", model="m"), composer=composer
+        )
+    )
+    assert _browser(ui_tars)["dom_max_serialized_chars"] == "unlimited", "only BrowserUse's"
+
+
+@pytest.mark.parametrize(
+    ("flag", "receptor", "field_name", "key"),
+    [
+        ("--dom-cleaner", "dom_cleaner", "cleaner_type", "browser_use"),
+        ("--dom-serializer", "dom_serializer", "serializer_type", "text"),
+    ],
+)
+def test_a_template_flag_overrides_the_agents_capability_start(
+    composer, flag, receptor, field_name, key
+):
+    raw = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="skyvern.dom", model="m", capability_flags={flag: key}),
+            composer=composer,
+        )
+    )
+    assert _browser(raw)[receptor][field_name] == key
+    # Mixing stays a valid run: Skyvern on another reading of the page is refused nowhere.
+    AgentRuntime.for_agent(composer.compose(raw), "main").prepare()
+
+
+def test_a_skeletons_capability_values_win_over_the_new_agents_start(composer):
+    source = yaml.safe_load(Path("configs/browser_use_local.yaml").read_text())
+    expanded = yaml.safe_load(
+        render_config_template(TemplateChoices(agent="skyvern.dom"), source, composer=composer)
+    )
+    browser = _browser(expanded)
+    assert browser["dom_cleaner"]["cleaner_type"] == _browser(source)["dom_cleaner"]["cleaner_type"]
+    assert browser["dom_serializer"]["serializer_type"] == "text"
+
+
+def test_what_the_benchmark_supplies_wins_over_the_agents_capability_start(composer, tmp_path):
+    benchmark = _androidworld(tmp_path)
+    document = yaml.safe_load(benchmark.read_text())
+    document["benchmark"][0]["capability"][0]["settle_min_after_action_ms"] = 1500
+    benchmark.write_text(yaml.safe_dump(document))
+    text = render_config_template(
+        TemplateChoices(agent="m3a", model="m", benchmark=str(benchmark)), composer=composer
+    )
+    raw = yaml.safe_load(text)
+    assert "settle_min_after_action_ms" not in _android(raw)
+    assert "# settle_min_after_action_ms: 1500, from the benchmark androidworld" in text
+    capability = composer.compose(run_root(raw, read_benchmark(str(benchmark)))).single(
+        "capability"
+    )
+    assert capability.settle_min_after_action_ms == 1500
+
+
+def test_an_agents_start_for_a_capability_the_run_lacks_is_not_used(composer, monkeypatch):
+    from spectragent.agents.ui_tars.agent import UITarsAgent
+
+    monkeypatch.setattr(
+        UITarsAgent,
+        "__template_capabilities__",
+        {"android": {"settle_min_after_action_ms": 2000}},
+    )
+    browser = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="ui_tars", environment="browser", model="m"), composer=composer
+        )
+    )
+    assert [block["capability_id"] for block in browser["environment"][0]["capabilities"]] == [
+        "browser"
+    ]
+    composer.compose(browser)
+    android = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="ui_tars", environment="android", model="m"), composer=composer
+        )
+    )
+    assert _android(android)["settle_min_after_action_ms"] == 2000
+
+
 def test_changing_the_model_provider_of_a_skeleton_keeps_the_agents_sampling_values(composer):
     source = yaml.safe_load(
         render_config_template(TemplateChoices(agent="m3a", model="m"), composer=composer)
@@ -686,6 +787,8 @@ def test_changing_environment_and_agent_restarts_what_the_new_wiring_does_not_ta
     assert agent["llm"]["model"] == "chosen-model", "a receptor the new agent takes is kept"
     # The skeleton's ReAct Loop is M3A's too: its written values win.
     assert agent["agent_loop"]["max_actions_per_step"] == 4
+    # The Android block starts over, from M3A's own value for it.
+    assert environment["capabilities"][0]["settle_min_after_action_ms"] == 2000
 
 
 def test_a_loop_written_without_its_omittable_receptor_is_kept_when_the_agent_changes(composer):
@@ -834,6 +937,8 @@ def test_m3a_on_androidworld_writes_its_official_values_and_none_the_benchmark_s
     }
     android = _android(raw)
     assert not {"settle_max_wait_s", "settle_quiet_ms", "typing_backend"} & set(android)
+    # M3A's own 2 s pause after an action (AndroidWorld's agents/m3a.py:342, 540).
+    assert android["settle_min_after_action_ms"] == 2000
     scroll = next(a for a in android["actions"] if a["action_id"] == "android.scroll")
     assert not {"swipe_to", "duration_ms"} & set(scroll)
     assert "# settle_max_wait_s: 6.0, from the benchmark androidworld; left out here." in text
@@ -849,6 +954,7 @@ def test_m3a_on_androidworld_writes_its_official_values_and_none_the_benchmark_s
     # Composed with the benchmark, the run gets AndroidWorld's settings.
     capability = composer.compose(run_root(raw, block)).single("capability")
     assert (capability.settle_max_wait_s, capability.settle_quiet_ms) == (6.0, 1000)
+    assert capability.settle_min_after_action_ms == 2000
     assert capability.typing_backend.fold_accents is True
     scroll = next(a for a in capability.actions if a.action_id == "android.scroll")
     assert (scroll.swipe_to, scroll.duration_ms) == ("target_edge", 300)

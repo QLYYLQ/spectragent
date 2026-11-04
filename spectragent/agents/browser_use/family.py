@@ -157,6 +157,14 @@ class BrowserUseAgent(AgentBase):
         "agent_loop": {"loop_id": "react", "max_actions_per_step": 5, "max_steps": 500},
         "llm": {"temperature": 0.2, "frequency_penalty": 0.3},
     }
+    #: Where a new ``config template`` starts the browser block a member runs
+    #: in: browser-use cuts the page text it shows at 40000 characters
+    #: (``max_clickable_elements_length``,
+    #: https://github.com/browser-use/browser-use/blob/6e2add1c8139b17b01a549eea944687486724fda/browser_use/agent/views.py#L91, applied at
+    #: https://github.com/browser-use/browser-use/blob/6e2add1c8139b17b01a549eea944687486724fda/browser_use/agent/prompts.py#L238-L240).
+    __template_capabilities__: ClassVar[Mapping[str, Mapping[str, JsonValue]]] = {
+        "browser": {"dom_max_serialized_chars": 40000}
+    }
     # The prompt states a desktop browser's input platform (render_browser_platform).
     __input_platforms__: ClassVar[frozenset[InputPlatform]] = BROWSER_PLATFORMS
     # The DOM text's format is its serializer's to describe: the surface

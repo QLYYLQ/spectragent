@@ -438,11 +438,17 @@ TEMPLATE_FLAGS: tuple[TemplateFlag, ...] = ()
   and nothing can choose for the user (a machine's own path) is a visible placeholder
   (Android's `avd` and `service_apk`). `{}` when the block needs nothing; the template then
   refuses a missing required field by name (design doc §4.17 "capability 的模板起点").
+  An agent may start some fields differently for itself (its `__template_capabilities__`,
+  keyed by `capability_id`: Skyvern's own cleaner, M3A's pause after an action); a
+  skeleton's values, the template flags and what a benchmark supplies all come before the
+  agent's, and the agent's before this block (§4.17 "agent 也给它所在 environment 的
+  capability 块起点"). Keep this block agent-neutral.
 - **`TEMPLATE_FLAGS`** — a tuple of `TemplateFlag(flag, receptor, help)`
   (`core/registries.py`): each a `config template` flag whose value is a registry key of
   the receptor's layer, replacing that receptor's strategy in this capability's block
-  (browser: `--backend`, `--replayability`). Generated like `START_FLAGS`, listed by
-  capability, refused when the template has no block of this capability; a flag two
+  (browser: `--backend`, `--replayability`, `--dom-cleaner`, `--dom-serializer`).
+  Generated like `START_FLAGS`, listed by capability, refused when the template has no
+  block of this capability; a flag two
   packages declare, or one the command already takes, is refused. `()` when none.
 
 The reader (`core/registries.py::_read_declarations`) refuses a module missing any of

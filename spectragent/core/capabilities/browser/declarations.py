@@ -93,6 +93,18 @@ TEMPLATE_FLAGS = (
         "replayability",
         "Replayability registry key (none/pinned). Network source and archive remain independent.",
     ),
+    TemplateFlag(
+        "--dom-cleaner",
+        "dom_cleaner",
+        "DOM cleaner registry key; new templates use the agent's own (Skyvern: skyvern), "
+        "else browser_use.",
+    ),
+    TemplateFlag(
+        "--dom-serializer",
+        "dom_serializer",
+        "DOM serializer registry key; new templates use the agent's own (Skyvern: html), "
+        "else text.",
+    ),
 )
 
 #: Modules whose top-level imports need an optional extra, which discovery

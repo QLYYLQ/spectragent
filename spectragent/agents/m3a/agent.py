@@ -253,6 +253,15 @@ class M3AAgent(AgentBase):
         # whichever model block it chooses.
         "llm": {"temperature": 0.0},
     }
+    #: Where a new ``config template`` starts the Android block: M3A sleeps 2 s
+    #: after every action before it reads the screen again
+    #: (``wait_after_action_seconds``,
+    #: https://github.com/google-research/android_world/blob/55ddaf5edc6f6c25673aed343907d5b9dca66f84/android_world/agents/m3a.py#L342 and #L540). M3A's own habit,
+    #: not the benchmark's: AndroidWorld's runner settings for every agent
+    #: come from ``configs/benchmarks/androidworld.yaml``.
+    __template_capabilities__: ClassVar[Mapping[str, Mapping[str, JsonValue]]] = {
+        "android": {"settle_min_after_action_ms": 2000}
+    }
 
     # ── config ─────────────────────────────────────────────────
     task_guidelines: Annotated[

@@ -142,6 +142,20 @@ class SkyvernAgent(AgentBase):
         "agent_loop": {"loop_id": "react", "max_steps": 10},
         "llm": {"temperature": 0.0},
     }
+    #: Where a new ``config template`` starts the browser block a member runs
+    #: in: the page as Skyvern reads it, its own DOM extraction
+    #: (``webeye/scraper/domUtils.js``, loaded at
+    #: https://github.com/Skyvern-AI/skyvern/blob/bd68e1af3dd4c4556f286d39d40e0463995220ba/skyvern/webeye/scraper/scraper.py#L81) printed as HTML
+    #: (``ElementTreeFormat.HTML``,
+    #: https://github.com/Skyvern-AI/skyvern/blob/bd68e1af3dd4c4556f286d39d40e0463995220ba/skyvern/forge/agent.py#L2952). Both members read the page this
+    #: way; the screenshot is the only difference. ``skyvern_hit_test`` is
+    #: our own addition for the training export, not Skyvern's.
+    __template_capabilities__: ClassVar[Mapping[str, Mapping[str, JsonValue]]] = {
+        "browser": {
+            "dom_cleaner": {"cleaner_type": "skyvern"},
+            "dom_serializer": {"serializer_type": "html"},
+        }
+    }
 
     # ── config (conscribe visible) ─────────────────────────────
     # ``action_history_window`` counts *actions*, not steps — each one that
