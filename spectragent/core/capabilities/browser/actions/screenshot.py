@@ -25,7 +25,7 @@ import base64
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 
 from agent_cdp import Participation
 from pydantic import BaseModel, ConfigDict
@@ -35,6 +35,7 @@ from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
 )
+from spectragent.core.capabilities.browser.presentation import BrowserWords
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import (
     ScreenshotRequestEvent,
@@ -46,9 +47,10 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class ScreenshotAction(ActionBase):
+class ScreenshotAction(BrowserWords, ActionBase):
     """Capture a screenshot and return a textual receipt."""
 
+    person_verb: ClassVar[str] = "截图"
     __registry_key__ = "browser.screenshot"
 
     # ⭐ capability-side configurable side-effects

@@ -996,7 +996,7 @@ function Session({ data, route, annotations, onReload }) {
               <div className="item-line"><ItemLinks item={evidence} /></div>
             </details>;
           })}
-          {item.trajectory && <ReviewHistory key={`history:${itemId}`} queueId={data.queue_id} item={item} version={data.sha256} columns={images.length} />}
+          {item.trajectory && <ReviewHistory key={`history:${itemId}`} queueId={data.queue_id} item={item} version={data.sha256} />}
         </section>
         <aside className="review-rail" aria-label="标注" ref={rail}>
           <Instructions text={data.instructions} onGuide={() => setGuide(true)} />

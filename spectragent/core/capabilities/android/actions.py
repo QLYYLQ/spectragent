@@ -38,7 +38,7 @@ import asyncio
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, model_validator
 from pydantic import Field as PydanticField
@@ -56,6 +56,7 @@ from spectragent.core.capabilities.android.effects import (
     Touch,
 )
 from spectragent.core.capabilities.android.input._registrar import UNCHANGED_FIELD_CODES
+from spectragent.core.capabilities.android.presentation import AndroidWords
 from spectragent.core.capabilities.android.ui_tree.models import ElementIndexError
 from spectragent.core.trace.redaction import trace_safe
 from spectragent.schemas.action import ActionDescriptor, ActionResult
@@ -88,9 +89,10 @@ async def touch(
 
 
 @dataclass
-class AndroidClickAction(ActionBase):
+class AndroidClickAction(AndroidWords, ActionBase):
     """Tap an element of the UI tree: the centre of its bounds on the screen."""
 
+    person_verb: ClassVar[str] = "点击"
     __registry_key__ = "android.click"
     Effect = AndroidTouchEffect
 
@@ -127,9 +129,10 @@ class AndroidClickAction(ActionBase):
 
 
 @dataclass
-class AndroidClickCoordinateAction(ActionBase):
+class AndroidClickCoordinateAction(AndroidWords, ActionBase):
     """Tap one point of the screen."""
 
+    person_verb: ClassVar[str] = "点击"
     __registry_key__ = "android.click_coordinate"
     Effect = AndroidTouchEffect
 
@@ -159,9 +162,10 @@ _PRESS_HINT = "the finger goes down there; never with index"
 
 
 @dataclass
-class AndroidLongPressAction(ActionBase):
+class AndroidLongPressAction(AndroidWords, ActionBase):
     """Press and hold one point of the screen, or the centre of an element of the UI tree."""
 
+    person_verb: ClassVar[str] = "长按"
     __registry_key__ = "android.long_press"
     Effect = AndroidTouchEffect
 
@@ -235,9 +239,10 @@ class AndroidLongPressAction(ActionBase):
 
 
 @dataclass
-class AndroidDragAction(ActionBase):
+class AndroidDragAction(AndroidWords, ActionBase):
     """Touch one point, move to another, lift."""
 
+    person_verb: ClassVar[str] = "拖动"
     __registry_key__ = "android.drag"
     Effect = AndroidTouchEffect
 
@@ -285,7 +290,7 @@ _START_HINT = "the swipe starts there; never with index"
 
 
 @dataclass
-class AndroidScrollAction(ActionBase):
+class AndroidScrollAction(AndroidWords, ActionBase):
     """Swipe to scroll: from the start point, from the centre of an element, or from the middle of the screen.
 
     The swipe goes the agent's ``amount``; given none, ``swipe_to`` says where
@@ -295,6 +300,7 @@ class AndroidScrollAction(ActionBase):
     §4.1 "M3A"). Either way the end stays on the screen.
     """
 
+    person_verb: ClassVar[str] = "滚动"
     __registry_key__ = "android.scroll"
     Effect = AndroidTouchEffect
 
@@ -633,7 +639,7 @@ class _FocusedTyping:
 
 
 @dataclass
-class AndroidTypeAction(_FocusedTyping, ActionBase):
+class AndroidTypeAction(AndroidWords, _FocusedTyping, ActionBase):
     """Type into an element of the UI tree: tap the centre of its bounds, then type as after any tap.
 
     The browser's ``type`` (``docs/architecture_design.md`` §4.9, §11.2): put
@@ -651,6 +657,7 @@ class AndroidTypeAction(_FocusedTyping, ActionBase):
     before anything is touched.
     """
 
+    person_verb: ClassVar[str] = "输入"
     __registry_key__ = "android.type"
     Effect = AndroidTextEffect
 
@@ -698,7 +705,7 @@ class AndroidTypeAction(_FocusedTyping, ActionBase):
 
 
 @dataclass
-class AndroidTypeCoordinateAction(_FocusedTyping, ActionBase):
+class AndroidTypeCoordinateAction(AndroidWords, _FocusedTyping, ActionBase):
     """Type into a text field: tap it first when given a point, else the one that has focus.
 
     The point is optional, both axes or neither, as on the browser (user ruling
@@ -706,6 +713,7 @@ class AndroidTypeCoordinateAction(_FocusedTyping, ActionBase):
     :class:`_FocusedTyping`'s.
     """
 
+    person_verb: ClassVar[str] = "输入"
     __registry_key__ = "android.type_coordinate"
     Effect = AndroidTextEffect
 
@@ -762,9 +770,10 @@ KEYCODES: dict[SystemKey, str] = {
 
 
 @dataclass
-class AndroidPressKeyAction(ActionBase):
+class AndroidPressKeyAction(AndroidWords, ActionBase):
     """Press one of the phone's system keys."""
 
+    person_verb: ClassVar[str] = "按键"
     __registry_key__ = "android.press_key"
 
     class Params(BaseModel):
@@ -833,9 +842,10 @@ async def open_app(
 
 
 @dataclass
-class AndroidOpenAppAction(ActionBase):
+class AndroidOpenAppAction(AndroidWords, ActionBase):
     """Open an app by its name; what a name opens is this action's table, or the home screen's."""
 
+    person_verb: ClassVar[str] = "打开应用"
     __registry_key__ = "android.open_app"
 
     apps: Annotated[
@@ -878,9 +888,10 @@ class AndroidOpenAppAction(ActionBase):
 
 
 @dataclass
-class AndroidWaitAction(ActionBase):
+class AndroidWaitAction(AndroidWords, ActionBase):
     """Let time pass before the next observation; touches nothing on the device."""
 
+    person_verb: ClassVar[str] = "等待"
     __registry_key__ = "android.wait"
     only_waits = True
 

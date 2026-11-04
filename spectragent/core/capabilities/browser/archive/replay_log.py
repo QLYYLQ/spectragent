@@ -29,11 +29,13 @@ dicts (:class:`~.base.ReplayLogFeed`), so the archive package never imports a
 replay type.
 """
 
+from collections.abc import Iterator
 from typing import Annotated, ClassVar
 
 from pydantic import Field
 
 from spectragent.core.archive import ArchiveFile, ArchiveProvenance
+from spectragent.core.archive.source import ArchiveReader
 from spectragent.core.capabilities.browser.archive.base import (
     ArchiveNeed,
     BrowserArchiveContext,
@@ -42,6 +44,7 @@ from spectragent.core.capabilities.browser.archive.base import (
     ReplayLogFeed,
 )
 from spectragent.core.capabilities.browser.archive.encoding import gzip_jsonl
+from spectragent.core.presentation import ReplayDecision
 
 #: The archiver's key: the readers find a run's replay log by it.
 REPLAY_LOG_ARCHIVER = "browser.replay_log"
@@ -53,6 +56,23 @@ class ReplayLogArchiver(BrowserArchiverBase):
     """The replay server's decisions, step by step."""
 
     __registry_key__ = REPLAY_LOG_ARCHIVER
+    #: The decisions the log records, for the viewer (``core/presentation.py::LogsReplayDecisions``).
+    decision_kinds: ClassVar[tuple[str, ...]] = (
+        "hit",
+        "miss",
+        "exhausted",
+        "substituted",
+        "synthetic",
+    )
+
+    @classmethod
+    def replay_decisions(cls, reader: ArchiveReader) -> Iterator[ReplayDecision]:
+        """Every decision of the run with its weight (``replay/replay_log.py::iter_decisions``)."""
+        from spectragent.core.capabilities.browser.replay.replay_log import iter_decisions
+
+        for step, entry, weight in iter_decisions(reader):
+            yield step, entry.model_dump(mode="json"), weight
+
     needs: ClassVar[frozenset[ArchiveNeed]] = frozenset({"replay_log"})
 
     def __init__(

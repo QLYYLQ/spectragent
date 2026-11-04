@@ -16,9 +16,10 @@ Pydantic models only: readers of recorded evidence (the flywheel metrics, the
 lookahead tools) import this module without the browser implementation.
 """
 
-from typing import ClassVar, Final, Literal, get_args
+from collections.abc import Mapping
+from typing import Any, ClassVar, Final, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from spectragent.schemas.restoration import RestorationEvidence
 
@@ -312,6 +313,133 @@ class BrowserRestorationEvidence(RestorationEvidence):
         ):
             failed.append("screenshot_distance")
         return failed
+
+    @classmethod
+    def measured_gap(cls, evidence: Mapping[str, JsonValue]) -> tuple[list[str], list[str]]:
+        """What one recorded browser evidence measured as different, and what it did not measure.
+
+        For the viewer (``core/presentation.py::MeasuresRestorationGap``), from
+        the evidence as recorded JSON, each line naming the capability. No
+        tolerance is applied: a nonzero dHash distance may pass the check, and
+        a zero one is not proof of identical pixels; a missing measure is
+        never a match.
+        """
+        # A recorded evidence's JSON, read field by field as it was written.
+        item: dict[str, Any] = dict(evidence)
+        prefix = BROWSER
+        differences: list[str] = []
+        unknown: list[str] = []
+        for field, label in (("url_match", "URL"), ("signature_match", "DOM signature")):
+            if item.get(field) is False:
+                differences.append(f"{prefix}: {label} changed")
+            elif item.get(field) is None:
+                unknown.append(f"{prefix}: {label} not measured")
+        if item.get("url_match") is True and item.get("recorded_url") != item.get("restored_url"):
+            # Equal only once a page-URL rule left its parameters out: still a measured difference.
+            names = ", ".join(item.get("url_ignored_query") or [])
+            differences.append(
+                f"{prefix}: URL differs in parameters page-URL rules leave out ({names})"
+            )
+        distance = item.get("screenshot_distance")
+        areas = item.get("media_areas")
+        if distance is None:
+            unknown.append(f"{prefix}: screenshot distance not measured")
+        elif areas is not None and areas.get("unmasked_distance") is not None:
+            _masked_screenshot_gap(prefix, distance, areas, differences)
+        elif distance > 0:
+            differences.append(f"{prefix}: screenshot dHash distance {distance}")
+        misses = item.get("document_misses")
+        if misses is None:
+            unknown.append(f"{prefix}: document misses not measured")
+        elif misses > 0:
+            differences.append(f"{prefix}: {misses} document misses")
+        _media_gap(prefix, item.get("media"), differences, unknown, areas)
+        return differences, unknown
+
+
+def _masked_screenshot_gap(
+    prefix: str, distance: int, areas: dict[str, Any], differences: list[str]
+) -> None:
+    """A screenshot distance on a page media-area rules declare: the whole images' too.
+
+    The restorer judged the masked distance; the view still shows what the
+    whole images measured, and which rules masked how much.
+    """
+    unmasked = areas["unmasked_distance"]
+    rules = ", ".join(areas.get("rule_ids") or [])
+    share = areas.get("masked_share")
+    covered = f"{share:.0%} of the image" if share is not None else "an unknown share"
+    if areas.get("mask_applied"):
+        if unmasked > 0 or distance > 0:
+            differences.append(
+                f"{prefix}: screenshot dHash distance {unmasked} over the whole image, "
+                f"{distance} with the media areas masked ({rules}; {covered})"
+            )
+    elif distance > 0:
+        differences.append(
+            f"{prefix}: screenshot dHash distance {distance} over the whole image "
+            f"(media areas of {rules} cover {covered}, too much to mask)"
+        )
+
+
+def _media_gap(
+    prefix: str,
+    media: dict[str, Any] | None,
+    differences: list[str],
+    unknown: list[str],
+    areas: dict[str, Any] | None = None,
+) -> None:
+    """Media differences and alignment problems, measured facts only; no tolerance applied.
+
+    On a page media-area rules declare (*areas*), the restorer did not judge
+    them; each line says so.
+    """
+    if media is None:
+        return
+    first = len(differences), len(unknown)
+    _media_lines(prefix, media, differences, unknown)
+    if areas is not None:
+        note = f" (not judged: media-area rules {', '.join(areas.get('rule_ids') or [])})"
+        for lines, start in ((differences, first[0]), (unknown, first[1])):
+            lines[start:] = [line + note for line in lines[start:]]
+
+
+def _media_lines(
+    prefix: str, media: dict[str, Any], differences: list[str], unknown: list[str]
+) -> None:
+    comparisons = media.get("comparisons")
+    if comparisons is None:
+        unknown.append(f"{prefix}: media state not compared ({media.get('detail') or 'unknown'})")
+    for side in ("recorded", "restored"):
+        for frame in media.get(f"{side}_unreachable_frames") or []:
+            line = f"{prefix}: media in {side} frame {frame} could not be read"
+            (differences if comparisons is not None else unknown).append(line)
+    for item in comparisons or []:
+        element = item.get("element", "?")
+        if item.get("correspondence") != "matched":
+            differences.append(f"{prefix}: media {element} {item.get('correspondence')}")
+            continue
+        if item.get("live"):
+            differences.append(f"{prefix}: media {element} is a live stream")
+        recorded, restored = item.get("recorded_time"), item.get("restored_time")
+        if recorded is None or restored is None:
+            unknown.append(f"{prefix}: media {element} position not measured")
+        elif recorded != restored:
+            differences.append(
+                f"{prefix}: media {element} at {restored:.3f} s, recorded {recorded:.3f} s"
+            )
+        if (
+            item.get("recorded_paused") is not None
+            and item.get("restored_paused") is not None
+            and item["recorded_paused"] != item["restored_paused"]
+        ):
+            differences.append(f"{prefix}: media {element} paused state changed")
+    for record in media.get("alignment") or []:
+        if record.get("outcome") in ("failed", "not_restorable"):
+            differences.append(
+                f"{prefix}: media {record.get('element', '?')} alignment {record['outcome']}"
+                + (f" ({record['detail']})" if record.get("detail") else "")
+            )
 
 
 __all__ = [

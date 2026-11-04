@@ -1,119 +1,291 @@
-/** Task and lineage identities come from recorded fields, never run names. */
-const present = (value) => value !== null && value !== undefined && String(value).trim() !== "";
+/**
+ * Layout of the task view: one task's runs drawn like `git log --graph`, read
+ * top-down from step 0. Which commit a branch leaves, which runs have no edge
+ * and why, and which fork points fold come from the read side
+ * (spectragent/inspection/graph.py, served at /api/task-graph); this file only
+ * turns that placement and each run's committed steps into rows.
+ */
 
-export function taskIdentity(row, byKey = new Map(), visited = new Set()) {
-  const branch = row.branch;
-  const identity = branch
-    ? [branch.source_benchmark, branch.source_subset, branch.source_task_id]
-    : [row.benchmark, row.subset, row.task_id];
-  if (present(identity[0]) && present(identity[2]))
-    return { key: JSON.stringify(identity.map((value) => value ?? "")), benchmark: identity[0], subset: identity[1] || "", taskId: identity[2] };
-  // An explicit resolved source can still identify a family with incomplete task metadata.
-  if (branch && row.source_resolution === "found" && byKey.has(row.source_key) && !visited.has(row.key)) {
-    const next = new Set(visited).add(row.key);
-    const source = byKey.get(row.source_key);
-    if (!next.has(source.key)) return taskIdentity(source, byKey, next);
-  }
-  return { key: `run:${row.key}`, benchmark: identity[0] || "", subset: identity[1] || "", taskId: identity[2] || "", incomplete: true };
-}
+import { reasonLabel } from "./evidence.js";
 
-export function taskGroups(allRows, visibleRows = allRows) {
-  const byKey = new Map(allRows.map((row) => [row.key, row]));
+/** Branch rows an opened fork point lists at a time. */
+export const MEMBERS_PER_PAGE = 20;
+/** Lane colours cycle through this many CSS variables (--lane-0 …). */
+export const LANE_COLORS = 6;
+
+const DONE = { done: "已完成", max_steps: "步数用完", error: "出错", timeout: "超时", cancelled: "已取消", no_result: "没有结果" };
+const STATUS = {
+  succeeded: ["ok", "✓ 成功"],
+  failed: ["bad", "✗ 失败"],
+  skipped: ["muted", "– 没有执行"],
+  no_result: ["warn", "? 没有返回结果"],
+};
+
+export const endLabel = (value) => DONE[value] || value || "没有结果";
+export const callText = (calls) => (calls == null ? "未统计调用" : `${calls} 次调用`);
+
+/**
+ * The task list: rows grouped by the task key the read side gave each run,
+ * in list order, each with the header the read side wrote for its task.
+ */
+export function taskGroups(rows) {
   const groups = new Map();
-  for (const row of visibleRows) {
-    const identity = taskIdentity(row, byKey);
-    if (!groups.has(identity.key)) groups.set(identity.key, { ...identity, runs: [], title: "" });
-    const group = groups.get(identity.key);
-    group.runs.push(row);
-    const sourceTask = row.branch?.task_variant?.source_task_text;
-    if (!group.title || !row.branch) group.title = sourceTask || row.task || row.task_id || row.key;
+  for (const row of rows) {
+    if (!row.task_key) continue;
+    if (!groups.has(row.task_key)) groups.set(row.task_key, { key: row.task_key, header: row.task_header, runs: [] });
+    groups.get(row.task_key).runs.push(row);
   }
   return [...groups.values()];
 }
 
-/** Include filtered sources as context; ambiguous/missing references never become edges. */
-export function taskLanes(runs, allRows) {
-  const byKey = new Map(allRows.map((row) => [row.key, row]));
-  const visible = new Set(runs.map((row) => row.key));
-  const nodes = new Map();
-  const ensure = (row) => {
-    if (nodes.has(row.key)) return nodes.get(row.key);
-    const node = { row, context: !visible.has(row.key), parent: null, issue: null, children: [] };
-    nodes.set(row.key, node);
-    if (row.branch) {
-      if (row.source_resolution === "found" && row.source_key) {
-        if (row.source_key === row.key) node.issue = "来源引用了运行自身";
-        else {
-          node.parent = row.source_key;
-          ensure(byKey.get(row.source_key) || { key: row.source_key, context_only: true });
-        }
-      } else node.issue = sourceIssue(row);
+const unique = (values) => [...new Set(values.filter(Boolean))];
+
+/** One verdict as a chip: its label, else its score (nothing more is claimed), else not judged. */
+export function verdictChip(verdict) {
+  const who = verdict.verifier_id;
+  if (verdict.status !== "judged") return { tone: "neutral", text: `${who} 没判`, title: verdict.slug };
+  if (verdict.label === 1 || verdict.label === 0)
+    return { tone: verdict.label ? "good" : "bad", text: `${who} ${verdict.label ? "成功" : "失败"}`, title: verdict.slug };
+  const score = Number.isFinite(verdict.score) ? `分数 ${verdict.score}` : "判了但没有分数";
+  return { tone: "neutral", text: `${who} ${score}`, title: verdict.slug };
+}
+
+/**
+ * What a folded task says: who ran it, how many runs and branches, and each
+ * verdict's outcomes, counted per slug (one verifier with one set of
+ * settings), never merged across judges of one kind. A verifier that judged
+ * under several slugs in this task is named by its slug.
+ */
+export function taskSummary(group) {
+  const branches = group.runs.filter((row) => row.branch).length;
+  const verdicts = group.runs.flatMap((row) => row.verdicts || []);
+  const slugs = new Map();
+  for (const verdict of verdicts) slugs.set(verdict.verifier_id, new Set([...(slugs.get(verdict.verifier_id) || []), verdict.slug]));
+  const tally = new Map();
+  for (const verdict of verdicts) {
+    const named = slugs.get(verdict.verifier_id).size > 1 ? { ...verdict, verifier_id: verdict.slug } : verdict;
+    const chip = verdictChip(named);
+    const key = `${verdict.slug}\u0000${chip.text}`;
+    const entry = tally.get(key) || { ...chip, key, count: 0 };
+    entry.count += 1;
+    tally.set(key, entry);
+  }
+  return {
+    agents: unique(group.runs.map((row) => row.agent_id)),
+    models: unique(group.runs.map((row) => row.model)),
+    configs: unique(group.runs.map((row) => row.config_hash?.slice(0, 8))),
+    runs: group.runs.length - branches,
+    branches,
+    unjudged: group.runs.filter((row) => !(row.verdicts || []).length).length,
+    verdicts: [...tally.values()],
+  };
+}
+
+/** The fork head's two chips: how the restored prefix went, and the checkpoint check. */
+export function restorationChips(restoration) {
+  if (!restoration) return [];
+  const prefix = restoration.prefix || {};
+  const restored = restoration.restored || 0;
+  const counted = Object.entries(prefix).filter(([, count]) => count);
+  const chips = [];
+  if (!restored) chips.push({ tone: "neutral", text: "没有恢复前缀" });
+  else if (counted.length === 1 && counted[0][0] === "ok") chips.push({ tone: "good", text: `恢复 ${restored} 步 全部 ok` });
+  else
+    chips.push({
+      tone: prefix.diverged ? "bad" : "warn",
+      text: `恢复 ${counted.map(([verdict, count]) => `${count} ${verdict}`).join(" · ") || `${restored} 步未检查`}`,
+    });
+  const check = restoration.checkpoint;
+  if (check) {
+    const why = (check.reasons || []).map(reasonLabel).join("、");
+    chips.push({
+      tone: { ok: "good", warn: "warn", diverged: "bad" }[check.verdict] || "neutral",
+      text: `检查点 ${check.verdict}${why ? `：${why}` : ""}`,
+    });
+  } else chips.push({ tone: "bad", text: "检查点没有校验：恢复在它之前停下" });
+  return chips;
+}
+
+/** A folded fork point's counts: restoration results, end reasons and verdict outcomes. */
+export function forkChips(summary = {}) {
+  const tone = { ok: "good", warn: "warn", diverged: "bad", unchecked: "neutral" };
+  const restoration = Object.entries(summary.restoration || {}).map(([verdict, count]) => ({
+    tone: tone[verdict] || "neutral",
+    text: verdict === "unchecked" ? `${count} 个未检查` : `恢复 ${count} ${verdict}`,
+  }));
+  const ended = Object.entries(summary.ended || {});
+  const verdicts = (summary.verdicts || []).map((entry) => ({
+    tone: entry.outcome === "成功" ? "good" : entry.outcome === "失败" ? "bad" : "neutral",
+    text: `${entry.outcome} ${entry.count}`,
+    title: entry.slug,
+  }));
+  const ends = ended.map(([done, count]) => `${endLabel(done)} ${count}`).join(" · ");
+  return [...restoration, ...(ends ? [{ tone: "neutral", text: ends }] : []), ...verdicts];
+}
+
+/** A commit's result: the first action that did not succeed decides it. */
+export function commitStatus(step) {
+  const worst = step.actions.find((action) => action.status !== "succeeded")?.status || "succeeded";
+  const [tone, text] = STATUS[worst] || STATUS.no_result;
+  return { tone, text, failed: Boolean(step.error) || step.actions.some((action) => action.status === "failed") };
+}
+
+/**
+ * A line's commits, in step order: each policy step from its checkpoint on,
+ * and each step its recording is missing (a gap). Restored steps and the
+ * terminal observation are not commits; the terminal step ends the line.
+ */
+export function commitsOf(run, data) {
+  const from = run.branch ? run.branch.checkpoint_step : 0;
+  const steps = data?.steps || [];
+  const policy = steps.filter((step) => step.origin === "policy" && step.step >= from);
+  const terminal = steps.find((step) => step.origin === "terminal") || null;
+  const last = Math.max(-1, ...steps.map((step) => step.step));
+  const gaps = (run.missing_steps || []).filter((step) => step >= from && step < last);
+  const commits = [
+    ...policy.map((step) => ({ kind: commitStatus(step).failed ? "fail" : "commit", step: step.step, data: step })),
+    ...gaps.map((step) => ({ kind: "gap", step })),
+  ].sort((a, b) => a.step - b.step);
+  return { commits, terminal };
+}
+
+const forkId = (key, step) => `${key}@${step}`;
+
+/**
+ * Every row of one task's graph, top-down. Each row names its lane, its
+ * colour, what it draws in the gutter (a line in from above, a line on
+ * below, an elbow from the lane it leaves) and the lanes passing through it.
+ * The number of lanes is the nesting depth, not the run count.
+ *
+ * `graphs` holds each line's run graph by key ({data, error}; absent while
+ * reading). In a folded task, `open` holds the opened fork points
+ * ("parent@step"), `shown` how many branch rows each lists, and `expanded`
+ * the branches opened from them.
+ */
+export function layoutTask(graph, { graphs = {}, open = new Set(), shown = {}, expanded = new Set() } = {}) {
+  const lines = new Map(graph.lines.map((line) => [line.key, line]));
+  const colour = new Map(graph.lines.map((line, index) => [line.key, index % LANE_COLORS]));
+  const children = new Map();
+  for (const line of graph.lines) {
+    if (!line.parent) continue;
+    const at = forkId(line.parent.key, line.parent.step);
+    if (!children.has(at)) children.set(at, []);
+    children.get(at).push(line.key);
+  }
+  const forks = new Map((graph.forks || []).map((fork) => [forkId(fork.parent, fork.step), fork]));
+  const rows = [];
+  const active = new Map();
+  const emit = (row) =>
+    rows.push({ top: false, bottom: false, elbow: null, ...row, through: [...active].filter(([lane]) => lane !== row.lane) });
+
+  function branchesAt(key, step, lane) {
+    const at = forkId(key, step);
+    const keys = children.get(at) || [];
+    if (!keys.length) return;
+    if (!graph.collapse) {
+      for (const child of keys) drawLine(lines.get(child), lane + 1, lane);
+      return;
     }
-    return node;
-  };
-  for (const row of runs) ensure(row);
-  for (const node of nodes.values()) {
-    const seen = new Set([node.row.key]);
-    let parent = node.parent;
-    while (parent) {
-      if (seen.has(parent)) {
-        node.parent = null;
-        node.issue = "来源引用形成循环，无法连接";
-        break;
-      }
-      seen.add(parent);
-      parent = nodes.get(parent)?.parent;
+    const opened = open.has(at);
+    const color = colour.get(keys[0]);
+    emit({ kind: "group", id: at, lane: lane + 1, color, elbow: lane, bottom: opened, fork: forks.get(at), count: keys.length, step, opened });
+    if (!opened) return;
+    active.set(lane + 1, color);
+    const limit = shown[at] || MEMBERS_PER_PAGE;
+    const listed = keys.slice(0, limit);
+    listed.forEach((child, index) => {
+      const more = index < listed.length - 1 || keys.length > limit;
+      if (expanded.has(child)) drawLine(lines.get(child), lane + 1, null, { top: true, bottom: more });
+      else emit({ kind: "member", key: child, lane: lane + 1, color: colour.get(child), top: true, bottom: more });
+    });
+    if (keys.length > limit) emit({ kind: "more", id: at, lane: lane + 1, color, top: true, remaining: keys.length - limit });
+    active.delete(lane + 1);
+  }
+
+  function drawLine(line, lane, parentLane, { top = false, bottom = false } = {}) {
+    const color = colour.get(line.key);
+    const state = graphs[line.key];
+    const run = graph.runs[line.key];
+    const kind = line.detached ? "ghost" : run.branch ? "fork" : "head";
+    emit({ kind, key: line.key, lane, color, top, bottom: true, elbow: line.detached ? null : parentLane, line });
+    active.set(lane, color);
+    branchesAt(line.key, -1, lane);
+    const { commits, terminal } = commitsOf(run, state?.data);
+    if (!state?.data) emit({ kind: "status", key: line.key, lane, color, top: true, bottom: true, error: state?.error || null });
+    const drawn = new Set([-1]);
+    for (const commit of commits) {
+      emit({ ...commit, key: line.key, lane, color, top: true, bottom: true });
+      drawn.add(commit.step);
+      branchesAt(line.key, commit.step, lane);
     }
+    // A fork point whose commit is not drawn (the run graph is still being
+    // read or failed) keeps its branches, just before the tip.
+    for (const at of children.keys()) {
+      const split = at.lastIndexOf("@");
+      const step = Number(at.slice(split + 1));
+      if (at.slice(0, split) === line.key && !drawn.has(step)) branchesAt(line.key, step, lane);
+    }
+    emit({ kind: "tip", key: line.key, lane, color, top: true, bottom, terminal, loaded: Boolean(state?.data) });
+    if (!bottom) active.delete(lane);
   }
-  for (const node of nodes.values()) if (node.parent) nodes.get(node.parent).children.push(node);
-  const compare = (a, b) => (a.row.branch?.checkpoint_step ?? -1) - (b.row.branch?.checkpoint_step ?? -1)
-    || (a.row.created_at || "").localeCompare(b.row.created_at || "") || a.row.key.localeCompare(b.row.key);
-  const lanes = [];
-  const visit = (node, depth = 0) => {
-    lanes.push({ ...node, depth });
-    for (const child of node.children.sort(compare)) visit(child, depth + 1);
-  };
-  for (const root of [...nodes.values()].filter((node) => !node.parent).sort(compare)) visit(root);
-  return lanes;
+
+  const tops = graph.lines.filter((line) => line.depth === 0 && !line.detached);
+  emit({ kind: "root", lane: 0, color: "rail", bottom: tops.length > 0 });
+  if (tops.length) active.set(0, "rail");
+  tops.forEach((line, index) => {
+    if (index === tops.length - 1) active.delete(0);
+    drawLine(line, 1, 0);
+  });
+  for (const line of graph.lines.filter((line) => line.depth === 0 && line.detached)) drawLine(line, 1, null);
+  const lanes = 1 + Math.max(0, ...rows.flatMap((row) => [row.lane, ...row.through.map(([lane]) => lane)]));
+  return { rows, lanes };
 }
 
-export function sourceIssue(row) {
-  const messages = {
-    ambiguous: "源运行 ID 对应多份记录，无法确定连接",
-    outside_root: "源运行不在查看器根目录内",
-    unreadable: "源运行无法读取",
-    missing: "根目录内未找到源运行（可能不在此根内）",
-  };
-  return messages[row.source_resolution] || "没有可确认的源运行连接";
+/** The lines whose commits the graph shows: every line, except branches still inside a folded fork point. */
+export function visibleLines(graph, { open = new Set(), expanded = new Set() } = {}) {
+  if (!graph.collapse) return graph.lines.map((line) => line.key);
+  return graph.lines
+    .filter((line) => !line.parent || (open.has(forkId(line.parent.key, line.parent.step)) && expanded.has(line.key)))
+    .map((line) => line.key);
 }
 
-export function graphSteps(row, data) {
-  return (data?.steps || []).filter((step) => !row.branch || step.origin !== "restored");
+/** The fields a run's label shows, marking the ones that differ among the task's own runs. */
+export function runLabel(run, differs = []) {
+  const time = run.created_at
+    ? new Date(run.created_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
+    : null;
+  return [
+    { field: "agent_id", text: run.agent_id },
+    { field: "model", text: run.model },
+    { field: "config_hash", text: run.config_hash ? `配置 ${run.config_hash.slice(0, 8)}` : null },
+    { field: "created_at", text: time },
+  ]
+    .filter((part) => part.text)
+    .map((part) => ({ ...part, bold: differs.includes(part.field) }));
 }
 
-export function graphColumns(lanes, data) {
-  const values = new Set();
-  for (const lane of lanes) {
-    for (const step of graphSteps(lane.row, data[lane.row.key]?.data)) values.add(step.step);
-    if (lane.parent && Number.isInteger(lane.row.branch?.checkpoint_step)) values.add(lane.row.branch.checkpoint_step);
-  }
-  return [...values].sort((a, b) => a - b);
+/**
+ * What a run's graph depends on: the run, and what its list row says changed
+ * (its last write and its recording state). A refresh that changes neither
+ * reads nothing again.
+ */
+export function runSignature(row) {
+  return JSON.stringify([row.key, row.updated_at ?? null, row.trace_status ?? null]);
 }
 
-/** An edge requires the actual source checkpoint and a new decision there. */
-export function graphEdges(lanes, data) {
-  const positions = new Map(lanes.map((lane, index) => [lane.row.key, index]));
-  const edges = [];
-  for (const [index, lane] of lanes.entries()) {
-    if (!positions.has(lane.parent)) continue;
-    const checkpoint = lane.row.branch?.checkpoint_step;
-    const source = graphSteps(lanes[positions.get(lane.parent)].row, data[lane.parent]?.data);
-    const child = data[lane.row.key]?.data?.steps || [];
-    if (source.some((step) => step.step === checkpoint)
-      && child.some((step) => step.step === checkpoint && step.origin === "policy"))
-      edges.push({ from: positions.get(lane.parent), to: index, step: checkpoint });
-  }
-  return edges;
+/** What a task's placement depends on: the signatures of its runs, in key order. */
+export function taskSignature(group) {
+  return JSON.stringify(group.runs.map(runSignature).sort());
+}
+
+/**
+ * The tasks whose placement must be read: those wanted whose cached
+ * placement was read for other runs, or not at all. `wanted` holds
+ * {key, signature}; `cache` maps a task key to {signature}. Nothing wanted,
+ * nothing read: an empty request is never sent.
+ */
+export function placementsToRead(wanted, cache) {
+  return wanted.filter(({ key, signature }) => cache[key]?.signature !== signature).map(({ key }) => key);
 }
 
 /** Aborts stop queued reads too; callers own both the queue and its lifetime. */
@@ -131,4 +303,22 @@ export async function loadGraphs(keys, read, onResult, signal, concurrency = 3) 
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, keys.length) }, worker));
+}
+
+/** A per-viewer choice; storage may be missing or refuse (a private window), and then it lasts the page. */
+export function readStored(storage, key, fallback) {
+  try {
+    const value = storage?.getItem(key);
+    return value == null ? fallback : JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+export function writeStored(storage, key, value) {
+  try {
+    storage?.setItem(key, JSON.stringify(value));
+  } catch {
+    // A convenience only: without storage the choice lasts this page.
+  }
 }

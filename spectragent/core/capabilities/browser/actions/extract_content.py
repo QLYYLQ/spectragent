@@ -17,7 +17,7 @@ escaped as markup. The page text holds no field's value to begin with.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
 from agent_cdp import Participation
 from pydantic import BaseModel, ConfigDict
@@ -30,6 +30,7 @@ from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
     resolve_index,
 )
+from spectragent.core.capabilities.browser.presentation import BrowserWords
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import (
     ExtractContentEvent,
@@ -41,9 +42,10 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class ExtractContentAction(ActionBase):
+class ExtractContentAction(BrowserWords, ActionBase):
     """Return a scope wholesale: page ``innerText``, or element ``outerHTML`` (values withheld)."""
 
+    person_verb: ClassVar[str] = "读取页面文字"
     __registry_key__ = "browser.extract_content"
 
     class Params(BaseModel):

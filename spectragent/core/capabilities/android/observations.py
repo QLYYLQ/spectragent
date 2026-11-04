@@ -40,7 +40,9 @@ from pydantic import BaseModel, ConfigDict, field_serializer, model_validator
 
 from spectragent.core.capabilities.android.device.clients import ScreenshotProducer
 from spectragent.core.capabilities.android.device.forest import AndroidAccessibilityForest
+from spectragent.core.capabilities.android.presentation import element_description
 from spectragent.core.capabilities.android.ui_tree.models import UITree, UITreeElement
+from spectragent.core.presentation import ElementDescription
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.capture_state import (
     CaptureStateFragment,
@@ -279,6 +281,10 @@ class AndroidUITreeObs(AndroidCaptureFragment):
     def tree(self) -> UITree:
         """The cleaned tree: ``forest`` and ``elements`` together."""
         return UITree(forest=self.forest, elements=self.elements)
+
+    def describe_element(self, index: int) -> ElementDescription:
+        """Element *index* as a person reads it, with its bounds (``core/presentation.py``)."""
+        return element_description(self.tree(), index)
 
     def summary(self) -> str:
         return f"{len(self.elements)} elements of {self.node_count} nodes"

@@ -173,9 +173,9 @@ function StepLabelEditor({ data, runKey, index, annotations, hasScreenshot, onSa
             images={[
               {
                 role: "screenshot",
-                text: "浏览器状态",
+                text: "原始画面",
                 detail: `第 ${index} 步`,
-                src: query("screenshot", { key: runKey, index, view: "browser" }),
+                src: query("screenshot", { key: runKey, index, view: "raw" }),
                 marks: markData,
               },
             ]}

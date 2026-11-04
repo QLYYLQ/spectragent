@@ -1,211 +1,508 @@
+/**
+ * The task view: every task's runs drawn like `git log --graph`, one commit
+ * per policy step, read top-down from step 0. Clicking a commit opens the
+ * viewer's own step detail beside the graph (a bottom sheet on a phone).
+ */
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Badge, number, query, runRoute, statusLabel } from "./common.jsx";
-import { graphColumns, graphEdges, graphSteps, loadGraphs, taskGroups, taskLanes } from "./taskGraph.js";
-import { actionRoute } from "./routing.js";
+import { number, query, replaceRoute, runRoute, statusLabel } from "./common.jsx";
+import {
+  callText,
+  commitStatus,
+  endLabel,
+  forkChips,
+  layoutTask,
+  loadGraphs,
+  placementsToRead,
+  readStored,
+  restorationChips,
+  runLabel,
+  runSignature,
+  taskGroups,
+  taskSignature,
+  taskSummary,
+  verdictChip,
+  visibleLines,
+  writeStored,
+} from "./taskGraph.js";
 import "./taskGraph.css";
 
 const href = (route) => `#${new URLSearchParams(route)}`;
-const ROW_HEIGHT = 88;
-const STEP_WIDTH = 42;
-const TOP = 50;
-const COLORS = ["#cc6532", "#4c79a3", "#667e52", "#a56b89", "#a28a35", "#497f7b"];
-const color = (key) => COLORS[[...key].reduce((n, c) => n + c.codePointAt(0), 0) % COLORS.length];
-const actionStatus = { succeeded: "已执行", failed: "执行失败", skipped: "没有执行", no_result: "没有返回结果" };
+const FOLD_KEY = "spectragent.viewer.tasks.folded";
+const TASKS_PER_PAGE = 30;
+const LANE_W = 18;
+const X0 = 11;
+const Y = 17;
+const laneX = (lane) => X0 + lane * LANE_W;
+const storage = () => {
+  try {
+    return window.localStorage;
+  } catch {
+    return undefined;
+  }
+};
 
-async function readGraph(key, signal) {
-  const response = await fetch(query("graph", { key }), { signal });
+async function readJSON(url, signal) {
+  const response = await fetch(url, { signal });
   const data = await response.json();
-  if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "轨迹读取失败");
+  if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "记录读取失败");
   return data;
 }
 
-function useGraphs(keys, revision) {
-  const [data, setData] = useState({});
-  const cache = useRef({ revision, data: {} });
-  const signature = JSON.stringify(keys);
+/**
+ * Each named run's graph, read three at a time. A graph is kept for the
+ * run's signature (`runSignature`), so a refresh that changed nothing about
+ * a run reads it no more.
+ */
+function useGraphs(runs, enabled) {
+  const [, setTick] = useState(0);
+  const cache = useRef({});
+  const wanted = runs.map((run) => [run.key, runSignature(run)]);
+  const signature = JSON.stringify(wanted);
   useEffect(() => {
+    if (!enabled) return undefined;
     const controller = new AbortController();
-    if (cache.current.revision !== revision) cache.current = { revision, data: {} };
-    setData({ ...cache.current.data });
-    const needed = JSON.parse(signature).filter((key) => !cache.current.data[key]);
-    loadGraphs(needed, readGraph, (key, result) => {
-      cache.current.data[key] = result;
-      setData((previous) => ({ ...previous, [key]: result }));
+    const current = JSON.parse(signature);
+    // Keep only what the shown runs still are: a live run changes every tick.
+    const kept = new Set(current.map(([, sig]) => sig));
+    for (const sig of Object.keys(cache.current)) if (!kept.has(sig)) delete cache.current[sig];
+    const needed = current.filter(([, sig]) => !cache.current[sig]);
+    const byKey = new Map(needed.map(([key, sig]) => [key, sig]));
+    loadGraphs([...byKey.keys()], (key, signal) => readJSON(query("graph", { key }), signal), (key, result) => {
+      cache.current[byKey.get(key)] = result;
+      setTick((tick) => tick + 1);
     }, controller.signal);
     return () => controller.abort();
-  }, [signature, revision]);
-  return data;
+  }, [signature, enabled]);
+  return Object.fromEntries(wanted.filter(([, sig]) => cache.current[sig]).map(([key, sig]) => [key, cache.current[sig]]));
 }
 
-function StepDot({ row, step, x, y, trajectory }) {
-  const failed = Boolean(step.error || step.actions.some((action) => action.status === "failed"));
-  const title = `第 ${step.step} 步 · ${statusLabel(step.origin)}${failed ? " · 有错误" : ""}`;
-  return (
-    <div className={`graph-node ${step.origin} ${failed ? "failed" : ""}`} style={{ left: x, top: y }}>
-      <a className="graph-dot" href={href(runRoute(row.key, { tab: "trajectory", step: step.step }))} aria-label={`${row.run_id || row.key}，${title}`}>
-        <span aria-hidden="true">{failed ? "!" : step.origin === "terminal" ? "□" : ""}</span>
-      </a>
-      <span className="graph-step-number" aria-hidden="true">{step.step}</span>
-      <div className="graph-node-popup">
-        <strong>{title}</strong>
-        {!trajectory ? <p>没有记录动作内容</p> : step.actions.length ? (
-          <ol>
-            {step.actions.map((action) => (
-              <li key={action.index}>
-                <a href={href(actionRoute(row.key, step.step, action.index))}>
-                  {action.text}<small>{actionStatus[action.status] || action.status} · 打开动作 {action.index + 1}</small>
-                </a>
-              </li>
-            ))}
-          </ol>
-        ) : <p>{step.origin === "terminal" ? "终止观测，没有新决定" : "这一步没有动作"}</p>}
-        <a className="text-button" href={href(runRoute(row.key, { tab: "trajectory", step: step.step }))}>查看这一步全部证据 →</a>
-      </div>
-    </div>
-  );
-}
-
-function RunCaption({ lane, data, selected, onToggle }) {
-  const row = lane.row;
-  const restored = data?.steps?.filter((step) => step.origin === "restored") || [];
-  const lastRestore = restored.at(-1);
-  return (
-    <div className={`graph-run-caption ${lane.context ? "context" : ""}`} style={{ "--lane": color(row.key) }}>
-      <div className="graph-run-heading">
-        {!lane.context && (
-          <input type="checkbox" checked={selected.includes(row.key)} disabled={selected.length >= 8 && !selected.includes(row.key)}
-            onChange={() => onToggle(row.key)} aria-label={`加入对比 ${row.run_id || row.key}`} />
-        )}
-        <a className="graph-run-title" title={row.key} href={href(runRoute(row.key, { tab: "trajectory" }))}>{row.run_id || row.key.split("/").at(-1)}</a>
-        <a className="graph-whole" href={href(runRoute(row.key, { tab: "trajectory" }))} aria-label={`打开 ${row.run_id || row.key} 的完整轨迹`}>完整轨迹 ↗</a>
-      </div>
-      <div className="graph-run-meta">
-        {row.execution_kind ? <Badge value={row.execution_kind} /> : <span>源运行</span>}
-        {row.branch && <span>从第 {row.branch.checkpoint_step} 步分叉{row.branch.task_variant ? " · 换任务" : ""}</span>}
-        {row.agent_done && <Badge value={row.agent_done} />}
-      </div>
-      <div className="graph-run-note">
-        {lane.context ? <span>源运行在筛选外 · 保留来源位置</span> : <span title={row.model}>{row.agent_id || ""}{row.model ? ` · ${row.model}` : ""}</span>}
-        {lastRestore && <a href={href(runRoute(row.key, { tab: "trajectory", step: lastRestore.step }))}>恢复前缀 {restored.length} 步 ↗</a>}
-      </div>
-    </div>
-  );
-}
-
-function TaskDiagram({ group, allRows, revision, selected, onToggle }) {
-  const [labelWidth, setLabelWidth] = useState(() => window.matchMedia("(max-width: 650px)").matches ? 180 : 280);
+/** Whether an element has come near the viewport (and so is worth reading for). */
+function useNear(ref) {
+  const [near, setNear] = useState(false);
   useEffect(() => {
-    const media = window.matchMedia("(max-width: 650px)");
-    const resized = () => setLabelWidth(media.matches ? 180 : 280);
-    media.addEventListener("change", resized);
-    return () => media.removeEventListener("change", resized);
-  }, []);
-  const allLanes = useMemo(() => taskLanes(group.runs, allRows), [group.runs, allRows]);
-  const [limit, setLimit] = useState(9);
-  const lanes = allLanes.slice(0, limit);
-  const data = useGraphs(lanes.map((lane) => lane.row.key), revision);
-  const columns = graphColumns(lanes, data);
-  const positions = new Map(columns.map((step, index) => [step, labelWidth + 28 + index * STEP_WIDTH]));
-  const width = Math.max(800, labelWidth + 68 + columns.length * STEP_WIDTH);
-  const height = TOP + ROW_HEIGHT * lanes.length + 146;
-  const edges = graphEdges(lanes, data);
+    if (near || !ref.current) return undefined;
+    if (typeof IntersectionObserver === "undefined") {
+      setNear(true);
+      return undefined;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) setNear(true);
+    }, { rootMargin: "600px 0px" });
+    observer.observe(ref.current);
+    return () => observer.disconnect();
+  }, [near, ref]);
+  return near;
+}
+
+function Chip({ chip }) {
+  return <span className={`tg-chip ${chip.tone}`} title={chip.title}>{chip.text}</span>;
+}
+
+function Gutter({ row, width }) {
+  const cls = (color) => (color === "rail" ? "tg-rail" : `tg-c${color}`);
+  const x = laneX(row.lane);
+  const dash = ["gap", "ghost"].includes(row.kind) ? "3 3" : undefined;
+  const shapes = {
+    commit: <circle className={`${cls(row.color)} tg-dot`} cx={x} cy={Y} r="5" />,
+    fail: <circle className="tg-dot-bad" cx={x} cy={Y} r="5.5" />,
+    gap: <circle className={`${cls(row.color)} tg-hollow`} cx={x} cy={Y} r="5" strokeDasharray="2 2" />,
+    tip: <rect className={`${cls(row.color)} tg-hollow`} x={x - 5} y={Y - 5} width="10" height="10" />,
+    head: <circle className={`${cls(row.color)} tg-hollow`} cx={x} cy={Y} r="3.5" />,
+    fork: <circle className={`${cls(row.color)} tg-hollow`} cx={x} cy={Y} r="3.5" />,
+    ghost: <circle className="tg-ghost tg-hollow" cx={x} cy={Y} r="5" strokeDasharray="2 2" />,
+    root: <><circle className="tg-rail tg-hollow" cx={x} cy={Y} r="6" /><circle className="tg-rail tg-dot" cx={x} cy={Y} r="2" /></>,
+    group: <><circle className={`${cls(row.color)} tg-hollow`} cx={x + 3} cy={Y - 3} r="4.5" /><circle className={`${cls(row.color)} tg-dot`} cx={x} cy={Y} r="4.5" /></>,
+    member: <circle className={`${cls(row.color)} tg-hollow`} cx={x} cy={Y} r="3" />,
+  };
+  return (
+    <div className="tg-gutter" aria-hidden="true">
+      <svg width={width} height="100%">
+        {row.through.map(([lane, color]) => (
+          <line key={lane} className={cls(color)} x1={laneX(lane)} x2={laneX(lane)} y1="-1" y2="100%" />
+        ))}
+        {row.top && <line className={cls(row.color)} x1={x} x2={x} y1="-1" y2={Y} strokeDasharray={dash} />}
+        {row.bottom && <line className={cls(row.color)} x1={x} x2={x} y1={Y} y2="100%" strokeDasharray={dash} />}
+        {row.elbow != null && (
+          <path className={cls(row.color)} d={`M${laneX(row.elbow)} 0 Q${laneX(row.elbow)} ${Y} ${x} ${Y}`} fill="none" />
+        )}
+        {shapes[row.kind]}
+      </svg>
+    </div>
+  );
+}
+
+function Label({ run, differs, ordinal }) {
+  const parts = runLabel(run, differs);
+  return (
+    <span className="tg-who">
+      {parts.map((part, index) => (
+        <React.Fragment key={part.field}>
+          {index > 0 && " · "}
+          {part.bold ? <b>{part.text}</b> : part.text}
+        </React.Fragment>
+      ))}
+      {ordinal ? <b> #{ordinal}</b> : null}
+    </span>
+  );
+}
+
+function RunLinks({ run, selected, onToggle }) {
+  const name = run.run_id || run.key;
   return (
     <>
-      <div className="graph-help">
-        <span><i className="graph-legend policy" /> 策略步</span>
-        <span><i className="graph-legend terminal" /> 终止观测</span>
-        <span><i className="graph-legend restored" /> 恢复步</span>
-        <span>点圆点打开步骤 · 悬停或聚焦后可选动作 · 点运行名打开完整轨迹</span>
-        <span>分叉从检查点的原动作之前开始</span>
-      </div>
-      <div className="task-graph-scroll" tabIndex="0" aria-label={`${group.taskId || "本任务"} 的运行分支图，可横向滚动`}>
-        <div className="task-graph-canvas" style={{ width, height, "--graph-label-width": `${labelWidth}px` }}>
-          <div className="graph-axis-title">运行 / 来源</div>
-          <div className="graph-axis-steps" style={{ left: labelWidth }}>步骤编号 · 分叉线连接实际记录的检查点</div>
-          <svg className="graph-lines" width={width} height={height} aria-hidden="true">
-            {edges.map((edge) => {
-              const x = positions.get(edge.step);
-              const y1 = TOP + edge.from * ROW_HEIGHT;
-              const y2 = TOP + edge.to * ROW_HEIGHT;
-              return <path key={`${edge.from}-${edge.to}`} d={`M ${x} ${y1} L ${x - 14} ${y1 + 20} L ${x - 14} ${y2 - 16} L ${x} ${y2}`} stroke={color(lanes[edge.to].row.key)} />;
-            })}
-            {lanes.flatMap((lane, index) => {
-              const steps = graphSteps(lane.row, data[lane.row.key]?.data);
-              return steps.slice(1).map((step, i) => (
-                <line key={`${lane.row.key}-${step.step}`} x1={positions.get(steps[i].step)} x2={positions.get(step.step)}
-                  y1={TOP + index * ROW_HEIGHT} y2={TOP + index * ROW_HEIGHT} stroke={color(lane.row.key)}
-                  strokeDasharray={step.step === steps[i].step + 1 ? undefined : "3 4"} />
-              ));
-            })}
-          </svg>
-          {lanes.map((lane, index) => {
-            const state = data[lane.row.key];
-            const steps = graphSteps(lane.row, state?.data);
-            const checkpoint = lane.row.branch?.checkpoint_step;
-            const sourceData = lane.parent ? data[lane.parent]?.data : null;
-            const missingCheckpoint = sourceData && !sourceData.steps.some((step) => step.step === checkpoint);
-            const sourceLane = lanes.find((candidate) => candidate.row.key === lane.parent);
-            const foldedCheckpoint = sourceData && !missingCheckpoint && sourceLane
-              && !graphSteps(sourceLane.row, sourceData).some((step) => step.step === checkpoint);
-            const issue = lane.issue || (missingCheckpoint ? `源运行没有已提交的第 ${checkpoint} 步，不绘制连接`
-              : foldedCheckpoint ? `源检查点第 ${checkpoint} 步位于收起的恢复前缀，打开源运行查看` : null);
-            const y = TOP + index * ROW_HEIGHT;
-            return (
-              <React.Fragment key={lane.row.key}>
-                <div className="graph-row-rule" style={{ top: y + ROW_HEIGHT / 2 - 6 }} />
-                <div className="graph-caption-slot" style={{ top: y - 26 }}>
-                  <RunCaption lane={lane} data={state?.data} selected={selected} onToggle={onToggle} />
-                </div>
-                {steps.map((step) => (
-                  <div key={step.step} style={{ "--lane": color(lane.row.key) }}>
-                    <StepDot row={lane.row} step={step} x={positions.get(step.step)} y={y} trajectory={state.data.recording_trajectory} />
-                  </div>
-                ))}
-                {(!state || state.error || !steps.length) && (
-                  <span className={`graph-row-message ${state?.error ? "error" : ""}`} title={state?.error || undefined} style={{ left: labelWidth + 20, top: y - 9 }}>
-                    {!state ? "读取已提交的步骤…" : state.error || (lane.row.branch ? "尚无新决定；可打开恢复前缀查看停在哪里" : "没有已提交的步")}
-                  </span>
-                )}
-                {issue && <span className="graph-source-issue" style={{ left: labelWidth + 20, top: y + 29 }}>{issue}</span>}
-              </React.Fragment>
-            );
-          })}
-        </div>
-      </div>
-      <div className="graph-footer">
-        <span>显示 {lanes.length} / {allLanes.length} 次运行{allLanes.some((lane) => lane.context) ? "（含筛选外的源运行）" : ""} · 分叉恢复前缀已收起</span>
-        {limit < allLanes.length && <button className="button" onClick={() => setLimit((old) => old + 8)}>再展开 {Math.min(8, allLanes.length - limit)} 次运行 ↓</button>}
-        {limit > 9 && <button className="text-button" onClick={() => setLimit(9)}>收起新增运行</button>}
-      </div>
+      <a className="tg-rid" title={run.key} href={href(runRoute(run.key, { tab: "trajectory" }))}>{name}</a>
+      <a className="tg-link" href={href(runRoute(run.key, { tab: "trajectory" }))} aria-label={`打开 ${name} 的完整轨迹`}>完整轨迹 ↗</a>
+      {!run.context && (
+        <label className="tg-cmp">
+          <input type="checkbox" checked={selected.includes(run.key)} disabled={selected.length >= 8 && !selected.includes(run.key)}
+            onChange={() => onToggle(run.key)} aria-label={`加入对比 ${name}`} />
+          对比
+        </label>
+      )}
     </>
   );
 }
 
-export function TaskGraphs({ rows, visible, revision, selected, onToggle }) {
-  const groups = useMemo(() => taskGroups(rows, visible), [rows, visible]);
-  const [open, setOpen] = useState(null);
-  const [limit, setLimit] = useState(30);
+function forkTitle(run) {
+  const k = run.branch.checkpoint_step;
+  return k ? `分叉 · 第 ${k} 步起重做` : "分叉 · 从第 0 步起重做";
+}
+
+function strategyText(run) {
+  const strategy = run.strategy || {};
+  const verify = strategy.verify === "warn" ? "不一致时记下继续" : strategy.verify === "strict" ? "不一致时停止" : null;
+  const budget = strategy.continue_steps != null ? `最多再走 ${strategy.continue_steps} 步` : null;
+  return [verify, budget, run.branch?.task_variant ? "换了任务" : null].filter(Boolean).join(" · ");
+}
+
+function tipChips(run) {
+  const chips = [{ tone: "neutral", text: endLabel(run.agent_done) }];
+  chips.push(...(run.verdicts || []).map(verdictChip));
+  if (!(run.verdicts || []).length) chips.push({ tone: "neutral", text: "没有判定" });
+  if (run.trace_status === "writing")
+    chips.push({ tone: "warn", text: "记录未关闭（不代表仍在运行）" });
+  else if (run.trace_status && run.trace_status !== "complete")
+    chips.push({ tone: "warn", text: `记录${statusLabel(run.trace_status)} · 完整到第 ${run.complete_through ?? "?"} 步` });
+  return chips;
+}
+
+function RowBody({ row, graph, ctx }) {
+  const run = row.key ? graph.runs[row.key] : null;
+  const pressed = (step, kind = "step") =>
+    ctx.active?.key === row.key && ctx.active?.step === step && ctx.active?.kind === kind;
+  const open = (step, kind) => ctx.onOpen({ key: row.key, step, kind });
+  switch (row.kind) {
+    case "root":
+      return <div className="tg-body"><span className="tg-root-text">任务开始 · 每次运行都从这里出发</span></div>;
+    case "head":
+      return (
+        <div className={`tg-body ${ctx.dimmed(run) ? "dim" : ""}`}>
+          <span className="tg-ref live">{run.execution_kind === "replay" ? "回放" : "运行"}</span>
+          <Label run={run} differs={graph.differs} ordinal={row.line.ordinal} />
+          {run.context && <span className="tg-note">筛选外的源运行，只为显示分叉从哪里出发</span>}
+          <RunLinks run={run} selected={ctx.selected} onToggle={ctx.onToggle} />
+        </div>
+      );
+    case "fork":
+    case "ghost": {
+      const k = run.branch.checkpoint_step;
+      return (
+        <div className={`tg-body ${ctx.dimmed(run) ? "dim" : ""}`}>
+          <button type="button" className="tg-hit" data-nav aria-pressed={pressed(k, "fork")} onClick={() => open(k, "fork")}
+            title="打开检查点：原始记录 ↔ 实际回放">
+            <span className="tg-ref fork">{forkTitle(run)}</span>
+            {restorationChips(run.restoration).map((chip) => <Chip key={chip.text} chip={chip} />)}
+          </button>
+          {row.line.detached && <span className="tg-issue">{row.line.detached}，不画连线</span>}
+          <span className="tg-who-line"><Label run={run} differs={[]} />{strategyText(run) && <span className="tg-who"> · {strategyText(run)}</span>}</span>
+          <RunLinks run={run} selected={ctx.selected} onToggle={ctx.onToggle} />
+        </div>
+      );
+    }
+    case "commit":
+    case "fail": {
+      const step = row.data;
+      const status = commitStatus(step);
+      const message = step.actions.length ? step.actions.map((action) => action.text).join(" · ") : step.error ? `出错：${step.error}` : "（没有动作）";
+      return (
+        <button type="button" className="tg-body tg-commit" data-nav aria-pressed={pressed(row.step)} onClick={() => open(row.step, "step")}>
+          <span className="tg-sn">{row.step}</span>
+          <span className="tg-msg" title={message}>{message}</span>
+          <span className="tg-meta"><span className={`tg-st ${status.tone}`}>{status.text}</span> · {callText(step.calls)}</span>
+        </button>
+      );
+    }
+    case "gap":
+      return (
+        <div className="tg-body tg-commit">
+          <span className="tg-sn">{row.step}</span>
+          <span className="tg-msg muted">第 {row.step} 步没有提交（记录缺口）</span>
+        </div>
+      );
+    case "status":
+      return <div className={`tg-body ${row.error ? "tg-issue" : "tg-loading"}`}>{row.error || "读取已提交的步骤…"}</div>;
+    case "tip": {
+      const terminal = row.terminal;
+      const chips = tipChips(run);
+      const inner = (
+        <>
+          {terminal ? <><span className="tg-sn">{terminal.step}</span><span className="tg-tag">终止观测</span></> : <span className="tg-tag">{row.loaded ? "没有终止观测" : "终点"}</span>}
+          {chips.map((chip) => <Chip key={chip.text} chip={chip} />)}
+          {run.answer ? <span className="tg-ans">回答：{run.answer}</span> : null}
+        </>
+      );
+      return terminal ? (
+        <button type="button" className="tg-body tg-tip" data-nav aria-pressed={pressed(terminal.step, "tip")} onClick={() => open(terminal.step, "tip")}>{inner}</button>
+      ) : <div className="tg-body tg-tip">{inner}</div>;
+    }
+    case "group": {
+      const k = row.step + 1;
+      return (
+        <button type="button" className="tg-body" data-nav aria-expanded={row.opened} onClick={() => ctx.onFork(row.id)}>
+          <span className="tg-ref fork">{row.count} 个分叉 · 第 {k} 步起重做</span>
+          {forkChips(row.fork?.summary).map((chip) => <Chip key={chip.text} chip={chip} />)}
+          <span className="tg-link">{row.opened ? "收起 ↑" : "展开 ↓"}</span>
+        </button>
+      );
+    }
+    case "member": {
+      const chips = [{ tone: "neutral", text: endLabel(run.agent_done) }, ...(run.verdicts || []).map(verdictChip)];
+      return (
+        <button type="button" className="tg-body tg-member" data-nav onClick={() => ctx.onExpand(row.key)}>
+          <span className="tg-ref fork small">b{run.branch.branch_index ?? ""}</span>
+          <span className="tg-who">{run.run_id}</span>
+          {restorationChips(run.restoration).slice(-1).map((chip) => <Chip key={chip.text} chip={chip} />)}
+          {chips.map((chip) => <Chip key={chip.text} chip={chip} />)}
+          <span className="tg-link">读它的提交 ↓</span>
+        </button>
+      );
+    }
+    case "more":
+      return (
+        <button type="button" className="tg-body tg-member" onClick={() => ctx.onMore(row.id)}>
+          <span className="tg-who">还有 {row.remaining} 个分叉 · 再列出 {Math.min(row.remaining, 20)} 个 ↓</span>
+        </button>
+      );
+    default:
+      return null;
+  }
+}
+
+/** ↑ and ↓ move between the commits and fork points of one task; Enter opens one. */
+function moveFocus(event) {
+  if (!["ArrowDown", "ArrowUp"].includes(event.key) || !event.target.matches?.("[data-nav]")) return;
+  const all = [...event.currentTarget.querySelectorAll("[data-nav]")];
+  const next = all[all.indexOf(event.target) + (event.key === "ArrowDown" ? 1 : -1)];
+  if (next) {
+    event.preventDefault();
+    next.focus();
+  }
+}
+
+function TaskDiagram({ graph, near, ctx }) {
+  const [open, setOpen] = useState(() => new Set());
+  const [expanded, setExpanded] = useState(() => new Set());
+  const [shown, setShown] = useState({});
+  const keys = useMemo(() => visibleLines(graph, { open, expanded }), [graph, open, expanded]);
+  const graphs = useGraphs(keys.map((key) => graph.runs[key]), near);
+  const layout = layoutTask(graph, { graphs, open, shown, expanded });
+  const width = X0 * 2 + (layout.lanes - 1) * LANE_W;
+  const toggle = (setter, value) => setter((old) => {
+    const next = new Set(old);
+    if (next.has(value)) next.delete(value);
+    else next.add(value);
+    return next;
+  });
+  const rowCtx = {
+    ...ctx,
+    onFork: (id) => toggle(setOpen, id),
+    onExpand: (key) => toggle(setExpanded, key),
+    onMore: (id) => setShown((old) => ({ ...old, [id]: (old[id] || 20) + 20 })),
+  };
   return (
-    <div className="task-groups">
-      <p className="task-groups-intro">{number(groups.length)} 个任务 · 同一任务的原运行和分叉放在一起，展开后查看步骤与来源。</p>
-      {groups.slice(0, limit).map((group) => {
-        const expanded = open === group.key;
-        const forks = group.runs.filter((row) => row.branch).length;
-        return (
-          <section className={`task-group ${expanded ? "expanded" : ""}`} key={group.key}>
-            <button className="task-group-heading" aria-expanded={expanded} onClick={() => setOpen(expanded ? null : group.key)}>
-              <span className="task-group-chevron" aria-hidden="true">{expanded ? "−" : "+"}</span>
-              <span className="task-group-copy">
-                <span className="task-group-identity">{group.benchmark || "未记录基准测试"}{group.subset ? ` / ${group.subset}` : ""} · {group.taskId ? `任务 ${group.taskId}` : "任务身份不完整，单独列出"}</span>
-                <strong>{group.title}</strong>
-              </span>
-              <span className="task-group-count"><b>{group.runs.length - forks}</b> 原运行 <b>{forks}</b> 分叉</span>
-            </button>
-            {expanded && <TaskDiagram key={group.key} group={group} allRows={rows} revision={revision} selected={selected} onToggle={onToggle} />}
-          </section>
-        );
-      })}
-      {limit < groups.length && <button className="button task-groups-more" onClick={() => setLimit((old) => old + 30)}>再显示 {Math.min(30, groups.length - limit)} 个任务</button>}
+    <div className="tg-graph" role="list" aria-label={`${graph.task.task_id || "本任务"} 的运行图`} style={{ "--gw": `${width}px` }} onKeyDown={moveFocus}>
+      {layout.rows.map((row, index) => (
+        <div className={`tg-row ${row.kind}`} role="listitem" key={`${row.kind}-${row.key ?? row.id ?? ""}-${row.step ?? ""}-${index}`}>
+          <Gutter row={row} width={width} />
+          <RowBody row={row} graph={graph} ctx={rowCtx} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TaskSection({ group, graph, error, folded, onFold, ctx }) {
+  const ref = useRef(null);
+  const near = useNear(ref);
+  const summary = taskSummary(group);
+  const broken = group.runs.filter((row) => row.read_error);
+  const unreadableTask = broken.length === group.runs.length;
+  const header = group.header;
+  const identity = `${header.benchmark || "未记录基准测试"}${header.subset ? ` / ${header.subset}` : ""} · ${header.incomplete || !header.task_id ? "任务身份不完整，单独列出" : `任务 ${header.task_id}`}`;
+  return (
+    <section className={`tg-task ${folded ? "folded" : ""}`} ref={ref} aria-label={header.title}>
+      <header className="tg-task-head">
+        <button type="button" className="tg-fold" aria-expanded={!folded} onClick={onFold} aria-label={folded ? "展开这个任务的步骤" : "收起这个任务的步骤"}>
+          <span aria-hidden="true">{folded ? "+" : "−"}</span>
+        </button>
+        <div className="tg-task-copy">
+          <div className="tg-task-id">{identity}</div>
+          <h3>{header.title}</h3>
+          <div className="tg-harness">
+            <span><b>{summary.runs}</b> 次运行</span>
+            <span><b>{summary.branches}</b> 个分叉</span>
+            <span className="tg-harness-who">{summary.agents.join("、") || "智能体未记录"} · {summary.models.join("、") || "模型未记录"} · 配置 {summary.configs.join("、") || "未记录"}</span>
+            <span className="tg-tally">
+              {summary.verdicts.map((chip) => <span key={chip.key} className={`tg-chip ${chip.tone}`} title={chip.title}>{chip.text} ×{chip.count}</span>)}
+              {summary.unjudged > 0 && <span className="tg-chip neutral">{summary.unjudged} 次没有判定</span>}
+            </span>
+          </div>
+        </div>
+      </header>
+      {broken.length > 0 && !unreadableTask && (
+        <p className="tg-issue tg-task-error">
+          {broken.length} 次运行的记录读不出来，没有画进图里：{broken.map((row) => `${row.key}（${row.read_error}）`).join("；")}
+        </p>
+      )}
+      {!folded && (error ? <p className="tg-issue tg-task-error">{error}</p> : graph ? (
+        <TaskDiagram graph={graph} near={near} ctx={ctx} />
+      ) : <p className="tg-loading tg-task-error">读取任务的运行图…</p>)}
+    </section>
+  );
+}
+
+function DetailPanel({ active, graph, onClose, renderStep }) {
+  const run = active && graph?.runs[active.key];
+  return (
+    <aside className={`tg-detail ${active ? "open" : ""}`} aria-label="提交详情">
+      <div className="tg-detail-bar">
+        <span className="tg-eyebrow">{active ? `${run?.branch ? "分叉" : "运行"} · ${run?.run_id || active.key}` : "提交详情"}</span>
+        {active && <a className="tg-link" href={href(runRoute(active.key, { tab: "trajectory", step: active.step }))}>在运行页打开 ↗</a>}
+        <button type="button" className="tg-close" onClick={onClose} aria-label="关闭详情">×</button>
+      </div>
+      <div className="tg-detail-body">
+        {!active ? (
+          <p className="tg-empty">点一个提交，这里打开那一步的观测、动作、模型调用和归档证据；点分叉点，打开检查点的“原始记录 ↔ 实际回放”。↑ ↓ 在提交之间移动，Enter 打开。</p>
+        ) : (
+          <>
+            {active.kind === "fork" && run?.branch && (
+              <div className="tg-fork-note">
+                <strong>{forkTitle(run)}</strong>
+                <span>源 {graph.runs[run.source_key]?.run_id || run.source_key || "不可用"} · {strategyText(run)}</span>
+                <span className="tg-chips">{restorationChips(run.restoration).map((chip) => <Chip key={chip.text} chip={chip} />)}</span>
+              </div>
+            )}
+            {renderStep(active.key, active.step)}
+          </>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+export function TaskGraphs({ visible, selected, onToggle, route, renderStep }) {
+  const groups = useMemo(() => taskGroups(visible), [visible]);
+  const visibleKeys = useMemo(() => new Set(visible.map((row) => row.key)), [visible]);
+  const [folded, setFolded] = useState(() => readStored(storage(), FOLD_KEY, false));
+  const [overrides, setOverrides] = useState({});
+  const [limit, setLimit] = useState(TASKS_PER_PAGE);
+  const page = groups.slice(0, limit);
+  const isFolded = (key) => overrides[key] ?? folded;
+  // A task of unreadable runs alone has nothing to place: its errors are shown instead.
+  const unreadable = (group) => group.runs.every((row) => row.read_error);
+  const wanted = page
+    .filter((group) => !isFolded(group.key) && !unreadable(group))
+    .map((group) => ({ key: group.key, signature: taskSignature(group) }));
+  // Each task's placement, kept for the signature of the runs it was read for.
+  const [placements, setPlacements] = useState({});
+  const toRead = placementsToRead(wanted, placements);
+  const request = JSON.stringify(wanted.filter((task) => toRead.includes(task.key)));
+  useEffect(() => {
+    const tasks = JSON.parse(request);
+    if (!tasks.length) return undefined;
+    const controller = new AbortController();
+    const params = new URLSearchParams(tasks.map((task) => ["task", task.key]));
+    readJSON(`/api/task-graph?${params}`, controller.signal)
+      .then((list) => {
+        const found = Object.fromEntries(list.map((graph) => [graph.task.key, graph]));
+        setPlacements((old) => ({
+          ...old,
+          ...Object.fromEntries(tasks.map(({ key, signature }) => [key, found[key]
+            ? { signature, graph: found[key] }
+            : { signature, error: "这个任务的运行已不在根目录内，刷新后再看" }])),
+        }));
+      })
+      .catch((error) => {
+        if (error.name !== "AbortError")
+          setPlacements((old) => ({ ...old, ...Object.fromEntries(tasks.map(({ key, signature }) => [key, { signature, error: error.message }])) }));
+      });
+    return () => controller.abort();
+  }, [request]);
+  const graphs = {
+    data: Object.fromEntries(Object.entries(placements).filter(([, value]) => value.graph).map(([key, value]) => [key, value.graph])),
+    errors: Object.fromEntries(Object.entries(placements).filter(([, value]) => value.error).map(([key, value]) => [key, value.error])),
+  };
+  const active = route.open ? { key: route.open, step: Number(route.step), kind: route.at || "step" } : null;
+  const activeGraph = active && Object.values(graphs.data).find((graph) => graph.runs[active.key]);
+  const setActive = (next) => {
+    const { open: _o, step: _s, at: _a, ...rest } = route;
+    replaceRoute(next ? { ...rest, view: "runs", open: next.key, step: next.step, at: next.kind } : { ...rest, view: "runs" });
+  };
+  useEffect(() => {
+    if (!route.open) return undefined;
+    const close = (event) => { if (event.key === "Escape") setActive(null); };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [route]);
+  const foldAll = () => {
+    const next = !folded;
+    setFolded(next);
+    setOverrides({});
+    writeStored(storage(), FOLD_KEY, next);
+  };
+  const ctx = {
+    selected,
+    onToggle,
+    active,
+    onOpen: setActive,
+    dimmed: (run) => !run.context && !visibleKeys.has(run.key),
+  };
+  return (
+    <div className={`tg-layout ${active ? "has-detail" : ""}`}>
+      <div className="tg-tasks">
+        <div className="tg-intro">
+          <p>{number(groups.length)} 个任务 · 每个策略步是一个提交，分叉从源运行的上一个提交离开，同一步的两个决定并排。</p>
+          <button type="button" className="tg-fold-all" aria-pressed={folded} onClick={foldAll}>
+            {folded ? "展开全部步骤" : "收起全部步骤"}
+          </button>
+        </div>
+        {!folded && (
+          <ul className="tg-legend" aria-label="图例">
+            <li><svg width="16" height="16" aria-hidden="true"><circle className="tg-c1 tg-dot" cx="8" cy="8" r="5" /></svg>策略步 = 提交</li>
+            <li><svg width="16" height="16" aria-hidden="true"><circle className="tg-dot-bad" cx="8" cy="8" r="5" /></svg>有失败动作</li>
+            <li><svg width="22" height="16" aria-hidden="true"><path className="tg-c3" d="M3 0 Q3 8 18 8" fill="none" /><circle className="tg-c3 tg-hollow" cx="18" cy="8" r="3.5" /></svg>分叉点：带恢复结果</li>
+            <li><svg width="16" height="16" aria-hidden="true"><rect className="tg-c1 tg-hollow" x="3" y="3" width="10" height="10" /></svg>终点：结束原因与判定</li>
+            <li><svg width="16" height="16" aria-hidden="true"><circle className="tg-c1 tg-hollow" cx="8" cy="8" r="5" strokeDasharray="2 2" /></svg>记录缺口</li>
+          </ul>
+        )}
+        {page.map((group) => (
+          <TaskSection
+            key={group.key}
+            group={group}
+            graph={graphs.data[group.key]}
+            error={unreadable(group) ? `记录无法读取：${group.runs.map((row) => row.read_error).join("；")}` : graphs.errors[group.key]}
+            folded={isFolded(group.key)}
+            onFold={() => setOverrides((old) => ({ ...old, [group.key]: !isFolded(group.key) }))}
+            ctx={ctx}
+          />
+        ))}
+        {limit < groups.length && (
+          <button className="button tg-more-tasks" onClick={() => setLimit((old) => old + TASKS_PER_PAGE)}>
+            再显示 {Math.min(TASKS_PER_PAGE, groups.length - limit)} 个任务
+          </button>
+        )}
+      </div>
+      <DetailPanel active={active} graph={activeGraph} onClose={() => setActive(null)} renderStep={renderStep} />
     </div>
   );
 }

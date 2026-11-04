@@ -14,15 +14,6 @@ export function imageCanBeEdited(role, imageRoles) {
   return imageRoles == null || imageRoles.includes(role);
 }
 
-export function trajectorySteps(steps, anchor) {
-  const ordered = [...steps].sort((a, b) => a.index - b.index);
-  return {
-    past: ordered.filter((step) => step.index < anchor),
-    current: ordered.find((step) => step.index === anchor) || null,
-    future: ordered.filter((step) => step.index > anchor),
-  };
-}
-
 /** These are the served image's pixels; an unknown reading never becomes (0, 0). */
 export function pointerPresentation(pointer) {
   const {width, height, x, y, viewport_x: viewportX, viewport_y: viewportY, status, problem} = pointer || {};
@@ -61,4 +52,82 @@ export function recordedReply(record) {
 /** Pixel comparison remains able to cross collapsed evidence sections. */
 export function comparisonEvidence(item, mode) {
   return mode === "difference" ? item.images || [] : sectionEvidence(item).images;
+}
+
+/** The folder's tabs: every committed step in order, each marked before, at or after the reviewed one. */
+export function folderSteps(steps, anchor) {
+  return [...steps]
+    .sort((a, b) => a.index - b.index)
+    .map((step) => ({ ...step, relation: step.index < anchor ? "past" : step.index > anchor ? "future" : "current" }));
+}
+
+/** The tab *offset* places from *index* (clamped to the first and last), or *index* itself. */
+export function folderNeighbour(steps, index, offset) {
+  const order = steps.map((step) => step.index);
+  const at = order.indexOf(index);
+  if (at < 0) return index;
+  return order[Math.min(order.length - 1, Math.max(0, at + offset))];
+}
+
+/** The observation right after *index*: the next committed step, when it is the very next one. */
+export function nextObservation(steps, index) {
+  return steps.find((step) => step.index === index + 1) || null;
+}
+
+const clipped = (text, limit) => (text.length > limit ? `${text.slice(0, limit - 1)}…` : text);
+
+/**
+ * What a step's observation fragments say about the screen, read from their
+ * recorded fields: the app or page in front, and the text an agent read of
+ * it (a UI tree's printed elements, or a DOM's indexed elements). Absent
+ * fields stay absent; nothing is inferred from a fragment's name.
+ */
+export function observationFacts(fragments = {}) {
+  const values = Object.entries(fragments).filter(([, value]) => value && typeof value === "object");
+  let front = null;
+  let page = null;
+  let text = null;
+  for (const [, value] of values) {
+    const app = typeof value.package === "string" ? value : value.device && typeof value.device.package === "string" ? value.device : null;
+    if (!front && app?.package) front = [app.package, app.activity?.split(".").pop()].filter(Boolean).join(" · ");
+    if (!page && typeof value.url === "string" && value.url) page = [value.page_title, value.url].filter(Boolean).join(" · ");
+  }
+  for (const [key, value] of values) {
+    if (typeof value.serialized === "string" && value.serialized.trim()) {
+      text = { source: key, lines: value.serialized.trim().split("\n") };
+      break;
+    }
+    if (value.selector_map && typeof value.selector_map === "object") {
+      const lines = Object.entries(value.selector_map).map(([index, node]) => {
+        const attributes = node?.attributes || {};
+        const name = attributes["aria-label"] || attributes.placeholder || attributes.title || node?.text_content || "";
+        return `[${index}] <${node?.tag_name || "?"}> ${clipped(String(name).replace(/\s+/g, " ").trim(), 80)}`.trim();
+      });
+      if (lines.length) {
+        text = { source: key, lines };
+        break;
+      }
+    }
+  }
+  return { front, page, text };
+}
+
+/** The tallest height-over-width among images of known size, for a comparison row's shared box. */
+export function tallestRatio(sizes) {
+  const ratios = sizes.filter((size) => size?.width > 0 && size?.height > 0).map((size) => size.height / size.width);
+  return ratios.length ? Math.max(...ratios) : null;
+}
+
+/** The neighbour the folder opens first: the step just before the reviewed one, else the one just after. */
+export function defaultNeighbour(steps, anchor) {
+  const before = steps.filter((step) => step.index < anchor).at(-1);
+  const after = steps.find((step) => step.index > anchor);
+  return (before || after)?.index ?? null;
+}
+
+/** A step's actions as one line for a folder tab: the first action, and how many more. */
+export function actionLine(summary) {
+  const lines = (summary || "").split("\n").map((line) => line.replace(/^\d+\.\s*/, "").trim()).filter(Boolean);
+  if (!lines.length) return "没有动作";
+  return lines.length > 1 ? `${lines[0]}（另 ${lines.length - 1} 个动作）` : lines[0];
 }

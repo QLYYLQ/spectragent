@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
@@ -32,6 +32,7 @@ from spectragent.core.capabilities.browser.input.chords import (
     parse_key_chord,
 )
 from spectragent.core.capabilities.browser.input.shortcuts import Runs, Shortcut, browser_shortcut
+from spectragent.core.capabilities.browser.presentation import BrowserWords
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import SendKeysEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
@@ -41,7 +42,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class SendKeysAction(SettleableAction, ActionBase):
+class SendKeysAction(BrowserWords, SettleableAction, ActionBase):
     """Send one key or chord: a named key, a single character, or a ``+`` chord.
 
     Any other string — a URL, a word, a sentence — is refused before a key
@@ -59,6 +60,7 @@ class SendKeysAction(SettleableAction, ActionBase):
     not run.
     """
 
+    person_verb: ClassVar[str] = "按键"
     __registry_key__ = "browser.send_keys"
 
     #: The control that had focus, whether its value changed, the chord

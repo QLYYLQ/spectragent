@@ -8,7 +8,7 @@ canonical BrowserCapability vocabulary.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
@@ -23,6 +23,7 @@ from spectragent.core.capabilities.browser.actions._common import (
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.effects import TextInputEffect
+from spectragent.core.capabilities.browser.presentation import BrowserWords
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import TypeTextEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
@@ -32,9 +33,10 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class TypeAction(SettleableAction, ActionBase):
+class TypeAction(BrowserWords, SettleableAction, ActionBase):
     """Type text into a DOM element by its selector_map index."""
 
+    person_verb: ClassVar[str] = "输入"
     __registry_key__ = "browser.type"
 
     #: The control the text went into, whether its value changed (never the

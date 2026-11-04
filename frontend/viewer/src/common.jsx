@@ -13,7 +13,7 @@ export const duration = (ms) =>
   ms == null
     ? "—"
     : ms < 1000
-      ? `${ms} 毫秒`
+      ? `${ms < 10 ? Math.round(ms * 10) / 10 : Math.round(ms)} 毫秒`
       : ms < 60000
         ? `${(ms / 1000).toFixed(1)} 秒`
         : `${(ms / 60000).toFixed(1)} 分钟`;
