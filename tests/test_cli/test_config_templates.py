@@ -520,12 +520,116 @@ def test_an_agents_declared_loop_stands_where_its_wiring_refuses_the_frameworks(
     assert raw["agent"][0]["agent_loop"]["loop_id"] == "second_react"
 
 
-def test_an_agent_without_declared_values_starts_from_the_frameworks_choices(composer):
-    assert BrowserUseDomAgent.__template_block__ == {}
+def test_a_receptor_the_agent_declares_nothing_for_starts_from_the_frameworks_choice(composer):
+    assert "memory" not in BrowserUseDomAgent.__template_block__
     raw = yaml.safe_load(render_config_template(TemplateChoices(model="m"), composer=composer))
     agent = raw["agent"][0]
     assert agent["agent_loop"]["loop_id"] == "react"
     assert agent["memory"]["memory_id"] == "simple"
+    assert (agent["llm"]["model_type"], agent["llm"]["provider"]["name"]) == ("openai", "direct")
+
+
+# ── every agent: its upstream settings (user ruling 2026-11-04) ──────
+
+#: Each agent's official starting values, as its upstream project sets them;
+#: the citations are on each ``__template_block__``.
+OFFICIAL = [
+    # browser-use 6e2add1c: ChatOpenAI 0.2 / 0.3 (browser_use/llm/openai/chat.py:37-38),
+    # AgentSettings.max_actions_per_step 5 (agent/views.py:70), Agent.run max_steps 500
+    # (agent/service.py:2468).
+    (
+        "browser_use.dom",
+        None,
+        {"temperature": 0.2, "frequency_penalty": 0.3},
+        {"max_actions_per_step": 5, "max_steps": 500},
+    ),
+    (
+        "browser_use.dom_vision",
+        None,
+        {"temperature": 0.2, "frequency_penalty": 0.3},
+        {"max_actions_per_step": 5, "max_steps": 500},
+    ),
+    # Skyvern bd68e1af: LLM_CONFIG_TEMPERATURE 0 (skyvern/config.py:196), no penalty;
+    # MAX_STEPS_PER_RUN 10 (skyvern/config.py:58).
+    ("skyvern.dom", None, {"temperature": 0.0, "frequency_penalty": None}, {"max_steps": 10}),
+    (
+        "skyvern.dom_vision",
+        None,
+        {"temperature": 0.0, "frequency_penalty": None},
+        {"max_steps": 10},
+    ),
+    # UI-TARS 582f3a7e: temperature 0.0, frequency_penalty None (README_deploy.md:99-105);
+    # one action a step (codes/ui_tars/prompt.py:3-9).
+    (
+        "ui_tars",
+        "browser",
+        {"temperature": 0.0, "frequency_penalty": None},
+        {"max_actions_per_step": 1},
+    ),
+    # AndroidWorld 55ddaf5e: Gpt4Wrapper temperature 0.0, no penalty
+    # (android_world/agents/infer.py:261, 290-300).
+    (
+        "m3a",
+        None,
+        {"temperature": 0.0, "frequency_penalty": None},
+        {"max_actions_per_step": 2, "parse_retries_per_step": 0},
+    ),
+]
+
+
+@pytest.mark.parametrize(("agent_id", "environment", "llm", "loop"), OFFICIAL, ids=lambda v: str(v))
+def test_each_agent_starts_from_its_upstream_settings(composer, agent_id, environment, llm, loop):
+    raw = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent=agent_id, environment=environment, model="m"),
+            composer=composer,
+        )
+    )
+    agent = raw["agent"][0]
+    assert {name: agent["llm"][name] for name in llm} == llm
+    assert {name: agent["agent_loop"][name] for name in loop} == loop
+    composer.compose(raw)
+
+
+@pytest.mark.parametrize(
+    ("llm", "written"),
+    [
+        ("openai.direct", {"temperature": 0.2, "frequency_penalty": 0.3}),
+        ("openai.deepseek", {"temperature": 0.2, "frequency_penalty": 0.3}),
+        # Anthropic and Google have no frequency_penalty; Ollama takes neither.
+        ("anthropic.direct", {"temperature": 0.2}),
+        ("google.default", {"temperature": 0.2}),
+        ("ollama.default", {}),
+    ],
+)
+def test_an_agents_sampling_values_go_into_the_provider_chosen_where_it_has_the_field(
+    composer, llm, written
+):
+    """The values name no provider: each lands only where the chosen provider has the field."""
+    raw = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="browser_use.dom", llm=llm, model="m"), composer=composer
+        )
+    )
+    block = raw["agent"][0]["llm"]
+    fields = set(composer.catalog.components["llm"][llm].config_model.model_fields)
+    for name in {"temperature", "frequency_penalty"} & fields - set(written):
+        assert block[name] is None, name
+    assert {name: block[name] for name in written} == written
+    composer.compose(raw)
+
+
+def test_changing_the_model_provider_of_a_skeleton_keeps_the_agents_sampling_values(composer):
+    source = yaml.safe_load(
+        render_config_template(TemplateChoices(agent="m3a", model="m"), composer=composer)
+    )
+    expanded = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(llm="anthropic.direct", model="claude"), source, composer=composer
+        )
+    )
+    llm = expanded["agent"][0]["llm"]
+    assert (llm["model_type"], llm["temperature"]) == ("anthropic", 0.0)
 
 
 def test_every_environment_starts_from_its_capabilities_declared_blocks(composer):

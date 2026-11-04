@@ -59,7 +59,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 from pydantic import Field as PydanticField
 
 from spectragent.agents._registrar import AgentBase
@@ -122,6 +122,25 @@ class SkyvernAgent(AgentBase):
     __wiring__: ClassVar[dict[str, Any]] = {
         "agent_loop": ("agent_loop", ["react", "branch"]),
         "llm": "llm",
+    }
+    #: Where a new ``config template`` starts a member: Skyvern's own settings
+    #: (``docs/architecture_design.md`` §4.17 "agent 的模板起点"), at Skyvern
+    #: commit bd68e1af. The llm value names no provider, so the template writes
+    #: it into whichever model block it chooses. Skyvern sends no frequency
+    #: penalty, and the providers send none unless written. Starting values
+    #: written into the YAML, not defaults.
+    #:
+    #: - ``temperature`` 0: ``LLM_CONFIG_TEMPERATURE``,
+    #:   https://github.com/Skyvern-AI/skyvern/blob/bd68e1af3dd4c4556f286d39d40e0463995220ba/skyvern/config.py#L196
+    #: - ``max_steps`` 10: ``MAX_STEPS_PER_RUN``,
+    #:   https://github.com/Skyvern-AI/skyvern/blob/bd68e1af3dd4c4556f286d39d40e0463995220ba/skyvern/config.py#L58
+    #:
+    #: Skyvern runs every action a reply lists
+    #: (https://github.com/Skyvern-AI/skyvern/blob/bd68e1af3dd4c4556f286d39d40e0463995220ba/skyvern/forge/agent.py#L1242); a ReAct Loop always has a cap
+    #: (at least 1), so ``max_actions_per_step`` keeps the Loop's.
+    __template_block__: ClassVar[Mapping[str, JsonValue]] = {
+        "agent_loop": {"loop_id": "react", "max_steps": 10},
+        "llm": {"temperature": 0.0},
     }
 
     # ── config (conscribe visible) ─────────────────────────────

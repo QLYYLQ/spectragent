@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 from pydantic import Field as PydanticField
 
 from spectragent.agents._registrar import AgentBase
@@ -235,6 +235,22 @@ class UITarsAgent(AgentBase):
             "declare_only": True,
         },
         "llm": "llm",
+    }
+
+    #: Where a new ``config template`` starts UI-TARS: its own deployment
+    #: settings (``docs/architecture_design.md`` §4.17 "agent 的模板起点"), at
+    #: UI-TARS commit 582f3a7e. The llm value names no provider, so the template
+    #: writes it into whichever model block it chooses; UI-TARS sends no
+    #: frequency penalty, and the providers send none unless written. Starting
+    #: values written into the YAML, not defaults.
+    #:
+    #: - ``temperature`` 0.0 (``frequency_penalty`` None): README_deploy.md,
+    #:   https://github.com/bytedance/UI-TARS/blob/582f3a7ea5d285ee8ed9e2e84048d1ab01453c49/README_deploy.md#L99-L105
+    #: - ``max_actions_per_step`` 1: its prompt asks for "the next action", one
+    #:   ``Action:``, https://github.com/bytedance/UI-TARS/blob/582f3a7ea5d285ee8ed9e2e84048d1ab01453c49/codes/ui_tars/prompt.py#L3-L9
+    __template_block__: ClassVar[Mapping[str, JsonValue]] = {
+        "agent_loop": {"loop_id": "react", "max_actions_per_step": 1},
+        "llm": {"temperature": 0.0},
     }
 
     # A computer-use prompt states every input platform, a phone's included
