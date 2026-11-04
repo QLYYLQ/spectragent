@@ -22,6 +22,13 @@ the user must keep in step with it (the browser's isolation, derived from its
 network source, is the precedent, §4.14). Without a component the device
 boots with none.
 
+A component that resets the device between tasks
+(``resets_between_tasks``) lets a sweep set the next task up on the same
+device (§4.10.1 "环境跨任务复用"): the capability then asks
+:meth:`~AndroidBenchmarkSetup.stop` to keep what the component runs on the
+device, and hands that to the next task's component in
+:meth:`~AndroidBenchmarkSetup.start`.
+
 An Android task's data for the component (``AndroidSetup.oracle_task``) is
 opaque to the capability and handed over unread.
 """
@@ -38,6 +45,7 @@ if TYPE_CHECKING:
         AndroidProviderSession,
         DeviceNeeds,
     )
+    from spectragent.core.environment_reuse import KeptEnvironment
 
 #: An Android task's data for the benchmark setup component that prepares it,
 #: opaque to the capability (``AndroidSetup.oracle_task``).
@@ -66,8 +74,21 @@ class AndroidBenchmarkSetup(Protocol):
         """
         ...
 
-    async def start(self, device: AndroidProviderSession, task: OracleTask | None) -> None:
-        """Prepare *task* on *device*, which the provider booted meeting :attr:`device_needs`."""
+    async def start(
+        self,
+        device: AndroidProviderSession,
+        task: OracleTask | None,
+        *,
+        kept: KeptEnvironment | None = None,
+    ) -> None:
+        """Prepare *task* on *device*, which the provider booted meeting :attr:`device_needs`.
+
+        *kept* is what a component of this kind kept running on *device* when
+        it ended the task before (:meth:`stop` with ``keep``), when the device
+        was kept from that task; ``None`` on a device of its own. It is this
+        component's from the call on: a start that fails leaves it for
+        :meth:`stop` to release.
+        """
         ...
 
     def makes_goal(self, task: OracleTask | None) -> bool:
@@ -107,8 +128,17 @@ class AndroidBenchmarkSetup(Protocol):
         """
         ...
 
-    async def stop(self) -> None:
-        """End the task and release what :meth:`start` acquired; safe after a partial start, and again."""
+    async def stop(self, *, keep: bool = False) -> KeptEnvironment | None:
+        """End the task and release what :meth:`start` acquired; safe after a partial start, and again.
+
+        With *keep*, asked only of a component that resets the device between
+        tasks and only after a start that completed, the device is kept for
+        the next task: end the task with the reset, and return what it keeps
+        running on the device for the next task's :meth:`start` (``None``:
+        nothing) instead of releasing it. When the reset fails it releases
+        what it acquired and raises, and the device is released too. Without
+        *keep* it returns ``None``.
+        """
         ...
 
 

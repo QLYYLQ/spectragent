@@ -33,7 +33,11 @@ from spectragent.core.capabilities.android.backends.base import (
 )
 from spectragent.core.capabilities.android.backends.local_emulator import LocalEmulatorProvider
 from spectragent.core.capabilities.android.benchmark_setup import OracleTask
-from spectragent.core.capabilities.android.capability import AndroidCapability
+from spectragent.core.capabilities.android.capability import (
+    AndroidCapability,
+    KeptDevice,
+    device_identity,
+)
 from spectragent.core.capabilities.android.device.apk import (
     TEST_KEY_CERTIFICATE_SHA256,
     ServiceApkError,
@@ -69,10 +73,12 @@ from spectragent.core.capabilities.android.ui_tree.source import AccessibilitySe
 from spectragent.core.capabilities.base import (
     EpisodeEnd,
     LiveVerifierHost,
+    ReusableEnvironment,
     SetupHost,
     TaskTextFromSetup,
 )
 from spectragent.core.composer import ComposeError, ConfigComposer
+from spectragent.core.environment_reuse import EnvironmentHandover, KeptEnvironment
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.loops import ReactLoop
 from spectragent.core.runtime import AgentRuntime
@@ -785,8 +791,11 @@ class _RecordingSetup:
     tasks: list[OracleTask | None] = field(default_factory=list)
     #: The event loop's time when the episode question reached it.
     asked_at: float | None = None
-    #: Whether it resets the device between tasks.
+    #: Whether it resets the device between tasks, and whether that reset fails.
     resets_between_tasks: bool = True
+    fail_reset: bool = False
+    #: What each start was handed from a kept device.
+    kept_from: list[object | None] = field(default_factory=list)
 
     @property
     def setup_id(self) -> str:
@@ -805,9 +814,16 @@ class _RecordingSetup:
         if task == {"refuse": True}:
             raise ValueError("refused by the setup")
 
-    async def start(self, device: AndroidProviderSession, task: OracleTask | None) -> None:
+    async def start(
+        self,
+        device: AndroidProviderSession,
+        task: OracleTask | None,
+        *,
+        kept: KeptEnvironment | None = None,
+    ) -> None:
         self.calls.append(f"start {device.serial}")
         self.tasks.append(task)
+        self.kept_from.append(kept)
         if self.fail_start:
             raise RuntimeError("the setup could not start")
 
@@ -829,8 +845,24 @@ class _RecordingSetup:
         self.asked_at = asyncio.get_running_loop().time()
         return self.over
 
-    async def stop(self) -> None:
-        self.calls.append("stop")
+    async def stop(self, *, keep: bool = False) -> KeptEnvironment | None:
+        if not keep:
+            self.calls.append("stop")
+            return None
+        self.calls.append("stop and keep")
+        if self.fail_reset:
+            raise RuntimeError("the reset failed")
+        return _SetupState(self.calls)
+
+
+@dataclass
+class _SetupState:
+    """What the recording setup keeps running on a kept device; its close lands in the setup's log."""
+
+    calls: list[str]
+
+    async def close(self) -> None:
+        self.calls.append("setup state closed")
 
 
 @dataclass
@@ -912,6 +944,141 @@ async def test_the_setup_shapes_the_boot_and_is_stopped_before_the_device_goes(
         "stop",
         "provider closed",
     ]
+
+
+# ── a device kept for the next task of a sweep (§4.10.1) ────────────
+
+
+def _set_up_for(
+    tmp_path: Path, adb: FakeAdbServer, setup: _RecordingSetup, handover: EnvironmentHandover
+) -> tuple[AndroidCapability, _ClosingProvider]:
+    """A fresh capability, as each task of a sweep composes one, hosting *setup*, with its own
+    provider and *handover*."""
+    capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+    configured(capability, adb)
+    capability.bind_setup(setup)
+    provider = _ClosingProvider(adb.host, adb.port, log=setup.calls)
+    capability.backend = provider
+    capability.bind_handover(handover)
+    return capability, provider
+
+
+async def test_a_kept_device_serves_the_next_task_with_what_the_setup_kept_on_it(
+    tmp_path: Path,
+) -> None:
+    """The first task's teardown keeps the device after the setup's reset; the next task's
+    capability takes it, never asks its own provider, and releases it through the first one."""
+    async with phone_server(ScriptedPhone()) as adb:
+        first = _RecordingSetup()
+        handover = EnvironmentHandover(kept={}, keep=True)
+        capability, provider = _set_up_for(tmp_path, adb, first, handover)
+        await capability.setup(oracle_task={"task": 1})
+        await capability.teardown()
+        kept = handover.handed_over["android"]
+
+        second = _RecordingSetup()
+        nxt = EnvironmentHandover(kept=dict(handover.handed_over), keep=False)
+        capability, own_provider = _set_up_for(tmp_path, adb, second, nxt)
+        await capability.setup(oracle_task={"task": 2})
+        await capability.teardown()
+
+    assert isinstance(kept, KeptDevice) and kept.provider is provider
+    # The first provider logs into the first setup's calls: it released the
+    # device once, at the end of the second task.
+    assert first.calls == ["check_setup", f"start {SERIAL}", "stop and keep", "provider closed"]
+    assert provider.closed == ["fake-session"]
+    assert own_provider.needs == [] and own_provider.closed == [], "the second task booted nothing"
+    assert second.kept_from == [kept.setup_state], "what the first setup kept, for the second"
+    assert second.calls == ["check_setup", f"start {SERIAL}", "stop"]
+    assert nxt.handed_over == {}
+
+
+async def test_a_failed_reset_releases_the_device_with_a_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    async with phone_server(ScriptedPhone()) as adb:
+        setup = _RecordingSetup(fail_reset=True)
+        handover = EnvironmentHandover(kept={}, keep=True)
+        capability, provider = _set_up_for(tmp_path, adb, setup, handover)
+        await capability.setup(oracle_task={"task": 1})
+        await capability.teardown()
+
+    assert handover.handed_over == {}
+    assert setup.calls[-2:] == ["stop and keep", "provider closed"]
+    assert "the device is not kept for the next task" in caplog.text
+    assert "the reset failed" in caplog.text
+
+
+async def test_a_task_whose_setup_failed_on_a_kept_device_releases_it(tmp_path: Path) -> None:
+    async with phone_server(ScriptedPhone()) as adb:
+        first = _RecordingSetup()
+        handover = EnvironmentHandover(kept={}, keep=True)
+        capability, provider = _set_up_for(tmp_path, adb, first, handover)
+        await capability.setup(oracle_task={"task": 1})
+        await capability.teardown()
+
+        failing = _RecordingSetup(fail_start=True)
+        nxt = EnvironmentHandover(kept=dict(handover.handed_over), keep=True)
+        capability, _ = _set_up_for(tmp_path, adb, failing, nxt)
+        with pytest.raises(RuntimeError, match="the setup could not start"):
+            await capability.setup(oracle_task={"task": 2})
+        await capability.teardown()
+
+    assert nxt.handed_over == {}, "a device whose setup failed is not kept"
+    assert failing.calls[:3] == ["check_setup", f"start {SERIAL}", "stop"]
+    assert provider.closed == ["fake-session"]
+
+
+@pytest.mark.parametrize("keep", [True, False])
+async def test_what_a_kept_device_carried_and_no_setup_took_goes_with_the_device(
+    tmp_path: Path, keep: bool
+) -> None:
+    async with phone_server(ScriptedPhone()) as adb:
+        log: list[str] = []
+        provider = _ClosingProvider(adb.host, adb.port, log=log)
+        session = await provider.open()
+        carried = _SetupState(log)
+        capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+        configured(capability, adb)
+        handover = EnvironmentHandover(
+            kept={"android": KeptDevice(provider, session, carried)}, keep=keep
+        )
+        capability.bind_handover(handover)
+        await capability.setup()  # no setup component takes what the device carried
+        await capability.teardown()
+
+    if keep:
+        assert handover.handed_over == {"android": KeptDevice(provider, session, carried)}
+        assert log == []
+    else:
+        assert handover.handed_over == {}
+        assert log == ["setup state closed", "provider closed"]
+
+
+def test_the_device_identity_is_the_provider_its_settings_and_the_needs() -> None:
+    def identity(needs: DeviceNeeds | None = None, **settings: str | bool | float) -> str:
+        provider = LocalEmulatorProvider(**{"avd": "AndroidWorldAvd", **settings})  # type: ignore[arg-type]
+        return device_identity(provider, needs or DeviceNeeds())
+
+    assert identity() == identity(), "two fresh providers of one configuration"
+    assert identity(avd="OtherAvd") != identity()
+    assert identity(read_only=False) != identity()
+    assert identity(boot_timeout_s=60.0) != identity()
+    assert identity(DeviceNeeds(root=True)) != identity()
+
+
+async def test_the_capability_says_the_identity_of_the_device_its_setup_would_boot() -> None:
+    capability = unset_capability()
+    capability.backend = LocalEmulatorProvider(avd="AndroidWorldAvd")
+    setup = _RecordingSetup()
+
+    assert isinstance(capability, ReusableEnvironment)
+    assert capability.environment_identity(setup) == device_identity(
+        capability.backend, setup.device_needs
+    )
+    assert capability.environment_identity(None) == device_identity(
+        capability.backend, DeviceNeeds()
+    )
 
 
 async def test_without_a_setup_the_device_boots_with_no_needs(tmp_path: Path) -> None:
@@ -1380,8 +1547,14 @@ class _ForceStoppingSetup(_RecordingSetup):
 
     phone: ScriptedPhone | None = None
 
-    async def start(self, device: AndroidProviderSession, task: OracleTask | None) -> None:
-        await super().start(device, task)
+    async def start(
+        self,
+        device: AndroidProviderSession,
+        task: OracleTask | None,
+        *,
+        kept: KeptEnvironment | None = None,
+    ) -> None:
+        await super().start(device, task, kept=kept)
         assert self.phone is not None
         self.phone.side.force_stop()
 

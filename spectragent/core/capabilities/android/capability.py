@@ -87,6 +87,16 @@ binds them last (``bind_live_verifiers``); at the scoring point the
 environment asks ``verify_live`` once for each, and the capability hands the
 verifier the booted device and the setup component that prepared the task.
 
+**A device can serve several tasks of a sweep** (``ReusableEnvironment``,
+§4.10.1 "环境跨任务复用"). Its identity is the provider, its settings and what
+the setup component needs of the device (:func:`device_identity`). When the
+sweep hands over a device kept from the task before (``bind_handover``), setup
+takes it instead of asking the provider for one, with what the setup component
+kept running on it. Teardown keeps the device for the next task, instead of
+releasing it, only when the handover says keep, setup completed, and the setup
+component's reset, the queue's drain and the device side's stop all succeeded
+(:class:`KeptDevice`).
+
 **Archivers** (``archive/``, the archive axis of §4.5) are bound before setup
 and chosen only by the trace hook's ``archive`` list. Setup assembles the
 recording's context and opens a session per bound archiver; a capture that
@@ -101,11 +111,13 @@ observation goes on (user ruling 2026-11-03).
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import time
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, cast
 
 from pydantic import Field as PydanticField
@@ -210,6 +222,7 @@ from spectragent.schemas.verdict import Judgment
 
 if TYPE_CHECKING:
     from spectragent.benchmarks._setup_registrar import BenchmarkSetup
+    from spectragent.core.environment_reuse import EnvironmentHandover, KeptEnvironment
     from spectragent.verifiers.base import LiveVerifier
 
 logger = logging.getLogger(__name__)
@@ -332,6 +345,14 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     _live_verifiers: tuple[AndroidLiveVerifier, ...]
     #: The home screen's names, read at setup when the run names apps by them.
     _launcher_apps: dict[str, str] | None
+    #: The sweep's handover of a device between tasks (``bind_handover``); ``None``: none.
+    _handover: EnvironmentHandover | None
+    #: The provider that brought the device up: the backend, or the one of a kept device.
+    _owner: BaseAndroidProvider | None
+    #: What the setup component kept running on a kept device, until its start takes it.
+    _carried: KeptEnvironment | None
+    #: Whether setup completed, so teardown may keep the device.
+    _ready: bool
 
     def __init__(
         self,
@@ -520,6 +541,10 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._setup = None
         self._live_verifiers = ()
         self._launcher_apps = None
+        self._handover = None
+        self._owner = None
+        self._carried = None
+        self._ready = False
         self.actions = actions
         self.ui_tree_source = default_ui_tree_source()
 
@@ -736,6 +761,24 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         """
         self._live_verifiers = _judging(verifiers)
 
+    def environment_identity(self, setup: BenchmarkSetup | None) -> str:
+        """The device setup would bring up for *setup*, the component about to be bound
+        (``ReusableEnvironment``): :func:`device_identity` of the backend and the component's needs.
+
+        Raises:
+            TypeError: *setup* is no component this capability can host, or the
+                backend is no dataclass whose fields are its settings.
+        """
+        component = _hostable(setup)
+        return device_identity(
+            self._backend(), DeviceNeeds() if component is None else component.device_needs
+        )
+
+    def bind_handover(self, handover: EnvironmentHandover | None) -> None:
+        """Take the device from *handover* at the next setup, and hand it over at teardown when it
+        says keep (``ReusableEnvironment``). Acquires nothing."""
+        self._handover = handover
+
     async def setup(
         self,
         *,
@@ -758,6 +801,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         component = self._setup
         backend = self._backend()
         tap_injector, typing_backend, *_ = self._strategies()
+        self._ready = False
         self._ui_tree, self._actions_since_tree = None, 0
         self._polled_package = self._acted_at = None
         self._launcher_apps = None
@@ -767,7 +811,14 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._archive = AndroidArchiveContext(trees=TreeStore())
         self._archive_sessions = [archiver.open(self._archive) for archiver in self._archivers]
         self._apk = apk = ServiceApk.load(self.service_apk)
-        session = await backend.open(DeviceNeeds() if component is None else component.device_needs)
+        kept = self._kept_device()
+        if kept is None:
+            session = await backend.open(
+                DeviceNeeds() if component is None else component.device_needs
+            )
+            self._owner = backend
+        else:
+            session, self._owner, self._carried = kept.session, kept.provider, kept.setup_state
         self._session = session
         try:
             adb = AdbClient(session.endpoint.host, session.endpoint.port)
@@ -806,7 +857,8 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                     run_s=self.service_start_timeout_s,
                 )
             if component is not None:
-                await component.start(session, oracle_task)
+                carried, self._carried = self._carried, None
+                await component.start(session, oracle_task, kept=carried)
                 # AndroidWorld's own service writes its forwarder over the
                 # accessibility setting when it starts.
                 await device.run(
@@ -828,6 +880,18 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         except BaseException:
             await self.teardown()
             raise
+        self._ready = True
+
+    def _kept_device(self) -> KeptDevice | None:
+        """The device the sweep kept for this capability from the task before; ``None``: none.
+
+        Raises:
+            TypeError: What it kept is no Android device.
+        """
+        kept = self._handover.take(self.capability_id) if self._handover is not None else None
+        if kept is None or isinstance(kept, KeptDevice):
+            return kept
+        raise TypeError(f"the environment kept for the android capability is no device: {kept!r}")
 
     @property
     def launcher_apps(self) -> Mapping[str, str]:
@@ -875,37 +939,86 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
 
     async def teardown(self) -> None:
         """Stop the setup component, drain the device's queue, stop the device side, release the
-        device. Safe to repeat.
+        device or keep it for the next task. Safe to repeat.
 
-        The recording's archive closes too: the runtime collects for the last
-        time before it tears down.
+        The device is kept (handed over, ``bind_handover``) only when the
+        handover says keep, setup completed, and every one of those steps
+        succeeded, the setup component's reset included; otherwise it is
+        released, with what the component kept running on it. A failed reset
+        is then logged, not raised: the task is over, and only the next one
+        gets a new device. The recording's archive closes too: the runtime
+        collects for the last time before it tears down.
         """
-        device, side, session = self._device, self._side, self._session
+        device, side, session, owner = self._device, self._side, self._session, self._owner
+        handover, carried = self._handover, self._carried
+        keep = handover is not None and handover.keep and self._ready
         self._device = self._bridge = None
         self._side = self._session = None
+        self._owner = self._carried = None
+        self._ready = False
         self._events = None
         self._capture = None
         self._archive, self._archive_sessions = None, []
+        kept: KeptEnvironment | None = None
+        ended = stopped = False
         try:
-            if self._setup is not None:
-                await self._setup.stop()
+            kept, ended = await self._end_task(keep=keep)
         finally:
             try:
-                if device is not None:
-                    try:
-                        await device.flush(wait_s=self.queue_wait_s)
-                    except DeviceBusyError:
-                        logger.warning(
-                            "releasing device %s while a job of it still runs", device.serial
-                        )
-                if side is not None:
-                    try:
-                        await side.stop()
-                    except DeviceSideError as exc:
-                        logger.warning("stopping the device side: %s", exc)
+                stopped = await self._stop_device_side(device, side)
             finally:
-                if session is not None:
-                    await self._backend().close(session)
+                if session is not None and owner is not None:
+                    # What a kept device carried and no setup component took
+                    # goes with the device.
+                    device_kept = KeptDevice(owner, session, kept or carried)
+                    if handover is not None and keep and ended and stopped:
+                        handover.hand_over(self.capability_id, device_kept)
+                    else:
+                        await device_kept.close()
+
+    async def _end_task(self, *, keep: bool) -> tuple[KeptEnvironment | None, bool]:
+        """Stop the setup component; with *keep*, through its reset. What it keeps on the device,
+        and whether it ended the task cleanly.
+
+        Without *keep* its failure propagates. With it, a failed reset is
+        logged and reported as unclean, so the device is released.
+        """
+        component = self._setup
+        if component is None:
+            return None, True
+        if not keep:
+            await component.stop()
+            return None, True
+        try:
+            return await component.stop(keep=True), True
+        except Exception as exc:
+            logger.warning(
+                "android: the device is not kept for the next task: the benchmark setup %r did "
+                "not reset it: %s",
+                component.setup_id,
+                exc,
+            )
+            return None, False
+
+    async def _stop_device_side(
+        self, device: DeviceSession | None, side: DeviceSide | None
+    ) -> bool:
+        """Drain the device's queue and stop the device side; whether both went cleanly (each
+        failure is logged)."""
+        clean = True
+        if device is not None:
+            try:
+                await device.flush(wait_s=self.queue_wait_s)
+            except DeviceBusyError:
+                clean = False
+                logger.warning("releasing device %s while a job of it still runs", device.serial)
+        if side is not None:
+            try:
+                await side.stop()
+            except DeviceSideError as exc:
+                clean = False
+                logger.warning("stopping the device side: %s", exc)
+        return clean
 
     async def verify_live(self, verifier: LiveVerifier, *, answer: str | None) -> Judgment:
         """Judge the task with *verifier* on the device it is still up on (``LiveVerifierHost``).
@@ -1448,6 +1561,57 @@ async def _launcher_names(side: DeviceSide) -> dict[str, str]:
         else:
             names[f"{app.label} ({component})"] = component
     return names
+
+
+@dataclass
+class KeptDevice:
+    """A device kept from one task for the next (``KeptEnvironment``).
+
+    Attributes:
+        provider: The provider that brought it up, which releases it.
+        session: Where it is.
+        setup_state: What the benchmark setup component kept running on it
+            (AndroidWorld: its service), for the next task's component;
+            ``None``: nothing.
+    """
+
+    provider: BaseAndroidProvider
+    session: AndroidProviderSession
+    setup_state: KeptEnvironment | None = None
+
+    async def close(self) -> None:
+        """Release what the setup component kept on it, then the device."""
+        try:
+            if self.setup_state is not None:
+                await self.setup_state.close()
+        finally:
+            await self.provider.close(self.session)
+
+
+def device_identity(provider: BaseAndroidProvider, needs: DeviceNeeds) -> str:
+    """The device *provider* brings up meeting *needs*, as one digest: two tasks share a device
+    only when it is the same.
+
+    It covers the ``provider_id``, every setting of the provider (its
+    dataclass fields: for ``local_emulator`` the AVD, the image it boots, and
+    the rest) and the needs (§4.10.1 "环境跨任务复用": the image and the
+    provider's settings).
+
+    Raises:
+        TypeError: *provider* is no dataclass, so its settings cannot be read.
+    """
+    if not is_dataclass(provider) or isinstance(provider, type):
+        raise TypeError(
+            f"the {provider.provider_id!r} provider is no dataclass, so the settings of the "
+            f"device it brings up cannot be compared"
+        )
+    settings = {item.name: getattr(provider, item.name) for item in fields(provider) if item.init}
+    payload = {
+        "provider_id": provider.provider_id,
+        "settings": settings,
+        "needs": needs.model_dump(),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
 
 
 def _hostable(setup: BenchmarkSetup | None) -> AndroidBenchmarkSetup | None:
