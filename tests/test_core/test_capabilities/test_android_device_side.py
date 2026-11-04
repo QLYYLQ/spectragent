@@ -209,6 +209,27 @@ async def test_stop_never_force_stops_our_package(apk: ServiceApk) -> None:
         assert not re.search(r"force-stop|pm clear|uninstall|am kill", service), service
 
 
+async def test_stop_returns_once_the_service_is_unbound_so_a_next_start_reaches_a_new_one(
+    apk: ServiceApk,
+) -> None:
+    """The system unbinds a moment after the setting changed. Had stop returned before, a device
+    side started next on the same device would ping the instance going away, whose socket then
+    closes under it (a device kept for a sweep's next task, 2026-11-04)."""
+    side = FakeDeviceSide(unbinds_after_reads=3)
+    async with _phone(side) as (_, client):
+        device = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
+        await device.stop()
+        assert not side.bound, "stop waited for the unbind"
+
+        nxt = await DeviceSide.start(client, SERIAL, apk, timeout_s=_WAIT_S)
+        try:
+            assert (await nxt.service.ping()).uptime_ms == 1000
+        finally:
+            await nxt.stop()
+
+    assert side.enabled is None and not side.bound
+
+
 async def test_a_service_enabled_before_the_run_stays_enabled(apk: ServiceApk) -> None:
     side = FakeDeviceSide(enabled=SERVICE_COMPONENT)
     async with _phone(side) as (_, client):
