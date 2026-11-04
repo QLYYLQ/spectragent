@@ -7,11 +7,12 @@ allowing all registered values. Subclasses narrow via MRO merge.
 See docs/architecture_design.md §4.1 and docs/execution_dag.md M12.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar, Self
 
 from conscribe import create_registrar
-from pydantic import Field
+from pydantic import Field, JsonValue
 
 from spectragent.agents.base import BaseAgent
 from spectragent.agents.prompts import (
@@ -102,7 +103,7 @@ class AgentBase(AgentReceptors, metaclass=AgentRegistrar.Meta):
         "memory": "memory",  # Mode 1: auto-discovery, allows all memories
     }
 
-    __template_block__: ClassVar[dict[str, Any]] = {}
+    __template_block__: ClassVar[Mapping[str, JsonValue]] = {}
     """Where ``spectragent config template`` starts this agent's block in a new template.
 
     The agent's block as YAML writes it, without ``agent_id``: settings of its
@@ -110,8 +111,9 @@ class AgentBase(AgentReceptors, metaclass=AgentRegistrar.Meta):
     it is meant to (``docs/architecture_design.md`` §4.17 "agent 的模板起点").
     These are starting values the template writes into the YAML, never
     defaults a run falls back on: a run takes only what its configuration
-    says. Empty (the default) for an agent with no such needs. A ``--from``
-    skeleton's own values win over them.
+    says, and what the agent requires of it is checked by its own
+    ``check_run_settings``, not by this block. Empty (the default) for an
+    agent with no such needs. A ``--from`` skeleton's own values win over them.
     """
 
     id: Annotated[
