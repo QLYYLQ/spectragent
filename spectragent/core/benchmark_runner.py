@@ -859,8 +859,9 @@ class BenchmarkRunner:
         try:
             async with ExperimentScope() as scope:
                 self._experiment_scope = scope
-                # The environment a task keeps for the next is the sweep's,
-                # and the scope closes what is still kept when it ends.
+                # The environment a task keeps for the next is the sweep's.
+                # The sweep closes it after its last task; the scope closes
+                # it only when the sweep is cut short (an error, Ctrl-C).
                 self._environment_reuse = scope.resource(
                     ("benchmark_runner", "environment_reuse"),
                     configuration=None,
@@ -969,6 +970,11 @@ class BenchmarkRunner:
                     reached.not_started,
                 )
                 break
+        if self._environment_reuse is not None:
+            # Closed here, as a task's teardown would close it, not under the
+            # scope's cleanup budget: an emulator may take longer to exit,
+            # and a sweep whose tasks all ran must not fail on it.
+            await self._environment_reuse.close()
         verification, verification_errors = await self._verify(outcomes)
         outcomes = [self._with_primary(outcome) for outcome in outcomes]
         return BenchmarkRunSummary(

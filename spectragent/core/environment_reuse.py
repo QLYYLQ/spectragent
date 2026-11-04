@@ -22,9 +22,10 @@ isolated context per task carries no task state over, so it stays a setting of
 the browser's own (§4.9.x).
 
 :class:`EnvironmentReuse` is owned by one sweep (``BenchmarkRunner``), never a
-capability's private state, and lives in the sweep's
-:class:`~spectragent.core.experiment.ExperimentScope`, which closes whatever is
-still kept when the sweep ends. Before each task it decides, binds an
+capability's private state. The sweep closes what is still kept after its last
+task, as a task's teardown would; it also lives in the sweep's
+:class:`~spectragent.core.experiment.ExperimentScope`, which closes it when the
+sweep is cut short (an error, Ctrl-C). Before each task it decides, binds an
 :class:`EnvironmentHandover` into the task's environment and says how many
 tasks the environment served before this one, which the task's trace records
 (``TraceConfig.earlier_tasks_on_environment``); after the task it takes back

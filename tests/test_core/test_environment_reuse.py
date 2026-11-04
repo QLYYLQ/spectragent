@@ -11,16 +11,21 @@ logs every boot and close, so each test reads what the sweep did with them.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from spectragent.core import benchmark_runner
 from spectragent.core.benchmark_runner import BenchmarkRunner, BenchmarkRunSummary
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.capabilities.base import ReusableEnvironment
 from spectragent.core.environment_reuse import EnvironmentHandover, EnvironmentReuse
 from spectragent.core.environments._registrar import EnvironmentBase
+from spectragent.core.experiment import ExperimentScope
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.loops import ReactLoop
 from spectragent.core.trace.reader import RunTrace
@@ -38,8 +43,11 @@ class _Device:
 
     number: int
     log: list[str]
+    #: How long it takes to shut down.
+    close_s: float = 0.0
 
     async def close(self) -> None:
+        await asyncio.sleep(self.close_s)
         self.log.append(f"device {self.number} closed")
 
 
@@ -51,6 +59,8 @@ class _Sweep:
     log: list[str] = field(default_factory=list)
     #: Each task's device, in task order.
     ran_on: list[int] = field(default_factory=list)
+    #: How long each device takes to shut down.
+    close_s: float = 0.0
 
 
 class _DeviceCap(CapabilityBase):
@@ -101,7 +111,7 @@ class _DeviceCap(CapabilityBase):
         await super().setup(negotiation=negotiation)
         kept = self._handover.take(self.capability_id) if self._handover is not None else None
         if kept is None:
-            device = _Device(len(self.sweep.devices) + 1, self.sweep.log)
+            device = _Device(len(self.sweep.devices) + 1, self.sweep.log, self.sweep.close_s)
             self.sweep.devices.append(device)
             self.sweep.log.append(f"device {device.number} booted")
         else:
@@ -174,6 +184,14 @@ class _LLM:
         return _Completion()
 
 
+class _HangingLLM(_LLM):
+    """Never answers: its task runs until the sweep is cancelled."""
+
+    async def ainvoke(self, messages: Any, **kw: Any) -> _Completion:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
 class _Memory:
     supports_protocols = frozenset({"user_assistant"})
 
@@ -224,12 +242,14 @@ def _runner(
     setup: _Setup | None = None,
     images: list[str] | None = None,
     unclean: frozenset[int] = frozenset(),
+    hangs: frozenset[int] = frozenset(),
     loader: _Loader | None = None,
 ) -> BenchmarkRunner:
     """A sweep composing a fresh stack per task, as ``spectragent bench`` does.
 
-    Task *n* (from 1) gets ``images[n - 1]`` as its environment identity, and
-    its capability's teardown fails when *n* is in *unclean*.
+    Task *n* (from 1) gets ``images[n - 1]`` as its environment identity, its
+    capability's teardown fails when *n* is in *unclean*, and its model never
+    answers when *n* is in *hangs*.
     """
     composed = 0
 
@@ -242,7 +262,7 @@ def _runner(
             agent=_Agent(),
             loop=ReactLoop(max_steps=2),
             env=make_env(_Env, {CAP: cap}),
-            llm=_LLM(),
+            llm=_HangingLLM() if composed in hangs else _LLM(),
             memory=_Memory(),
             hooks=[TraceWriter(trace_dir=str(tmp_path / "traces"))],
             benchmark=_Benchmark(setup=setup),
@@ -274,6 +294,45 @@ async def test_a_setup_that_resets_runs_every_task_on_one_device_and_each_trace_
     assert sweep.ran_on == [1, 1, 1]
     assert sweep.log == ["device 1 booted", "device 1 closed"], "closed once, when the sweep ended"
     assert _earlier_tasks(summary) == [0, 1, 2]
+    hashes = {
+        RunTrace(outcome.trace_dir).manifest.config_hash
+        for outcome in summary.outcomes
+        if outcome.trace_dir is not None
+    }
+    assert len(hashes) == 1, "the count is per task, never part of the configuration's identity"
+
+
+async def test_a_device_slower_to_shut_down_than_the_scopes_cleanup_limit_ends_the_sweep_well(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sweep closes the kept device after its last task, as a task's teardown would, not
+    under the experiment scope's cleanup limit: an emulator may take longer to exit."""
+    monkeypatch.setattr(
+        benchmark_runner, "ExperimentScope", lambda: ExperimentScope(cleanup_timeout_s=0.05)
+    )
+    sweep = _Sweep(close_s=0.3)
+    summary = await _runner(tmp_path, sweep, setup=_Setup()).run()
+
+    assert summary.completed == 3
+    assert sweep.log == ["device 1 booted", "device 1 closed"]
+
+
+async def test_a_cancelled_sweep_closes_the_device_a_finished_task_kept(tmp_path: Path) -> None:
+    sweep = _Sweep()
+    running = asyncio.create_task(
+        _runner(tmp_path, sweep, setup=_Setup(), hangs=frozenset({2})).run()
+    )
+    for _ in range(500):  # until task 2 is set up on the kept device
+        if len(sweep.ran_on) == 2:
+            break
+        await asyncio.sleep(0.01)
+    assert sweep.ran_on == [1, 1]
+
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+    assert sweep.log == ["device 1 booted", "device 1 closed"]
 
 
 async def test_a_fresh_environment_writes_no_count_into_the_trace(tmp_path: Path) -> None:

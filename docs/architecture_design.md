@@ -2863,7 +2863,7 @@ BrowserCapability.teardown()
 
 `core/experiment.py::ExperimentScope` 是显式 `async with` 所有者，唯一的通用扩展合同是 `ExperimentParticipant.bind_experiment(scope, identity=...)`。`scope.bind(ComposedRun)` 遍历实际 `by_layer` 实例，同一对象只绑定一次；绑定只装配，不启动进程或连接网络。资源按 `(layer, instance_id)` 识别，同一 identity 配置不同明确拒绝，配置相同的 fresh composed runs 借用同一所有者。资源首次实际使用才懒启动。scope 退出逐资源、有界地清理，继续尝试其它资源，不覆盖原执行异常或取消；超时明确报告尚未完成并保留可重试所有权。没有全局缓存、按端点猜测的进程池或运行统计。
 
-通用 `run` CLI 与 `BenchmarkRunner.run` 打开该 scope，单独 `run_task` 自己拥有一次 scope。sweep 留给下一个任务的环境（§4.10.1 "环境跨任务复用"）也由 `BenchmarkRunner.run` 的这个 scope 持有，sweep 结束时随它关掉；那是任务状态的复用，与 browser 的 `lifetime: experiment` 不是一回事。Python 并发调用方显式创建 scope，将各个新 compose 的结果交给 `scope.bind`，分别驱动 Runtime，并在离开 scope 前等待所有 run 完成。通用驱动只消费实验生命周期合同，不 import browser；Runtime 不知道 Chrome。`config check/explain` 与 `prepare()` 始终不启动资源。现有 YAML backend 块设置 `lifetime: experiment` 即选择共享寿命，不新增 provider registry 或重复的实验配置。
+通用 `run` CLI 与 `BenchmarkRunner.run` 打开该 scope，单独 `run_task` 自己拥有一次 scope。sweep 留给下一个任务的环境（§4.10.1 "环境跨任务复用"）也放在 `BenchmarkRunner.run` 的这个 scope 里，但正常结束的 sweep 在最后一个任务之后、判分之前自己关掉它，像任务的 teardown 那样不受 scope 收尾的时限（每个资源 15 s；关一台模拟器可以更久：服务最多 5 s，模拟器最多 `shutdown_timeout_s`，默认 20 s），所以跑完了的 sweep 不会因为它慢慢退出而失败；scope 只在 sweep 被打断（出错、Ctrl-C）时兜底关它。那是任务状态的复用，与 browser 的 `lifetime: experiment` 不是一回事。Python 并发调用方显式创建 scope，将各个新 compose 的结果交给 `scope.bind`，分别驱动 Runtime，并在离开 scope 前等待所有 run 完成。通用驱动只消费实验生命周期合同，不 import browser；Runtime 不知道 Chrome。`config check/explain` 与 `prepare()` 始终不启动资源。现有 YAML backend 块设置 `lifetime: experiment` 即选择共享寿命，不新增 provider registry 或重复的实验配置。
 
 Browser 的三个所有者分别是：provider 继续证明、持有并关闭实际进程/profile；`SharedBrowser` 持有 provider session 与一根 browser-wide early-attach broker，首次 acquire 固定 launch arguments/environment，后续不一致立即拒绝；`BrowserContextLease` 代表一个 run 的 context，结束 run 只释放 lease。实际启动 metadata 通过快照进入各 run 指纹，不因 capability 没有独占 `ProviderSession` 而丢掉启动开关摘要。`BrowserCapability.browser_context_id`、`BrowserArchiveContext.browser_context_id`、`RecorderTarget.browser_context_id` 是统一分区身份，不把它推入通用 Environment。
 
@@ -3330,7 +3330,7 @@ b 段没做的，留给 c 段与以后：
 
 **e 段落地了什么（2026-11-04）。** 环境跨任务复用（上面"环境跨任务复用"）。新起的名字（实施时起的，可以再调）：sweep 持有的 `EnvironmentReuse`、交接 `EnvironmentHandover` 与留下的环境 `KeptEnvironment`（`spectragent/core/environment_reuse.py`）；capability 的可选 Protocol `ReusableEnvironment`（`core/capabilities/base.py`：`environment_identity(setup)`、`bind_handover(handover)`），environment 的路由 `environment_identities(setups)` 与 `bind_handover`；开局布置组件的声明 `resets_between_tasks`（类上写 `__resets_between_tasks__`，默认否）；trace 的 `TraceConfig.earlier_tasks_on_environment`。分开写：
 
-- **在 sweep 一层**：`BenchmarkRunner` 持有一个 `EnvironmentReuse`，放在 sweep 的 `ExperimentScope` 里（§4.9.x），sweep 结束时由 scope 关掉还留着的环境；不在任何 capability 的私有状态里。每个任务照旧组装一份新的栈（§4.2）；任务之间交接的只是承载任务状态的那一部分（Android 的设备）。单独的 `spectragent run` 与 sweep 之外的 `run_task` 不复用。
+- **在 sweep 一层**：`BenchmarkRunner` 持有一个 `EnvironmentReuse`，放在 sweep 的 `ExperimentScope` 里（§4.9.x）；最后一个任务之后、判分之前 sweep 自己关掉还留着的环境，不受 scope 收尾的时限，scope 只在 sweep 被打断时兜底；不在任何 capability 的私有状态里。每个任务照旧组装一份新的栈（§4.2）；任务之间交接的只是承载任务状态的那一部分（Android 的设备）。单独的 `spectragent run` 与 sweep 之外的 `run_task` 不复用。
 - **两条在每个任务之前核对**（`EnvironmentReuse.before_task`，在 `execute` 之前）：实现 `ReusableEnvironment` 的 capability 各自说出环境身份（按 `capability_id`），与留下的环境的身份逐一相同；每个这样的 capability 承载的开局布置组件声明 `resets_between_tasks`。不成立就关掉留下的环境，这个任务起新的；成立就把它放进交接，capability 的 setup 取走它、不再新起。身份只读配置与将要绑定的组件，所以在 `prepare()` 之前就能问（与 `task_text_setter` 一样带 `setups`）。
 - **环境身份**：capability 说它的 setup 会起什么。Android 的是 `device_identity`：provider 的 `provider_id`、它的每个设置（provider dataclass 的字段：`local_emulator` 的 `avd` 即镜像、`sdk_root`、`avd_home`、`read_only`、`boot_timeout_s`、`shutdown_timeout_s`）与组件对设备的需要（`DeviceNeeds`）的摘要。需要算在身份里是实施时的理解：带 gRPC 与 root 起的设备与不带的不是同一台。按任务的镜像（§4.10.1 "capability 配置合并"里"以后每个 Android 任务不同的镜像"）还没有这个键，身份今天只读配置。
 - **什么时候留下**：交接说可以留（两条成立），setup 走完了，而且结束这个任务的每一步都成功：组件的复位（AndroidWorld 的 tear-down）、设备队列清空、设备端停下。否则照旧释放，下一个任务起新的，计数从头开始。整个环境要么全留、要么全不留。setup 之前就被拒的任务（`prepare()` 拒绝）没有动过留下的环境，它原样留给下一个任务。
@@ -3347,7 +3347,7 @@ b 段没做的，留给 c 段与以后：
 | 复用（默认，AndroidWorld 声明能复位） | 1 / 1 | 79.5 s、5.2 s、4.2 s | 0、1、2 | 1.0、1.0、1.0 | 343 s |
 | 每个任务新开机（同一份代码，只把声明关掉） | 3 / 3 | 64.7 s、65.4 s、65.3 s | 0、0、0 | 1.0、1.0、0.0 | 430 s |
 
-第一个任务之后，每个任务的 setup 省了约 60 s。新开机那次的 `SystemBrightnessMax` 走满了步数（0.0），是 agent 的表现：同一个任务在两次复用的 sweep 里都是 1.0。sweep 结束时关掉留下的设备用了 4.1 s，在实验 scope 15 s 的收尾时限之内。修好设备端之前的那次复用：第二个任务在留下的设备上 setup 失败，设备随之释放，第三个任务起了新设备（它的 trace 记 0），即上面"什么时候留下"的做法。
+第一个任务之后，每个任务的 setup 省了约 60 s。新开机那次的 `SystemBrightnessMax` 走满了步数（0.0），是 agent 的表现：同一个任务在两次复用的 sweep 里都是 1.0。sweep 结束时关掉留下的设备用了 4.1 s（那时由 scope 关；之后改成 sweep 在最后一个任务之后自己关，不受 scope 每个资源 15 s 的收尾时限，见 §4.9.x）。修好设备端之前的那次复用：第二个任务在留下的设备上 setup 失败，设备随之释放，第三个任务起了新设备（它的 trace 记 0），即上面"什么时候留下"的做法。
 
 e 段留给用户裁决的一件：**基础设施失败之后留下的环境怎么办**。裁决只说了两条与默认的新环境，没说一次失败之后；实施时取的是裁决的默认，待用户裁决。落地的做法是上面"什么时候留下"：结束任务的哪一步失败了（复位、队列清空、设备端停下），或者 setup 没走完，就不留，下一个任务用新环境，即裁决的默认；agent 一侧的失败（模型不可用、run 超时、解析失败）不碰环境，只要结束任务的各步成功，环境照样留下。可选的另外两种：(1) 照 AndroidWorld 自己的 runner：它在任务抛错时连 tear-down 都跳过，接着在同一个环境上跑下一个任务，从不换环境；(2) 更保守：环境状态不是 ok 的 run（`env_status`）之后，或者任何一个任务出错之后，都换新环境。
 
