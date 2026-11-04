@@ -1495,12 +1495,13 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             sources[UI_TREE] = Source(self._read_tree, self.ui_tree_timeout_s)
         clock = asyncio.get_running_loop()
         started = clock.time()
-        pin, self._clock_request = self._clock_request, None
         while True:
             settle = await self._settle(started)
+            # Taken here, so a capture that never reaches it leaves it for
+            # ``verify_restoration`` to report; a capture taken again pins once.
+            pin, self._clock_request = self._clock_request, None
             if pin is not None:
                 self._clock_alignment = await self._pin_clock(pin)
-                pin = None
                 if settle is not None:
                     await self._settle()
             fetched, device = await asyncio.gather(
