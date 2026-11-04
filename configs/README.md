@@ -465,7 +465,8 @@ benchmark:
       branches_per_step: 3            # b0, b1, b2 per selected step (the shipped value)
       agent_outcome: any              # done | max_steps | error | timeout | vetoed (reads result.json)
       # require_eval: { verifier_id: online_mind2web, label: 1, slug: null }   # a judged verdict of that kind in the source's verdicts/
-      # require_archive: [browser.network]   (default; [] requires none)
+      # require_archive: [browser.network]   (not written: what each source's capabilities declare —
+      #                                        browser needs browser.network, android nothing; [] requires none)
       on_unbranchable: raise          # skip: leave such a source out, with its reason
       exclude_unloaded_checkpoints: true   # false: branch from pages captured before they loaded too
       # task_variants: variants.json  # another task per checkpoint (needs history_source: restored)

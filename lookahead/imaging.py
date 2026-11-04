@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 from PIL import Image, ImageChops, ImageDraw, UnidentifiedImageError
 
-from spectragent.core.capabilities.browser.restoration import dhash, hamming, image_dhash
+from spectragent.core.image_hash import dhash, hamming, image_dhash
 from spectragent.flywheel.diagnostics import DifferenceMethod
 
 #: ``[x0, y0, x1, y1]`` in pixels of the image, right and bottom exclusive.

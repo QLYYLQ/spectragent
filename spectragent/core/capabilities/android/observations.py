@@ -25,8 +25,10 @@ One capture serves every negotiated fragment of an observation cycle:
   captured it (``producer``, §14.4). Captured only in a run that negotiates it.
 
 The screenshot, the foreground app and the UI tree also carry how the wait
-before their capture ended (:class:`AndroidCaptureFragment`), in the trace
-and never shown to the agent.
+before their capture ended, and the device's clock and the app in front when
+it was taken (:class:`AndroidCaptureFragment`), in the trace and never shown
+to the agent: a branch run reads them to pin the device clock and to compare
+the restored screen with the recorded one (§11.2 "分支回放").
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ from __future__ import annotations
 import base64
 from typing import Any, ClassVar, Literal, Self
 
-from pydantic import field_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, field_serializer, model_validator
 
 from spectragent.core.capabilities.android.device.clients import ScreenshotProducer
 from spectragent.core.capabilities.android.device.forest import AndroidAccessibilityForest
@@ -56,30 +58,59 @@ CAPTURE_STATE = "android.capture_state"
 UI_TREE = "android.ui_tree"
 
 
+class DeviceAtCapture(BaseModel):
+    """The device's clock and the app in front when one capture was taken.
+
+    Read on the device in the capture, beside its other sources: the clock with
+    ``date``, the app and window from the window manager, as
+    ``android.foreground_app`` reports them (the same reading, when the run
+    negotiates that fragment). ``None`` fields are facts the device did not
+    report.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: The device's wall clock, in ms since the epoch.
+    clock_ms: int
+    #: The focused app's package.
+    package: str | None = None
+    #: Its focused activity, the class name in full.
+    activity: str | None = None
+    #: The window with input focus: the app's, or a system window over it.
+    window: str | None = None
+
+
 class AndroidCaptureFragment(FragmentBase):
-    """What every fragment of one capture of the screen shares: how the wait before it ended.
+    """What every fragment of one capture of the screen shares: the wait before it, and the device then.
 
     One capture serves every negotiated fragment of an observation cycle,
     after one wait for a still screen (``settle.py``). ``settle`` records that
     wait: whether it ended still, at its limit or on an error, and how long
-    it took. The capability sets it on each fragment of the capture, the same
-    record on each, so a reader finds it on whichever of these fragments the
-    run negotiated, ``capture_state`` or not. No agent renders it: the
-    browser's ``settle`` is the same record (``docs/architecture_design.md``
-    §4.14, §11.2). ``None``, and then left out of the trace JSON: the wait is
-    turned off (``settle_max_wait_s: 0``), or no capture served the fragment
-    (a test built it).
+    it took. ``device`` records the device's clock and the app in front
+    (:class:`DeviceAtCapture`), so a recording carries both whatever the run
+    negotiated (§11.2 "分支回放"). The capability sets both on each fragment
+    of the capture, the same records on each, so a reader finds them on
+    whichever of these fragments the run negotiated, ``capture_state`` or
+    not. No agent renders them: the browser's ``settle`` is the same record
+    (``docs/architecture_design.md`` §4.14, §11.2). ``settle`` is ``None``
+    when the wait is turned off (``settle_max_wait_s: 0``); ``device`` when
+    reading it failed, which fails nothing else of the capture (a fact only
+    the recording needs never costs the agent its observation); either when
+    no capture served the fragment (a test built it). A ``None`` record is
+    left out of the trace JSON.
     """
 
     __abstract__ = True
 
     settle: SettleState | None = None
+    device: DeviceAtCapture | None = None
 
     def trace_json_exclude(self) -> set[str]:
-        # Left out when there is no record, so a capture without a wait
-        # writes what it always wrote.
+        # Left out when there is no record, so a capture without one writes
+        # what it always wrote.
         excluded = super().trace_json_exclude()
-        return excluded if self.settle is not None else excluded | {"settle"}
+        absent = {name for name in ("settle", "device") if getattr(self, name) is None}
+        return excluded | absent
 
 
 class AndroidScreenshotObs(AndroidCaptureFragment):

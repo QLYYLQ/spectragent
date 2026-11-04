@@ -99,3 +99,8 @@ TEMPLATE_FLAGS = (
 #: never imports. The numpy sampler (the ``learned-mouse`` extra) registers
 #: nothing; the ``learned`` trajectory imports it when it is constructed.
 OPTIONAL_EXTRA_MODULES = ("spectragent.core.capabilities.browser.input._mouse_gan_v2",)
+
+#: A branch of a browser recording replays the recorded network offline, so it
+#: needs the network archive (``browser.network``, §4.14). ``trace_branches``
+#: reads this when a branches YAML leaves ``require_archive`` unwritten (§4.10).
+BRANCH_ARCHIVES: tuple[str, ...] = ("browser.network",)

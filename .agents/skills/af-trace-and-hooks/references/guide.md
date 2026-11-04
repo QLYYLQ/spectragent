@@ -223,7 +223,8 @@ came in an earlier step.
   `RestorationCheck` refuses a bare mapping. Each evidence carries its checks
   (`REASONS`, `failed_checks()`, from its own fields and the limits it recorded); the
   check's `reasons` are those checks, in evidence order, then the restorer's action
-  reasons. The browser's (`BrowserRestorationEvidence`, `restoration_evidence.py`)
+  reasons. Android's (`AndroidRestorationEvidence`) is described in §11.2 "分支回放落地了什么".
+  The browser's (`BrowserRestorationEvidence`, `restoration_evidence.py`)
   carries URL, signature, screenshot distance, document misses, the limits
   `screenshot_max_distance` / `media_time_tolerance_s`, and `media` (`MediaEvidence`):
   `comparisons` (each media element matched / missing / extra / ambiguous, live or not,

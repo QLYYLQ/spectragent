@@ -695,7 +695,7 @@ _BACK_TO_ONE = (
 
 async def test_an_ended_source_is_played_through_to_its_natural_end(origin: str) -> None:
     """The recording saw the video at its end: seek a lead before it and play into it."""
-    from spectragent.core.capabilities.browser.restoration import dhash, hamming
+    from spectragent.core.image_hash import dhash, hamming
 
     # Played to its end, it must look exactly as recorded: no screenshot distance at all.
     browser = await _open(origin, "one.html", screenshot_max_distance=0)

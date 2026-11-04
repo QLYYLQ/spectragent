@@ -137,6 +137,7 @@ def write_source(
     uncommitted: Sequence[int] = (),
     task_text_setter: str | None = None,
     benchmark_spec: BenchmarkSpec | None = None,
+    names_capability: bool = True,
 ) -> Path:
     """Commit one recorded run under ``root/<run_id>`` and return its directory.
 
@@ -154,7 +155,8 @@ def write_source(
     ``result.json`` (``None``: no result.json); ``task_text_setter`` names
     the capability whose setup completed the run's task text (§4.10);
     ``benchmark_spec`` records how the run's benchmark was selected (``None``:
-    the run belonged to none).
+    the run belonged to none); ``names_capability`` false records an empty
+    resolved configuration, as a run assembled without the Composer does.
     """
     specs = [Step() for _ in range(steps)] if isinstance(steps, int) else list(steps)
     captured = any(spec.capture is not None for spec in specs)
@@ -183,6 +185,17 @@ def write_source(
             branch=branch,
             task_text_setter=task_text_setter,
             benchmark_spec=benchmark_spec,
+            # The capability it ran, named where the schema puts it: what a
+            # branch of it needs is that capability's declaration.
+            resolved=(
+                {
+                    "environment": [
+                        {"env_type": env_type, "capabilities": [{"capability_id": env_type}]}
+                    ]
+                }
+                if names_capability
+                else {}
+            ),
         )
     )
     for index, spec in enumerate(specs):

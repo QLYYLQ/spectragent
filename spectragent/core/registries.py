@@ -15,7 +15,10 @@ framework needs before importing it (``docs/architecture_design.md``
 ``TEMPLATE_BLOCK``          where ``spectragent config template`` starts its
                             block in a new template (§4.17);
 ``TEMPLATE_FLAGS``          its template flags, which ``config template``
-                            generates (§4.17).
+                            generates (§4.17);
+``BRANCH_ARCHIVES``         the archives a branch of its recordings needs, which
+                            ``trace_branches`` requires of a source that ran it
+                            unless its ``require_archive`` says otherwise (§4.10).
 
 So adding a capability edits no file here. Every subpackage of
 ``spectragent/agents/`` is an agent family, named by the part of an
@@ -32,11 +35,13 @@ objects.
 
 from __future__ import annotations
 
+import ast
 import copy
 import importlib
 import pkgutil
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from conscribe import LayerRegistrar, discover, get_registry
@@ -117,11 +122,65 @@ class CapabilityDeclarations:
     template_block: Mapping[str, JsonValue]
     #: Its ``config template`` flags, in declared order.
     template_flags: tuple[TemplateFlag, ...]
+    #: The archiver keys, all its own, a branch of its recordings needs (``()``: none).
+    branch_archives: tuple[str, ...]
 
 
 def capability_ids() -> tuple[str, ...]:
     """Every capability package's ``capability_id``, sorted. Imports no capability package."""
     return _subpackages(CAPABILITIES_PACKAGE)
+
+
+def declared_branch_archives() -> dict[str, tuple[str, ...]]:
+    """Each capability package's ``BRANCH_ARCHIVES``, by ``capability_id``, in that order.
+
+    Read from the source of each package's ``declarations.py``, so no
+    capability package is imported: a framework text that names what every
+    package declares (the ``trace_branches`` loader's ``require_archive``
+    description) must not import a package a run does not name. The
+    declaration is therefore a literal tuple of strings; what it holds is
+    checked when :func:`capability_declarations` imports it.
+
+    Raises:
+        ValueError: A package's ``declarations.py`` assigns ``BRANCH_ARCHIVES``
+            no literal tuple of strings, or does not assign it.
+    """
+    path = importlib.import_module(CAPABILITIES_PACKAGE).__path__
+    declared: dict[str, tuple[str, ...]] = {}
+    for module in sorted(pkgutil.iter_modules(path), key=lambda item: item.name):
+        if not module.ispkg:
+            continue
+        source = Path(getattr(module.module_finder, "path", "")) / module.name / "declarations.py"
+        name = f"{CAPABILITIES_PACKAGE}.{module.name}.{DECLARATIONS_MODULE}"
+        value = _literal_assignment(source, "BRANCH_ARCHIVES")
+        if not (isinstance(value, tuple) and all(isinstance(key, str) for key in value)):
+            raise ValueError(
+                f"{name} must assign BRANCH_ARCHIVES a literal tuple of archiver keys, () when "
+                f"a branch of its recordings needs none; found {value!r}"
+            )
+        declared[module.name] = value
+    return declared
+
+
+def _literal_assignment(source: Path, target: str) -> object:
+    """The literal *source* assigns to *target* at module level; ``None`` without one."""
+    try:
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    except OSError:
+        return None
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            names, value = [t.id for t in node.targets if isinstance(t, ast.Name)], node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names, value = [node.target.id], node.value
+        else:
+            continue
+        if target in names and value is not None:
+            try:
+                return ast.literal_eval(value)
+            except ValueError:
+                return None
+    return None
 
 
 def agent_families() -> tuple[str, ...]:
@@ -402,8 +461,8 @@ def _read_declarations(capability_id: str) -> CapabilityDeclarations:
         raise ImportError(
             f"capability package {package} has no {DECLARATIONS_MODULE} module. Every "
             f"subpackage of {CAPABILITIES_PACKAGE} is a capability and declares its strategy "
-            f"axes, task setup, optional-extra modules, start flags and template starting "
-            f"block and flags there "
+            f"axes, task setup, optional-extra modules, start flags, template starting "
+            f"block and flags, and the archives a branch of its recordings needs there "
             f"(docs/architecture_design.md §4.2.1)."
         ) from exc
     from spectragent.schemas.task import SetupBase, StartFlag
@@ -461,6 +520,20 @@ def _read_declarations(capability_id: str) -> CapabilityDeclarations:
         values = [getattr(flag, field) for flag in template]
         if len(set(values)) != len(values):
             raise ValueError(f"{name}.TEMPLATE_FLAGS declares one {field} twice: {values}")
+    archives = getattr(module, "BRANCH_ARCHIVES", None)
+    if not (
+        isinstance(archives, tuple)
+        and all(
+            isinstance(key, str)
+            and key.startswith(f"{capability_id}.")
+            and key != f"{capability_id}."
+            for key in archives
+        )
+    ):
+        raise TypeError(
+            f"{name}.BRANCH_ARCHIVES must be a tuple of this capability's own archiver keys "
+            f"('{capability_id}.<id>'), () when a branch needs none, not {archives!r}"
+        )
     return CapabilityDeclarations(
         capability_id=capability_id,
         strategy_axes=dict(axes),
@@ -469,6 +542,7 @@ def _read_declarations(capability_id: str) -> CapabilityDeclarations:
         start_flags=flags,
         template_block=copy.deepcopy(dict(block)),
         template_flags=template,
+        branch_archives=archives,
     )
 
 

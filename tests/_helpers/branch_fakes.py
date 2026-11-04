@@ -566,8 +566,12 @@ async def record_source(
     cap: BranchFakeCap | None = None,
     benchmark: Any = None,
     benchmark_spec: BenchmarkSpec | None = None,
+    agent: BranchFakeAgent | None = None,
+    raise_on_error: bool = True,
 ) -> Path:
-    """Run the fake agent through the real runtime and trace writer; return the run dir.
+    """Run the fake agent (*agent*, a plain one of *style* when ``None``) through the real
+    runtime and trace writer; return the run dir. A run that ends on an error raises it,
+    unless *raise_on_error* is false.
 
     ``env_context`` is the task's environment setup context (recorded as the
     source's ``task_setup``); ``None`` records none. ``action_filter`` is
@@ -579,7 +583,7 @@ async def record_source(
         tmp_path / "sources",
         loop=loop or ReactLoop(max_steps=10, parse_retries_per_step=1, today_override="2001-02-03"),
         replies=replies,
-        agent=BranchFakeAgent(style=style, structured=structured),
+        agent=agent if agent is not None else BranchFakeAgent(style=style, structured=structured),
         cap=cap if cap is not None else make_cap(),
         memory=memory,
         window=window,
@@ -592,6 +596,7 @@ async def record_source(
         extra_hooks=extra_hooks,
         benchmark=benchmark,
         benchmark_spec=benchmark_spec,
+        raise_on_error=raise_on_error,
     )
     assert outcome.run_dir is not None
     return outcome.run_dir

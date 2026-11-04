@@ -7,7 +7,8 @@
   latest start of input and its client's served connection from ``dumpsys
   input_method``, a frame count from
   ``dumpsys gfxinfo``, ``wm size``, ``getprop``, ``settings``, ``pm``,
-  ``cmd package`` and ``am start``;
+  ``cmd package``, ``am start``, and the wall clock: ``date +%s%3N`` and
+  ``cmd alarm set-time``;
 - **the device side** (:class:`~tests._helpers.fake_device_side.FakeDeviceSide`):
   the APK's install, the shell helper, the accessibility service, and what
   they do for a run: screenshots, timed strokes, keys, text, the node with
@@ -230,6 +231,17 @@ class ScriptedPhone:
             KEYCODE_..."``, ``"helper type_text '...' replace|at the cursor"``,
             ``"service set_text '...' replace|at the cursor"``, ``"service
             commit_text '...' replace|at the cursor"``.
+        clock_ms: The wall clock when the phone booted, in ms since the epoch
+            (AndroidWorld's 2023-10-15 15:34 UTC); it runs on from there, and
+            ``cmd alarm set-time`` moves it.
+        clock_fails: ``date`` fails from now on.
+        clock_sets_that_work: How many ``cmd alarm set-time`` calls succeed
+            before every later one fails, as the shell user's does when the
+            system refuses it; ``None``: every one succeeds.
+        clock_sets: Every time ``cmd alarm set-time`` set the clock, in order.
+        global_settings: The global settings ``settings get global`` reads,
+            ``put`` writes and ``delete`` removes, by name: the emulator's two
+            animation scales set, the animator's not.
     """
 
     width: int = 1080
@@ -265,8 +277,20 @@ class ScriptedPhone:
     typing_fails: str | None = None
     unbinds_after_reads: int = 0
     inputs: list[str] = field(default_factory=list)
+    clock_ms: int = 1_697_384_040_000
+    clock_fails: bool = False
+    clock_sets_that_work: int | None = None
+    clock_sets: list[int] = field(default_factory=list)
+    global_settings: dict[str, str] = field(
+        default_factory=lambda: {
+            "window_animation_scale": "1.0",
+            "transition_animation_scale": "1.0",
+        }
+    )
     side: FakeDeviceSide = field(init=False)
     _booted: float = field(init=False, default_factory=time.monotonic)
+    #: When the clock was last set (or the phone booted), on the host's monotonic clock.
+    _clock_since: float = field(init=False, default_factory=time.monotonic)
 
     def __post_init__(self) -> None:
         self.side = FakeDeviceSide(
@@ -296,6 +320,11 @@ class ScriptedPhone:
     def uptime_ms(self) -> int:
         """The device's uptime: the clock its events and pings are on."""
         return 100_000 + round((time.monotonic() - self._booted) * 1000)
+
+    @property
+    def now_ms(self) -> int:
+        """The device's wall clock: :attr:`clock_ms`, run on since it was last set."""
+        return self.clock_ms + round((time.monotonic() - self._clock_since) * 1000)
 
     def emit(self, event_type: str = "TYPE_WINDOW_CONTENT_CHANGED") -> int:
         """The service receives an accessibility event now; returns its ``seq``."""
@@ -496,6 +525,31 @@ class ScriptedPhone:
             return ShellResult(stdout=f"Physical size: {self.width}x{self.height}\n".encode())
         if command == "getprop ro.build.fingerprint":
             return ShellResult(stdout=f"{FINGERPRINT}\n".encode())
+        if command == "date +%s%3N":
+            if self.clock_fails:
+                return ShellResult(stderr=b"date: bad clock\n", exit_code=1)
+            return ShellResult(stdout=f"{self.now_ms}\n".encode())
+        if words[:3] == ["cmd", "alarm", "set-time"]:
+            if (
+                self.clock_sets_that_work is not None
+                and len(self.clock_sets) >= self.clock_sets_that_work
+            ):
+                return ShellResult(
+                    stderr=b"java.lang.SecurityException: setTime: Neither user 2000 nor current "
+                    b"process has android.permission.SET_TIME.\n",
+                    exit_code=255,
+                )
+            self.clock_ms, self._clock_since = int(words[3]), time.monotonic()
+            self.clock_sets.append(self.clock_ms)
+            return ShellResult()
+        if words[:3] == ["settings", "put", "global"]:
+            self.global_settings[words[3]] = words[4]
+            return ShellResult()
+        if words[:3] == ["settings", "get", "global"]:
+            return ShellResult(stdout=f"{self.global_settings.get(words[3], 'null')}\n".encode())
+        if words[:3] == ["settings", "delete", "global"]:
+            gone = self.global_settings.pop(words[3], None)
+            return ShellResult(stdout=f"Deleted {int(gone is not None)} rows\n".encode())
         if command == "settings get secure default_input_method":
             return ShellResult(stdout=f"{INPUT_METHOD}\n".encode())
         if command == "pm list packages":

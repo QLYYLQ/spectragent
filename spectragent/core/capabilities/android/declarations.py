@@ -79,3 +79,9 @@ TEMPLATE_FLAGS: tuple[TemplateFlag, ...] = ()
 
 #: No module of this package needs an optional extra.
 OPTIONAL_EXTRA_MODULES: tuple[str, ...] = ()
+
+#: A branch of an Android recording needs no archive: the restorer replays the
+#: recorded actions on a device the benchmark's setup prepared again
+#: (``docs/architecture_design.md`` §11.2 "分支回放"). ``trace_branches`` reads
+#: this when a branches YAML leaves ``require_archive`` unwritten (§4.10).
+BRANCH_ARCHIVES: tuple[str, ...] = ()
