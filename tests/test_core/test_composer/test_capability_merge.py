@@ -252,8 +252,11 @@ def test_two_strategies_for_one_receptor_are_refused_at_the_discriminator(tmp_pa
 def test_an_app_table_in_the_run_configuration_is_refused_naming_where_the_tables_differ(
     tmp_path: Path,
 ) -> None:
-    """A free-form map is one value; its conflict names the keys that differ, never the whole map."""
-    table: dict[str, JsonValue] = {f"app {n}": f"com.example.app{n}" for n in range(6)}
+    """A free-form map is one value; one too long to show is not cut, the keys that differ are named.
+
+    In sorted order, whatever order the table is written in.
+    """
+    table: dict[str, JsonValue] = {f"app {n}": f"com.example.app{n}" for n in reversed(range(6))}
     apps: dict[str, JsonValue] = {"Clock": "com.google.android.deskclock", "app 0": "com.other"}
     listed: list[JsonValue] = [{"action_id": "android.open_app", "apps": apps}]
     raw = _run(_android(actions=listed), _table(tmp_path, table))
@@ -269,6 +272,21 @@ def test_an_app_table_in_the_run_configuration_is_refused_naming_where_the_table
         "'Clock'; only the second has 'app 1', 'app 2', 'app 3' and 2 more; both have 'app 0' "
         "with different values); a run takes each setting from one side only: leave it out of "
         "one of them, or write the same value in both."
+    )
+
+
+def test_two_small_maps_in_conflict_are_shown_whole(tmp_path: Path) -> None:
+    table: dict[str, JsonValue] = {"clock": "com.a", "markor": "com.b"}
+    listed: list[JsonValue] = [{"action_id": "android.open_app", "apps": {"Clock": "com.a"}}]
+
+    refused = _refused(_run(_android(actions=listed), _table(tmp_path, table)))
+
+    assert str(refused) == (
+        "environment[0].capabilities[0].actions[android.open_app].apps: the run configuration "
+        "(environment[0].capabilities[0]) writes {'Clock': 'com.a'} and the benchmark "
+        "androidworld, computed in code (benchmark[0]) writes {'clock': 'com.a', 'markor': "
+        "'com.b'}; a run takes each setting from one side only: leave it out of one of them, or "
+        "write the same value in both."
     )
 
 

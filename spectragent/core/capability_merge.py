@@ -19,7 +19,7 @@ that capability (:meth:`CapabilityMerge.merge`):
   merged inside when both name the same strategy, refused when they name two,
   and so is a block of settings a field is typed as (``network_source.matcher``),
   while a free-form map (``open_app``'s ``apps``) is one value, whose
-  conflict names the keys the two maps differ in rather than either map;
+  conflict names the keys the two maps differ in when either is too long to show;
 - a list of strategy blocks (``actions``) is the run configuration's, or the
   whole default list when it leaves the list out: a part may set options on an
   entry already there, matched by its discriminator (``action_id``), and never
@@ -457,8 +457,12 @@ class CapabilityMerge:
         self, target: _Block, at: str, existing: object, value: object, side: _Side
     ) -> MergeProblem:
         first = _first_writer(target, at)
-        if isinstance(existing, Mapping) and isinstance(value, Mapping):
-            # A whole map (open_app's 117 names) says nothing: say where the two differ.
+        if (
+            isinstance(existing, Mapping)
+            and isinstance(value, Mapping)
+            and max(len(repr(existing)), len(repr(value))) > _SHOWN
+        ):
+            # A map cut short (open_app's 117 names) says nothing: say where the two differ.
             written = (
                 f"{first} writes {_entries(existing)} and {side} writes {_entries(value)}, "
                 f"which differ ({_difference(existing, value)})"
@@ -603,8 +607,8 @@ def _difference(first: Mapping[object, object], second: Mapping[object, object])
 
 
 def _named(keys: Sequence[object]) -> str:
-    """The first few of *keys* by name, and how many more there are."""
-    named = ", ".join(_shown(key) for key in keys[:_NAMED])
+    """The first few of *keys* in sorted order by name, and how many more there are."""
+    named = ", ".join(_shown(key) for key in sorted(keys, key=str)[:_NAMED])
     rest = len(keys) - _NAMED
     return f"{named} and {rest} more" if rest > 0 else named
 
