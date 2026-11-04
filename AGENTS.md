@@ -37,7 +37,7 @@ Package management is `uv`. A `.venv/` exists at repo root; `pyproject.toml` dec
 # Install / sync deps (including dev tools)
 uv sync --extra dev
 
-# Run full test suite (pytest-asyncio is in auto mode)
+# Run the full test suite, once before a push (§3.11; pytest-asyncio is in auto mode)
 uv run pytest
 
 # Run a single test file / node

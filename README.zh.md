@@ -282,7 +282,7 @@ uv run spectragent view --annotations labels/ --annotator alice
 ```bash
 uv sync --extra dev
 uv run pytest -m "not requires_chrome"     # 跳过启动真实 Chrome 的测试
-uv run pytest                              # 全部测试，在空闲的机器上跑
+uv run pytest                              # 全部测试，push 之前在空闲的机器上跑一次
 uv run ruff check . && uv run ruff format .
 uv run pyright spectragent tests
 ```
