@@ -30,6 +30,7 @@ from spectragent.inspection.marks import (
     MarkRequest,
     action_lines,
     action_verbs,
+    addressed_elements,
     before_action_marks,
     default_requests,
     marks_on,
@@ -617,7 +618,7 @@ class _FileRepository:
                         "index": entry.step,
                         "origin": record.origin,
                         "record": _json(record),
-                        "action_summary": action_lines(record),
+                        "action_summary": action_lines(record, addressed_elements(trace, record)),
                         "has_screenshot": _has_screenshot(entry),
                     }
                 )

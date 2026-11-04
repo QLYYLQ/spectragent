@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from spectragent.core.trace.reader import RunTrace
-from spectragent.inspection.marks import action_text
+from spectragent.inspection.marks import action_text, addressed_elements
 
 
 def run_graph(trace: RunTrace) -> dict[str, Any]:
@@ -13,10 +13,13 @@ def run_graph(trace: RunTrace) -> dict[str, Any]:
 
     Reading a graph must not decode prompt images, load archives, or open another
     run. In particular, a restoration prefix is never represented as new decisions.
+    An action naming an element is worded with that element as its step's
+    observation recorded it (``marks.addressed_elements``).
     """
     steps = []
     for record in trace.step_records:
         actions = []
+        elements = addressed_elements(trace, record)
         for index, action in enumerate(record.actions):
             result = record.action_results[index] if index < len(record.action_results) else None
             skipped = (
@@ -26,7 +29,7 @@ def run_graph(trace: RunTrace) -> dict[str, Any]:
                 {
                     "index": index,
                     "name": action.name,
-                    "text": action_text(action, result),
+                    "text": action_text(action, result, elements[index]),
                     "status": "skipped"
                     if skipped
                     else "succeeded"

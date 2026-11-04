@@ -54,11 +54,17 @@ export function markLayout(data) {
           y: mark.y,
           stack: stack(mark.x, mark.y),
         };
-        if (mark.kind === "drag" && mark.end_x != null && mark.end_y != null)
+        // A recorded end (a drag's release, a swipe's lift) wins over a
+        // scroll's drawn direction arrow.
+        if (["drag", "scroll"].includes(mark.kind) && mark.end_x != null && mark.end_y != null)
           shape.end = { x: mark.end_x, y: mark.end_y };
-        if (mark.kind === "scroll" && DIRECTION[mark.direction]) {
+        else if (mark.kind === "scroll" && DIRECTION[mark.direction]) {
           const [dx, dy] = DIRECTION[mark.direction];
           shape.end = { x: mark.x + dx * length, y: mark.y + dy * length };
+        }
+        if (Array.isArray(mark.box) && mark.box.length === 4) {
+          const [x0, y0, x1, y1] = mark.box;
+          if (x1 > x0 && y1 > y0) shape.box = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
         }
         if (shape.end) shape.angle = angle(shape, shape.end);
         if (mark.kind === "type" && mark.typed) shape.typed = mark.typed;

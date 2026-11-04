@@ -86,3 +86,20 @@ test("dots on the same spot are fanned out, not hidden under each other", () => 
     [0, 1, 0],
   );
 });
+
+test("an element's recorded bounds become a box, and a recorded swipe end wins over the arrow", () => {
+  const layout = markLayout({
+    width: 540,
+    height: 1200,
+    sets: [{ marks: [
+      { number: 1, kind: "click", x: 450, y: 100, box: [400, 50, 500, 150], text: "点击" },
+      { number: 2, kind: "scroll", x: 270, y: 750, end_x: 270, end_y: 350, direction: "down", text: "向下滚动" },
+      { number: 3, kind: "type", x: 1, y: 1, box: [5, 5, 5, 9], text: "输入" },
+    ] }],
+  });
+  const [click, swipe, flat] = layout.sets[0].shapes;
+  assert.deepEqual(click.box, { x: 400, y: 50, width: 100, height: 100 });
+  assert.deepEqual(swipe.end, { x: 270, y: 350 });
+  assert.equal(swipe.angle, -90);
+  assert.equal(flat.box, undefined);
+});
