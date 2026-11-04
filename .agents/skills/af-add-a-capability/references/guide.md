@@ -368,7 +368,8 @@ outside the package may wire to the package's own keys (Step 6, the environment)
 ```
 spectragent/core/capabilities/docker/
 ├── __init__.py          # imports nothing: declarations.py must stay light
-├── declarations.py      # STRATEGY_AXES, TASK_SETUP, OPTIONAL_EXTRA_MODULES, START_FLAGS
+├── declarations.py      # STRATEGY_AXES, TASK_SETUP, OPTIONAL_EXTRA_MODULES, START_FLAGS,
+│                        # TEMPLATE_BLOCK, TEMPLATE_FLAGS
 ├── task_setup.py        # DockerSetup(SetupBase), registered by subclassing
 ├── capability.py        # the DockerCapability class
 ├── environment.py       # DockerEnvironment, its single-capability environment
@@ -386,8 +387,13 @@ registrar definitions and the setup schema:
 
 ```python
 # spectragent/core/capabilities/docker/declarations.py
+from collections.abc import Mapping
+
+from pydantic import JsonValue
+
 from spectragent.core.capabilities.docker.backends._registrar import DockerProviderRegistrar
 from spectragent.core.capabilities.docker.task_setup import DockerSetup
+from spectragent.core.registries import TemplateFlag
 from spectragent.schemas.task import StartFlag
 
 STRATEGY_AXES = {"docker_provider": DockerProviderRegistrar}  # layer name -> registrar
@@ -396,6 +402,10 @@ OPTIONAL_EXTRA_MODULES: tuple[str, ...] = ()  # modules importing an optional ex
 START_FLAGS = (  # single-task start flags `spectragent run` generates; () when none
     StartFlag("--image", "image", "Container image the task starts in."),
 )
+# Where `spectragent config template` starts this block in a new template; {} when none.
+TEMPLATE_BLOCK: Mapping[str, JsonValue] = {}
+# The capability's `config template` flags; () when none.
+TEMPLATE_FLAGS: tuple[TemplateFlag, ...] = ()
 ```
 
 - **`STRATEGY_AXES`** — every internal registrar YAML chooses from, keyed by the
@@ -420,6 +430,23 @@ START_FLAGS = (  # single-task start flags `spectragent run` generates; () when 
   listed by capability in `--help` and tab completion, and refuse one whose capability the
   configuration does not name (§4.9 "起始参数"). A flag two packages declare is refused when
   the declarations are read.
+- **`TEMPLATE_BLOCK`** — the capability block a new `spectragent config template` starts
+  from, written as a YAML capability block without its `capability_id`: the strategies of
+  its required receptors (`backend`, ...) and any value the schema requires. It is a
+  starting point the template writes into the YAML, never a runtime default: a required
+  receptor still has to be written in the run configuration. A value the schema requires
+  and nothing can choose for the user (a machine's own path) is a visible placeholder
+  (Android's `avd` and `service_apk`). `{}` when the block needs nothing; the template then
+  refuses a missing required field by name (design doc §4.17 "capability 的模板起点").
+- **`TEMPLATE_FLAGS`** — a tuple of `TemplateFlag(flag, receptor, help)`
+  (`core/registries.py`): each a `config template` flag whose value is a registry key of
+  the receptor's layer, replacing that receptor's strategy in this capability's block
+  (browser: `--backend`, `--replayability`). Generated like `START_FLAGS`, listed by
+  capability, refused when the template has no block of this capability; a flag two
+  packages declare, or one the command already takes, is refused. `()` when none.
+
+The reader (`core/registries.py::_read_declarations`) refuses a module missing any of
+these six names, so `run`, `config check` and `config explain` fail until all are there.
 
 Importing any module of the package runs every `__init__.py` on the way, so none of them
 imports an implementation; import from the defining module instead.
@@ -853,7 +880,7 @@ Before you call a capability done:
 - [ ] Every `ArchiveFile` carries `meta` (`captured_at`, `cycle`, `ids`), a `capability_id` that is this capability's own, and a single-segment `name` of at most 255 bytes of UTF-8 (`MAX_SEGMENT_BYTES`; derive names from URLs or titles only after shortening them); every string it carries (`name`, `media_type`, `ids`) encodes as UTF-8, so decode CDP payloads strictly rather than leaving lone surrogates; at most one JSON run record per batch
 - [ ] If a recorded run can resume here: `RestorationSupport` (and, for state that moves on its own clock, `RestorationAlignment`) implemented as pure measurements and requests; unknown values never decide
 - [ ] All registry keys fully qualified; `__wiring__` *requires* stay relative
-- [ ] `declarations.py` names every internal registrar (`STRATEGY_AXES`, the backend registrar included), the task setup class (`TASK_SETUP`), any module that imports an optional extra at top level (`OPTIONAL_EXTRA_MODULES`) and its single-task start flags (`START_FLAGS`, `()` when none); the package's `__init__.py` files import no implementation; no framework file edited
+- [ ] `declarations.py` names every internal registrar (`STRATEGY_AXES`, the backend registrar included), the task setup class (`TASK_SETUP`), any module that imports an optional extra at top level (`OPTIONAL_EXTRA_MODULES`), its single-task start flags (`START_FLAGS`, `()` when none), the block a new `config template` starts from (`TEMPLATE_BLOCK`, `{}` when none) and its template flags (`TEMPLATE_FLAGS`, `()` when none); the package's `__init__.py` files import no implementation; no framework file edited
 - [ ] `uv run pytest tests/test_core/test_capabilities/test_capability_declarations.py` passes
 - [ ] `uv run spectragent config generate`, then `uv run pytest tests/test_generated/`
 - [ ] `uv run pyright spectragent tests` — only the four known metaclass artifacts
