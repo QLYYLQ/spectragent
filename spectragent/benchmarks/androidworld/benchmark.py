@@ -7,10 +7,12 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, JsonValue
 
 from spectragent.benchmarks._registrar import BenchmarkBase
+from spectragent.benchmarks.androidworld.data import AndroidWorldData
+from spectragent.benchmarks.androidworld.install import AndroidWorldInstallation, named_emulator
 from spectragent.benchmarks.androidworld.open_app import read_open_app_table
+from spectragent.benchmarks.androidworld.service import Installation
 from spectragent.benchmarks.androidworld.setup import AndroidWorldSetup
 from spectragent.benchmarks.androidworld.tasks import MINIWOB
-from spectragent.core.data_loader._common import resolve_data_dir
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.verdict import Verdict
@@ -55,13 +57,19 @@ class AndroidWorldBenchmark(BenchmarkBase):
             BenchmarkDataError: The task lists' directory holds no table from
                 the pinned commit.
         """
-        loader: object = getattr(config, "task_loader", None)
-        data_dir: object = getattr(loader, "data_dir", None)
-        if data_dir is not None and not isinstance(data_dir, str):
-            raise TypeError(f"the androidworld task loader's data_dir is {data_dir!r}")
-        apps = read_open_app_table(resolve_data_dir(_ANDROID, cls.__registry_key__, data_dir))
+        apps = read_open_app_table(cls.data_directory(config))
         table: dict[str, JsonValue] = dict(apps)
         return [{"capability_id": _ANDROID, "actions": [{"action_id": _OPEN_APP, "apps": table}]}]
+
+    @classmethod
+    def pinned_data(cls, config: BaseModel) -> AndroidWorldData:
+        """Its task lists and ``open_app`` table, made from the pinned commit in its installation (``data.py``)."""
+        return AndroidWorldData(_installation(config))
+
+    @classmethod
+    def installation(cls, config: BaseModel) -> AndroidWorldInstallation:
+        """AndroidWorld's checkout, venv and cached forwarder where its setup looks, and the AVD it boots (``install.py``)."""
+        return AndroidWorldInstallation(_installation(config), *named_emulator(config))
 
     def success(self, verdict: Verdict, result: AgentResult | None) -> float | None:
         """AndroidWorld's own rule: the device's score counts only when the agent declared the task done.
@@ -81,3 +89,11 @@ class AndroidWorldBenchmark(BenchmarkBase):
         if result is None:
             return None
         return verdict.score if result.agent_done == AgentDoneStatus.DONE else 0.0
+
+
+def _installation(config: BaseModel) -> Installation:
+    """The installation the block's setup component looks for: at its ``root``, else the default."""
+    root: object = getattr(getattr(config, "setup", None), "root", None)
+    if not (root is None or isinstance(root, str)):
+        raise TypeError(f"the androidworld setup's root is {root!r}")
+    return Installation.at(root)

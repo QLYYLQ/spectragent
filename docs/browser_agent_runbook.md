@@ -130,7 +130,7 @@ benchmark:
           # base_url: 已验证的兼容接口地址
 ```
 
-这里的 `openai/direct` 是配置形状示例，型号或网关采用别的协议时，整体替换为验证过的 `llm` 块。密钥从相应环境变量读取；入口也加载 `.env`。参考答案来自同一个基准：块里没写 `eval_loader` 时，用它的任务加载器的键下注册的评测加载器、按任务加载器的 subset 读参考数据，数据默认由 `SPECTRAGENT_BENCHMARK_DATA` 指定的根目录定位，要读别处的数据就给 `eval_loader` 写 `data_dir`。要参考答案的判分器（`exact_match`、`browsecomp`、`lexbench_browser`）配在没有参考数据的基准上时，开判之前就拒绝；WebJudge 不读参考。`spectragent eval` 没有 `--subset`：trace 记下的 benchmark 与 subset 要与基准块的相同，不同的那一份由要参考的判分器记为无法判定。
+这里的 `openai/direct` 是配置形状示例，型号或网关采用别的协议时，整体替换为验证过的 `llm` 块。密钥从相应环境变量读取；入口也加载 `.env`。参考答案来自同一个基准：块里没写 `eval_loader` 时，用它的任务加载器的键下注册的评测加载器、按任务加载器的 subset 读参考数据，数据默认在共用缓存里（`SPECTRAGENT_BENCHMARK_DATA`，没设时是 `~/.cache/spectragent/benchmarks`），要读别处的数据就给 `eval_loader` 写 `data_dir`。要参考答案的判分器（`exact_match`、`browsecomp`、`lexbench_browser`）配在没有参考数据的基准上时，开判之前就拒绝；WebJudge 不读参考。`spectragent eval` 没有 `--subset`：trace 记下的 benchmark 与 subset 要与基准块的相同，不同的那一份由要参考的判分器记为无法判定。
 
 判分器挂在哪，由它声明的需要（`__needs__`）决定：要活体环境的挂在判分时间点（run 结束之后、环境拆掉之前），其余的离线读已提交的 trace；上面这些都是离线判分器。判分器从不改变 run。它和它的设置不进 `config_hash`，也不进 run 记下的 `config.json`（基准块记成 `verifiers: null`），所以换一个判分器重判同一批 trace，实验身份不变。
 
@@ -318,11 +318,11 @@ network_source: { source_id: live }
 
 ## 跑数据集
 
-需要数据集身份、任务起始 URL、逐任务 trace 时，用 `spectragent bench --benchmark`。基准是一份只有 `benchmark:` 一段的 YAML，写着任务从哪里来（任务加载器与它的 subset、数据目录）；`--benchmark` 收发布的别名（`configs/benchmarks/` 下的 `online_mind2web`、`browsecomp`、`lexbench_browser`、`androidworld`）或自己写的基准 YAML 的路径。运行配置只写 agent、环境与 hook，写了 `benchmark:` 段会被拒绝。基准数据不包含在安装包中；数据根目录约定为 `<root>/browser/<benchmark>/data_info.json`。
+需要数据集身份、任务起始 URL、逐任务 trace 时，用 `spectragent bench --benchmark`。基准是一份只有 `benchmark:` 一段的 YAML，写着任务从哪里来（任务加载器与它的 subset、数据目录）；`--benchmark` 收发布的别名（`configs/benchmarks/` 下的 `online_mind2web`、`browsecomp`、`lexbench_browser`、`androidworld`）或自己写的基准 YAML 的路径。运行配置只写 agent、环境与 hook，写了 `benchmark:` 段会被拒绝。基准数据不包含在安装包中，放在仓库之外的共用缓存里：`$SPECTRAGENT_BENCHMARK_DATA`，没设时是 `~/.cache/spectragent/benchmarks`，目录约定为 `<root>/browser/<benchmark>/data_info.json`。基准钉住它的数据来源与版本，`spectragent benchmark fetch <别名>` 下载、核对并记下版本（Online-Mind2Web 在 Hugging Face 上要先接受条款，再给 `HF_TOKEN`）；缺了数据，`bench` 与 `run` 在组装之前拒绝并给出这条命令，带 `--fetch` 时先下载。LexBench-Browser 不钉来源，数据自己放进 `<root>/browser/lexbench_browser`（architecture §4.10.1 "d 段落地了什么"）。
 
 ```bash
 export OPENAI_API_KEY="你的密钥"
-export SPECTRAGENT_BENCHMARK_DATA="$HOME/agent-data"
+HF_TOKEN="你的 Hugging Face token" uv run spectragent benchmark fetch online_mind2web
 uv run spectragent bench --config configs/browser_use_local.yaml \
   --benchmark online_mind2web --subset All --list
 uv run spectragent bench --config configs/browser_use_local.yaml \

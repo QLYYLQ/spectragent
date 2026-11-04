@@ -99,7 +99,7 @@ class TestRuntimeDataShips:
         puts them in the wheel."""
         service = PACKAGE_ROOT / "benchmarks" / "androidworld" / "androidworld_service"
         assert not (service / "__init__.py").exists(), "discovery would import android_world"
-        for program in ("serve.py", "task_list.py"):
+        for program in ("serve.py", "task_list.py", "requirements.lock.txt"):
             relative = (service / program).relative_to(PACKAGE_ROOT).as_posix()
             assert (service / program).is_file(), f"{relative} moved; update this gate"
             assert f"{_PACKAGE}/{relative}" in wheel_names

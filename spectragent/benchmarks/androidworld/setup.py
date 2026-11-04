@@ -60,7 +60,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field, ValidationError
@@ -73,7 +72,6 @@ from spectragent.benchmarks.androidworld.service import (
     AndroidWorldService,
     AndroidWorldSetupError,
     Installation,
-    default_root,
     goal_after_initialize,
 )
 from spectragent.benchmarks.androidworld.tasks import MINIWOB, UNREPRODUCIBLE, AndroidWorldTask
@@ -102,10 +100,11 @@ class AndroidWorldSetup(BenchmarkSetupBase):
                 "(src/), and the accessibility forwarder its one-time setup cached "
                 f"(cache/a11y/{FORWARDER_APK}). The AVD the provider boots must be the one that "
                 "setup prepared, and ffmpeg must be on Spectragent's PATH, as AndroidWorld's "
-                "README installs it: its music tasks make their mp3 files with it. None (the "
-                "default): android/androidworld/installation under the benchmark data root, "
-                "$SPECTRAGENT_BENCHMARK_DATA/android/androidworld/installation, whatever the "
-                "task loader's data_dir says."
+                "README installs it: its music tasks make their mp3 files with it. "
+                "spectragent benchmark setup installs it where this says. None (the default): "
+                "android/androidworld/installation under the benchmark data root "
+                "($SPECTRAGENT_BENCHMARK_DATA, else ~/.cache/spectragent/benchmarks), whatever "
+                "the task loader's data_dir says."
             )
         ),
     ] = None
@@ -146,8 +145,7 @@ class AndroidWorldSetup(BenchmarkSetupBase):
 
     @property
     def installation(self) -> Installation:
-        root = default_root() if self.root is None else Path(self.root).expanduser()
-        return Installation(root)
+        return Installation.at(self.root)
 
     @property
     def device_needs(self) -> DeviceNeeds:

@@ -106,7 +106,8 @@ include-package-data = false
 # `benchmarks/androidworld/androidworld_service/*.py` are programs the
 # androidworld benchmark runs under AndroidWorld's own interpreter. Their
 # directory is deliberately not a package, so discovery never imports them
-# (they import android_world), and this glob is what ships them.
+# (they import android_world), and this glob is what ships them, with the
+# dependency lock `spectragent benchmark setup androidworld` installs from.
 #
 # No benchmark data is here. Globbing a data directory made the wheel a
 # function of the build machine's disk: a checkout without the data emits a
@@ -120,6 +121,7 @@ include-package-data = false
     "viewer/static/*",
     "viewer/static/**/*",
     "benchmarks/androidworld/androidworld_service/*.py",
+    "benchmarks/androidworld/androidworld_service/requirements.lock.txt",
 ]
 
 [tool.setuptools.exclude-package-data]

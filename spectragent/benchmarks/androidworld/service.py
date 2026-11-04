@@ -105,6 +105,11 @@ class Installation:
 
     root: Path
 
+    @classmethod
+    def at(cls, root: str | None) -> Installation:
+        """The installation a setup's ``root`` names ('~' expanded); :func:`default_root` when ``None``."""
+        return cls(default_root() if root is None else Path(root).expanduser())
+
     @property
     def python(self) -> Path:
         return self.root / ".venv" / "bin" / "python"
@@ -140,14 +145,28 @@ class Installation:
 
     def problems(self) -> list[str]:
         """What keeps the service from starting here, one entry per problem."""
-        found = self._problems_under_root()
+        found = self.checkout_problems()
+        if self.root.is_dir() and not self.forwarder_apk.is_file():
+            found.append(f"there is no cached accessibility forwarder at {self.forwarder_apk}")
+        if found:
+            found.append(f"{self.setup_command()} installs AndroidWorld there")
         try:
             self.ffmpeg()
         except AndroidWorldSetupError as exc:
             found.append(str(exc))
         return found
 
-    def _problems_under_root(self) -> list[str]:
+    def setup_command(self) -> str:
+        """The command that installs AndroidWorld here (``docs/architecture_design.md`` §4.10.1 "数据")."""
+        if self.root == default_root():
+            return "spectragent benchmark setup androidworld"
+        return (
+            f"spectragent benchmark setup <a benchmark YAML whose androidworld setup has root "
+            f"{self.root}>"
+        )
+
+    def checkout_problems(self) -> list[str]:
+        """What keeps AndroidWorld's own programs from running here: its venv, and its checkout at the pinned commit."""
         if not self.root.is_dir():
             return [f"there is no AndroidWorld installation at {self.root}"]
         found: list[str] = []
@@ -161,13 +180,8 @@ class Installation:
                 at = f"is at {commit}" if commit else "has a commit that cannot be read"
                 found.append(
                     f"the checkout {self.src} {at}, and the launcher is written against "
-                    f"{PINNED_COMMIT}: check that commit out there"
+                    f"{PINNED_COMMIT}"
                 )
-        if not self.forwarder_apk.is_file():
-            found.append(
-                f"there is no cached accessibility forwarder at {self.forwarder_apk}: copy the "
-                f"one AndroidWorld's one-time setup downloaded there"
-            )
         return found
 
 

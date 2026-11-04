@@ -781,12 +781,34 @@ uv run spectragent flywheel report --root traces/chains/first-live --evidence li
 
 ## Benchmark data
 
-Benchmark data is **not** part of the distribution and is not guaranteed to be
-in a checkout — `pip install spectragent` gives you the framework and the
-prompt tree, not the datasets. A loader that cannot find its data says so at
-construction (`BenchmarkDataError: No data_info.json at ...`) rather than
-loading zero tasks, because a run that scores nothing and a run that had
-nothing to score are otherwise indistinguishable.
+Benchmark data is **not** part of the distribution. It lives in a shared cache outside
+every checkout, so all worktrees read one copy: `$SPECTRAGENT_BENCHMARK_DATA`, or
+`$XDG_CACHE_HOME/spectragent/benchmarks` (`~/.cache/spectragent/benchmarks`) when that is
+unset, laid out as `<root>/<env_type>/<benchmark>/` (`docs/architecture_design.md` §4.10.1).
+
+A benchmark pins where its data comes from, and nothing is downloaded unless you ask:
+
+```bash
+uv run spectragent benchmark fetch browsecomp       # OpenAI's file, checked against its SHA-256
+HF_TOKEN=... uv run spectragent benchmark fetch online_mind2web   # gated on Hugging Face
+uv run spectragent benchmark setup androidworld     # its checkout, venv and forwarder
+uv run spectragent benchmark fetch androidworld     # its task lists, made in that install
+```
+
+A fetch checks the download against the pin and writes the version beside the data
+(`data_version.json`); every run records it in its `config.json` (`data_version`), and it is
+part of `config_hash`. `run`, `bench`, `config check`/`explain`, `eval`, `export` and
+`config template --benchmark` refuse a benchmark whose cached data is missing or of another
+version, naming the exact `spectragent benchmark fetch <alias|path>` to run; `run` and
+`bench` fetch it first when given `--fetch`. `lexbench_browser` pins no source: put its data
+in `<root>/browser/lexbench_browser` yourself. `spectragent benchmark setup` installs what
+a benchmark needs beside its data and names what only you can install (AndroidWorld: ffmpeg,
+and the AVD its one-time setup prepares); a run without the installation is refused by
+`prepare()`, naming that command.
+
+A loader that cannot find its data says so at construction (`BenchmarkDataError: No
+data_info.json at ...`) rather than loading zero tasks, because a run that scores nothing
+and a run that had nothing to score are otherwise indistinguishable.
 
 Point the loaders at your own copy in one of two ways:
 
@@ -800,7 +822,8 @@ export SPECTRAGENT_BENCHMARK_DATA=~/agent-data
 ```yaml
 # Per-loader override, for a benchmark that lives somewhere of its own: a copy
 # of configs/benchmarks/browsecomp.yaml, selected with --benchmark ./my_browsecomp.yaml.
-# Beats the environment variable; `~` is expanded.
+# Beats the environment variable; `~` is expanded. Data there that no fetch wrote is
+# read as it is, and its runs record no data version.
 benchmark:
   - benchmark_id: browsecomp
     task_loader:
@@ -810,8 +833,8 @@ benchmark:
 
 Precedence is `data_dir:` > `$SPECTRAGENT_BENCHMARK_DATA` > the shared cache
 `$XDG_CACHE_HOME/spectragent/benchmarks` (`~/.cache/spectragent/benchmarks` when
-`XDG_CACHE_HOME` is unset), outside every checkout, so all worktrees read one copy. Tests that read shipped data skip
-themselves — naming the dataset — when none of the three resolves.
+`XDG_CACHE_HOME` is unset). Tests that read shipped data skip themselves — naming the
+dataset — when none of the three resolves.
 
 A browser task's start page must be one complete `http://` or `https://` URL.
 LexBench's data writes its start pages as bare hosts (`www.bilibili.com`,

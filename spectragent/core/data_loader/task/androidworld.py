@@ -3,10 +3,10 @@
 ``docs/architecture_design.md`` §11.2 ("任务裁判与 ``AndroidSetup``"). The list
 (format ``androidworld-tasks-2``, ``spectragent/benchmarks/androidworld/tasks.py``)
 is a split file in the usual data layout: ``data_dir`` (default
-``$SPECTRAGENT_BENCHMARK_DATA/android/androidworld``) holds ``data_info.json``,
+``<data root>/android/androidworld``, in the shared cache) holds ``data_info.json``,
 whose ``split`` maps the ``subset`` to the file. ``task_list.py`` beside the
 AndroidWorld launcher (``spectragent/benchmarks/androidworld/androidworld_service/``)
-writes both.
+writes both; ``spectragent benchmark fetch androidworld`` runs it.
 
 Each listed task becomes one Android task: its id ``<task>/<suite seed>/<index>``,
 its text the goal, and its record, unchanged, the setup's ``oracle_task``, which
