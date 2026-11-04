@@ -660,16 +660,12 @@ class _AppOps:
 
 
 def test_the_launcher_grants_all_files_access_where_androidworlds_setup_left_none() -> None:
-    ops = _AppOps(allowed={"org.videolan.vlc"})
+    ops = _AppOps(allowed={"com.simplemobiletools.gallery.pro"})
 
     ops.grant()
 
-    assert ops.allowed == {
-        "net.gsantner.markor",
-        "com.simplemobiletools.gallery.pro",
-        "org.videolan.vlc",
-    }
-    assert [command[1] for command in ops.commands] == ["get", "set", "get", "set", "get"]
+    assert ops.allowed == {"net.gsantner.markor", "com.simplemobiletools.gallery.pro"}
+    assert [command[1] for command in ops.commands] == ["get", "set", "get"]
     assert ops.commands[1] == [
         "appops",
         "set",
@@ -678,7 +674,9 @@ def test_the_launcher_grants_all_files_access_where_androidworlds_setup_left_non
         "MANAGE_EXTERNAL_STORAGE",
         "allow",
     ]
-    assert len(ops.notes) == 2 and all("All files access" in note for note in ops.notes)
+    assert len(ops.notes) == 1 and "All files access" in ops.notes[0]
+    # VLC asks itself: granted beforehand, it never starts its media library.
+    assert not any("org.videolan.vlc" in command for command in ops.commands)
 
 
 @dataclass

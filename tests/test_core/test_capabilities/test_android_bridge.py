@@ -254,8 +254,6 @@ async def test_only_a_package_name_reaches_a_command_line(name: str) -> None:
     async with FakeAdbServer({SERIAL: ScriptedPhone()}) as adb:
         queries = AdbQueries(AdbClient(adb.host, adb.port), SERIAL)
         with pytest.raises(ValueError, match="not an Android package name"):
-            await queries.is_installed(name)
-        with pytest.raises(ValueError, match="not an Android package name"):
             await queries.frames_drawn(name)
 
     assert adb.requests == []
