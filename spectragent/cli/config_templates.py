@@ -28,7 +28,8 @@ from conscribe.introspect import WiringSlot, wiring_slots
 from conscribe.wiring import expand_relative_keys
 from pydantic import BaseModel, JsonValue
 
-from spectragent.benchmarks.selection import read_benchmark, run_root
+from spectragent.benchmarks.operations import read_benchmark_with_data
+from spectragent.benchmarks.selection import run_root
 from spectragent.core.actions._registrar import ACTION_KEY_SEPARATOR
 from spectragent.core.capabilities._registrar import CapabilityRegistrar
 from spectragent.core.capability_merge import (
@@ -104,7 +105,9 @@ def render_config_template(
     """
     composer = composer or ConfigComposer.for_every_package()
     catalog = composer.catalog
-    benchmarks = [read_benchmark(choices.benchmark)] if choices.benchmark is not None else []
+    benchmarks = (
+        [read_benchmark_with_data(choices.benchmark)] if choices.benchmark is not None else []
+    )
     origins: dict[TemplatePath, str] = {}
     if source is None:
         raw = _new_template(choices, composer, benchmarks, origins)

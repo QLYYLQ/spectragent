@@ -5,6 +5,8 @@
 #
 # A benchmark YAML holds only this section; the run configuration holds the
 # agent, its environment and its hooks (docs/architecture_design.md §4.10.1).
+# Its data is osunlp/Online-Mind2Web on Hugging Face, pinned at a commit and gated:
+# accept its terms there, then HF_TOKEN=<token> spectragent benchmark fetch online_mind2web.
 # For another subset add --subset Hard, which is written into the task loader
 # below; for a data directory of your own, copy this file and pass its path:
 # --benchmark ./my_online_mind2web.yaml.
@@ -13,7 +15,7 @@ benchmark:
     task_loader:
       benchmark_name: online_mind2web
       subset: All                # All | Hard
-      data_dir: null             # null: $SPECTRAGENT_BENCHMARK_DATA/browser/online_mind2web
+      data_dir: null             # null: the cache copy, <data root>/browser/online_mind2web
     # eval_loader: the reference answers verdicts are scored against. Left out,
     # it is the registered online_mind2web eval loader for the task loader's
     # subset; write it to point at other data:

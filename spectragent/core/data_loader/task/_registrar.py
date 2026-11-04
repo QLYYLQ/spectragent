@@ -56,8 +56,11 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
         Field(
             None,
             description=(
-                "Data dir for this loader ('~' expanded). None (the default): "
-                "$SPECTRAGENT_BENCHMARK_DATA/<env_type>/<benchmark>."
+                "Data dir for this loader ('~' expanded); data there no fetch wrote is read "
+                "as it is. None (the default): the benchmark's copy in the shared cache, "
+                "<data root>/<env_type>/<benchmark>, the data root being "
+                "$SPECTRAGENT_BENCHMARK_DATA, else ~/.cache/spectragent/benchmarks; "
+                "spectragent benchmark fetch writes it there."
             ),
         ),
     ] = None

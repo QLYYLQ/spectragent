@@ -25,6 +25,8 @@ from rich.text import Text
 from rich.tree import Tree
 from typer.core import TyperCommand, TyperOption
 
+from spectragent.core.refusal import Refusal
+
 if TYPE_CHECKING:
     # The click typer builds on; typer names these types only in its own modules.
     from typer._click.core import Parameter
@@ -428,7 +430,7 @@ def _delegate(ctx: typer.Context, name: str, module: str) -> None:
         code = 130
         result["interrupted"] = True
     except Exception as exc:
-        code = 2 if isinstance(exc, (ValidationError, ValueError, OSError)) else 1
+        code = 2 if isinstance(exc, (ValidationError, ValueError, OSError, Refusal)) else 1
         result["error"] = _validation_error(exc)
     payload = {
         "command": name,
@@ -492,9 +494,17 @@ def create_app() -> typer.Typer:
     runs_app = typer.Typer(
         help="Read committed runs without starting agents or models.", no_args_is_help=True
     )
+    benchmark_app = typer.Typer(
+        help=(
+            "Fetch a benchmark's pinned data and set up what it installs, into the shared cache "
+            "($SPECTRAGENT_BENCHMARK_DATA, else ~/.cache/spectragent/benchmarks)."
+        ),
+        no_args_is_help=True,
+    )
     app.add_typer(config_app, name="config")
     app.add_typer(components_app, name="components")
     app.add_typer(runs_app, name="runs")
+    app.add_typer(benchmark_app, name="benchmark")
 
     def config_operation(
         ctx: typer.Context,
@@ -685,6 +695,54 @@ def create_app() -> typer.Typer:
             else:
                 Console(stderr=True).print(Text(json.dumps(error, ensure_ascii=False)))
             raise typer.Exit(2) from None
+
+    selection_help = "A shipped alias (configs/benchmarks/<alias>.yaml) or a benchmark YAML path."
+
+    @benchmark_app.command("fetch")
+    def benchmark_fetch(
+        ctx: typer.Context,
+        benchmark: str = typer.Argument(..., help=selection_help),
+        json_output: bool = typer.Option(False, "--json"),
+    ) -> None:
+        """Download the benchmark's data at its pinned version into its task loader's data directory.
+
+        The download is checked against the pin, and the version is written beside
+        the data (data_version.json), which every run records. run and bench refuse
+        a benchmark whose data is not there unless given --fetch.
+        """
+        from spectragent.benchmarks.operations import fetch_benchmark
+
+        def fetch() -> dict[str, Any]:
+            fetched = fetch_benchmark(benchmark)
+            return {
+                "benchmark_id": fetched.benchmark_id,
+                "directory": str(fetched.directory),
+                "data_version": fetched.version.model_dump(mode="json"),
+                "output": [
+                    f"{fetched.benchmark_id}: {fetched.version.describe()} in {fetched.directory}"
+                ],
+            }
+
+        _checked(_output(ctx, json_output), fetch)
+
+    @benchmark_app.command("setup")
+    def benchmark_setup(
+        ctx: typer.Context,
+        benchmark: str = typer.Argument(..., help=selection_help),
+        json_output: bool = typer.Option(False, "--json"),
+    ) -> None:
+        """Install what the benchmark installs beside its data, and name what is left to do.
+
+        AndroidWorld's: its checkout at the pinned commit, its venv and its cached
+        accessibility forwarder; steps already done are skipped. What only you can
+        install (ffmpeg, the AVD) is named, and the command then exits 2.
+        """
+        from spectragent.benchmarks.operations import set_up_benchmark
+
+        _checked(
+            _output(ctx, json_output),
+            lambda: {"output": set_up_benchmark(benchmark)},
+        )
 
     @components_app.command("list")
     def components_list(
@@ -877,7 +935,9 @@ def main(argv: list[str] | None = None) -> int:
     except (KeyboardInterrupt, asyncio.CancelledError):
         return 130
     except Exception as exc:
-        code = getattr(exc, "exit_code", 2 if isinstance(exc, (ValueError, OSError)) else 1)
+        code = getattr(
+            exc, "exit_code", 2 if isinstance(exc, (ValueError, OSError, Refusal)) else 1
+        )
         error = _validation_error(exc)
         if "--json" in arguments:
             Output(json=True).emit({"error": error, "exit_code": code})

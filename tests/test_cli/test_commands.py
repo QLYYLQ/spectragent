@@ -604,3 +604,58 @@ async def test_agent_done_and_incomplete_recording_remain_separate(tmp_path, mon
     assert report["recording"]["status"] == "incomplete"
     assert report["recording"]["complete_through"] == -1
     assert report["verdicts"] == []
+
+
+def test_benchmark_fetch_writes_the_pinned_data_and_says_which_version(
+    tmp_path, capsys, monkeypatch
+):
+    """``spectragent benchmark fetch`` (``docs/architecture_design.md`` §4.10.1 "数据"):
+    BrowseComp's file, stood in for, into the shared cache."""
+    from spectragent.benchmarks.browsecomp import data as browsecomp_data
+
+    def download(url, sha256, target, say):
+        say(f"downloading {url}")
+        target.write_text("problem,answer,problem_topic,canary\nq,a,Art,c\n")
+        return target
+
+    monkeypatch.setattr(browsecomp_data, "download_file", download)
+    monkeypatch.setenv("SPECTRAGENT_BENCHMARK_DATA", str(tmp_path))
+
+    assert main(["--json", "benchmark", "fetch", "browsecomp"]) == 0
+    captured = capsys.readouterr()
+    fetched = json.loads(captured.out)
+    assert fetched["directory"] == str(tmp_path / "browser" / "browsecomp")
+    assert fetched["data_version"] == browsecomp_data.DATA.model_dump(mode="json")
+    assert "downloading https://openaipublic" in captured.err
+
+    # Now there, the run commands read it.
+    argv = ["--json", "config", "check", "configs/browser_use_local.yaml"]
+    assert main([*argv, "--benchmark", "browsecomp"]) == 0
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["config", "check", "configs/browser_use_local.yaml", "--benchmark", "browsecomp"],
+        ["bench", "--config", "configs/browser_use_local.yaml", "--benchmark", "browsecomp"],
+        ["run", "--config", "configs/browser_use_local.yaml", "--benchmark", "browsecomp"]
+        + ["--task-id", "browsecomp_000", "--dry-run"],
+    ],
+)
+def test_missing_benchmark_data_is_refused_naming_the_fetch_command(
+    tmp_path, capsys, monkeypatch, argv
+):
+    monkeypatch.setenv("SPECTRAGENT_BENCHMARK_DATA", str(tmp_path))
+    assert main(["--json", *argv]) == 2
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["message"] == (
+        f"there is no browsecomp data at {tmp_path / 'browser' / 'browsecomp'}: fetch it with "
+        f"`spectragent benchmark fetch browsecomp` (run and bench fetch it first when given "
+        f"--fetch)"
+    )
+    assert not (tmp_path / "browser" / "browsecomp").exists(), "nothing was downloaded"
+
+
+def test_fetch_goes_with_a_benchmark(capsys):
+    assert main(["run", "--config", "configs/browser_use_local.yaml", "--fetch", "--dry-run"]) == 2
+    assert "--fetch fetches a benchmark's data" in capsys.readouterr().err

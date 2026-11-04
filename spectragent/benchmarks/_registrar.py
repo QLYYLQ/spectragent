@@ -19,26 +19,36 @@ Each benchmark is a class in its own package, ``spectragent/benchmarks/<benchmar
 imported only when a configuration names it (§4.2.1), and writes its complete
 ``__wiring__``: the task loader keys, the eval loader keys, the verifier kinds
 and the setup component keys it takes. A verifier of its own lives in its
-package too.
+package too. Its class also declares where its data comes from, pinned, and
+what it installs (:meth:`BenchmarkBase.pinned_data`,
+:meth:`BenchmarkBase.installation`), which ``spectragent benchmark fetch`` and
+``spectragent benchmark setup`` act on (:mod:`spectragent.benchmarks.data`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Annotated, Any, ClassVar, Protocol, runtime_checkable
+from pathlib import Path
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Protocol, runtime_checkable
 
 from conscribe import create_registrar
 from pydantic import BaseModel, Field, JsonValue
 
 from spectragent.benchmarks._setup_registrar import BenchmarkSetup, BenchmarkSetupBase
+from spectragent.core.data_loader._common import resolve_data_dir
 from spectragent.core.data_loader.eval._registrar import EvalLoaderBase, EvalLoaderRegistrar
 from spectragent.core.data_loader.eval.base import BaseEvalLoader
-from spectragent.core.data_loader.task._registrar import TaskLoaderBase
+from spectragent.core.data_loader.task._registrar import TaskLoaderBase, TaskLoaderRegistrar
 from spectragent.core.data_loader.task.base import BaseTaskLoader
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.verdict import Verdict
 from spectragent.verifiers._registrar import VerifierBase
 from spectragent.verifiers.base import LiveVerifier, OfflineVerifier, attachment_of
+
+if TYPE_CHECKING:
+    # Declared there, beside what fetches and installs them; that module
+    # imports this one.
+    from spectragent.benchmarks.data import BenchmarkInstallation, PinnedData
 
 
 @runtime_checkable
@@ -159,6 +169,44 @@ class BenchmarkBase(metaclass=BenchmarkRegistrar.Meta):
         Composer asks only for a run that starts an environment.
         """
         return []
+
+    @classmethod
+    def data_directory(cls, config: BaseModel) -> Path:
+        """Where its task loader reads its data, given its validated *config*.
+
+        The task loader's ``data_dir`` when the block writes one, else the
+        benchmark's copy in the shared cache
+        (``<data root>/<env_type>/<task loader key>``, the data root being
+        ``$SPECTRAGENT_BENCHMARK_DATA``, else ``~/.cache/spectragent/benchmarks``).
+        """
+        loader = getattr(config, "task_loader", None)
+        key = getattr(loader, "benchmark_name", None)
+        data_dir = getattr(loader, "data_dir", None)
+        if not isinstance(key, str) or not (data_dir is None or isinstance(data_dir, str)):
+            raise TypeError(f"the {cls.__registry_key__} block's task loader is {loader!r}")
+        env_type: str = TaskLoaderRegistrar.get(key).env_type
+        return resolve_data_dir(env_type, key, data_dir)
+
+    @classmethod
+    def pinned_data(cls, config: BaseModel) -> PinnedData | None:
+        """Its task loader's data at the version it pins, and how to fetch it, given its validated *config*.
+
+        ``None`` here: it pins none, and its data is put in its data directory
+        by hand. One that pins its data declares it here, and
+        ``spectragent benchmark fetch`` fetches it
+        (:mod:`spectragent.benchmarks.data`).
+        """
+        return None
+
+    @classmethod
+    def installation(cls, config: BaseModel) -> BenchmarkInstallation | None:
+        """What it installs beside its data, given its validated *config*; ``None`` here: nothing.
+
+        ``spectragent benchmark setup`` installs it
+        (:mod:`spectragent.benchmarks.data`); the component that needs it
+        refuses a run without it in ``prepare()``.
+        """
+        return None
 
     @property
     def benchmark_id(self) -> str:

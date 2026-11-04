@@ -1,11 +1,13 @@
 # LexBench's browser tasks. Select it with --benchmark lexbench_browser
 # (docs/architecture_design.md §4.10.1); for one split, add --subset <split>.
+# It pins no data source: put its data in <data root>/browser/lexbench_browser
+# ($SPECTRAGENT_BENCHMARK_DATA, else ~/.cache/spectragent/benchmarks) yourself.
 benchmark:
   - benchmark_id: lexbench_browser
     task_loader:
       benchmark_name: lexbench_browser
       subset: All
-      data_dir: null             # null: $SPECTRAGENT_BENCHMARK_DATA/browser/lexbench_browser
+      data_dir: null             # null: <data root>/browser/lexbench_browser
     # eval_loader left out: the registered lexbench_browser eval loader for the task loader's subset.
     # verifiers: who judges the runs. None is listed: an LLM judge's model must be
     # one you verified first (docs/browser_agent_runbook.md, "独立评测已录下的任务").
