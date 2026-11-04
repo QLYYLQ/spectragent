@@ -15,13 +15,13 @@ from __future__ import annotations
 import io
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from PIL import Image
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from spectragent.agents._registrar import AgentBase
 from spectragent.agents.m3a import M3AAgent
@@ -54,13 +54,15 @@ from spectragent.core.llm.messages import (
     UserMessage,
 )
 from spectragent.core.llm.views import ChatInvokeCompletion
-from spectragent.core.loops import ReactLoop
+from spectragent.core.loops import BranchLoop, ReactLoop
 from spectragent.core.loops.validation import IncompatibleCheckpointError
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
+from spectragent.core.trace.reconstruction import recorded_form
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation.fragments import HistoryObs, TaskObs
 from spectragent.schemas.prompt import PromptContribution, ReactPromptContext
+from spectragent.schemas.restoration import Checkpoint
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.android_device import (
     ScriptedPhone,
@@ -630,6 +632,100 @@ async def test_a_run_types_into_an_element_presses_enter_summarizes_and_claims_s
         (1, "agent", "step_summary"),
         (1, "agent", "agent_decision"),
     ]
+
+
+class _LoopEntry(BaseModel):
+    loop_id: Literal["react", "branch"]
+    max_actions_per_step: int
+    max_consecutive_parse_errors: int | None
+
+
+class _MemoryEntry(BaseModel):
+    memory_id: Literal["sliding_window"] = "sliding_window"
+    window_size: int = 1
+
+
+class _M3AEntry(BaseModel):
+    """What a Composer records of M3A's block (closed values are recorded raw), for a branch to
+    compare against."""
+
+    agent_id: Literal["m3a"] = "m3a"
+    agent_loop: _LoopEntry
+    memory: _MemoryEntry = _MemoryEntry()
+
+
+class _RecordedConfig(BaseModel):
+    agent: list[_M3AEntry]
+
+
+async def _m3a_run(
+    tmp_path: Path, adb: Any, loop: Any, model: ScriptedModel, name: str, **inputs: Any
+) -> tuple[Any, RunTrace]:
+    """One M3A run on the scripted phone, through the real runtime and trace writer."""
+    capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)), settle_max_wait_s=0)
+    configured(capability, adb)
+    writer = TraceWriter(trace_dir=str(tmp_path / name))
+    run = make_run(
+        agent=M3AAgent(),
+        loop=loop,
+        env=make_env(AndroidEnvironment, {"android#0": capability}),
+        llm=model,
+        memory=SlidingWindowMemory(window_size=1),
+        hooks=[writer],
+    )
+    recorded = _RecordedConfig(
+        agent=[_M3AEntry(agent_loop=_LoopEntry(loop_id=loop.loop_id, **_ANDROIDWORLD_LOOP))]
+    )
+    run = replace(run, top_level_cfg=recorded)
+    result = await AgentRuntime.for_agent(run, AGENT_ID).execute(
+        _GOAL, timeout=30, task_id="tap-network", **inputs
+    )
+    assert writer.run_dir is not None
+    return result, RunTrace(writer.run_dir)
+
+
+async def test_a_branch_of_an_m3a_run_rebuilds_its_history_from_the_summaries_it_recorded(
+    tmp_path: Path,
+) -> None:
+    """The summary of step 0 is a call of step 1 (made while step 1's prompt is built): a branch
+    at step 1 finds it there, rebuilds the source's prompt with it, and calls no summary model."""
+    phone = ScriptedPhone(screen=_png())
+    phone.forest = settings_forest(
+        ("Network & internet", (0, 300, 1080, 450)), ("Connected devices", (0, 450, 1080, 600))
+    )
+    tap = "Reason: Open it.\nAction: {'action_type': 'click', 'index': 0}"
+    complete = "Reason: Done.\nAction: {'action_type': 'status', 'goal_status': 'complete'}"
+    async with phone_server(phone) as adb:
+        result, source = await _m3a_run(
+            tmp_path,
+            adb,
+            ReactLoop(**_ANDROIDWORLD_LOOP),
+            ScriptedModel(tap, "Opened Network & internet.", complete),
+            "sources",
+        )
+        assert result.agent_done == "done", result.error
+        assert [(c.step, c.purpose) for c in source.call_metrics(1)] == [
+            (1, "step_summary"),
+            (1, "agent_decision"),
+        ]
+        teacher = ScriptedModel(complete)
+        branch, trace = await _m3a_run(
+            tmp_path,
+            adb,
+            BranchLoop(**_ANDROIDWORLD_LOOP),
+            teacher,
+            "branches",
+            loop_inputs={"checkpoint": Checkpoint(trace_dir=str(source.trace_dir), step=1)},
+        )
+
+    assert branch.agent_done == "done", branch.error
+    (decision,) = teacher.calls  # the decision alone: no summary call
+    assert "Opened Network & internet." in _text(decision[0])
+    recorded = [c for c in source.llm_messages(1) if c.purpose == "agent_decision"]
+    assert recorded_form(decision) == recorded_form(recorded[0].messages)
+    first = trace.step(0)
+    assert first is not None and first.origin == "restored" and first.restoration is not None
+    assert first.restoration.verdict == "ok", first.restoration.reasons
 
 
 async def test_a_reply_cut_off_at_the_ceiling_spends_its_step_as_androidworld_does(

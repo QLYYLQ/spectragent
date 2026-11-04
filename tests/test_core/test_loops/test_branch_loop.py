@@ -19,6 +19,8 @@ from typing import Any, ClassVar, Literal
 
 import pytest
 
+from spectragent.core.llm.call_context import RunCallContext
+from spectragent.core.llm.messages import UserMessage
 from spectragent.core.loops import BranchLoop, ReactLoop
 from spectragent.core.loops.errors import RunAbort
 from spectragent.core.loops.restore import PrefixReplayRestorer
@@ -41,6 +43,7 @@ from tests._helpers.branch_fakes import (
     BranchFakeAgent,
     BranchFakeCap,
     BranchFakeEnv,
+    ScriptedLLM,
     make_cap,
     record_source,
     run_branch,
@@ -289,6 +292,35 @@ class _PromptFailsAt(BranchFakeAgent):
         return await super().build_react_prompt(obs, context=context)
 
 
+class _Summarizing(_HelperRepliesSeen):
+    """The fake agent with a helper of its own, as M3A summarizes: from step 1 on, each prompt
+    asks it about the step before and shows the reply; rebuilding a source's history, it shows
+    the reply the source recorded instead."""
+
+    def __init__(self, summaries: list[str]) -> None:
+        super().__init__()
+        self.helper = ScriptedLLM(summaries)
+        self.helper_llms: list[Any] = [self.helper]
+        self._models: list[Any] = []
+        self._context: RunCallContext | None = None
+
+    def bind_prompt_models(self, models: Any, call_context: RunCallContext) -> None:
+        self._models, self._context = list(models), call_context
+
+    async def build_react_prompt(self, obs: Any, *, context: ReactPromptContext) -> list[Any]:
+        messages = await super().build_react_prompt(obs, context=context)
+        if context.step == 0:
+            return messages
+        if context.source_helper_replies is not None:
+            (summary,) = context.source_helper_replies["step_summary"]
+        else:
+            assert self._context is not None
+            with self._context.scope(caller="agent", purpose="step_summary", step=context.step):
+                completion = await self._models[0].ainvoke([UserMessage(content="summarize")])
+            summary = completion.completion
+        return [*messages, UserMessage(content=f"summary: {summary}")]
+
+
 class TestHistorySource:
     def test_source_is_the_default(self) -> None:
         assert BranchLoop().history_source == "source"
@@ -351,6 +383,28 @@ class TestHistorySource:
         await run_branch(tmp_path, source, 2, ["done ok"])
         # Step 0 is read once more first, for the seeded prompt; the checkpoint once, for its helpers.
         assert sorted(reads) == [0, 0, 1, 2]
+
+    async def test_the_checkpoint_step_is_handed_the_summary_its_source_recorded(
+        self, tmp_path: Path
+    ) -> None:
+        """The helper call the source made while it built step t reaches the first policy step;
+        rebuilding the steps before makes no helper call, and its prompts are the source's."""
+        source = await record_source(
+            tmp_path,
+            ["click 100", "click 101", "done ok"],
+            agent=_Summarizing(["after step 0", "after step 1"]),
+        )
+        agent = _Summarizing([])
+        out = await run_branch(tmp_path, source, 2, ["done ok"], agent=agent)
+
+        assert out.result is not None and out.result.agent_done.value == "done"
+        assert agent.seen == [
+            (0, "history", {}),
+            (1, "history", {"step_summary": ("after step 0",)}),
+            (2, "policy", {"step_summary": ("after step 1",)}),
+        ]
+        assert agent.helper.prompts == [], "no helper call: every summary was the source's"
+        assert "summary: after step 1" in str(recorded_form(out.llm.prompts[0]))
 
     @pytest.mark.parametrize(
         ("history_source", "handed"),
