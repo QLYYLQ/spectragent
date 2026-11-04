@@ -81,17 +81,19 @@ def actions_per_step(execution_limits: ExecutionLimits, *, agent: str) -> int:
 
     The refusal its ``check_run_settings`` makes in ``AgentRuntime.prepare()``,
     and that its ``prepare`` seed slot makes again for the number it writes.
+    A cap below 1 is the Loop's configuration to refuse (ReAct's field is at
+    least 1); a Loop that provides the cap unbounded is its code, which no
+    configuration schema sees.
 
     Raises:
-        ValueError: The Loop sets no cap, or one below 1: a prompt cannot
-            promise a number of actions per reply that is no number, or
-            that runs none.
+        ValueError: The Loop provides the cap unbounded: a prompt cannot
+            promise a number of actions per reply that is no number.
     """
     limit = execution_limits.max_actions_per_step
-    if limit is None or limit < 1:
+    if limit is None:
         raise ValueError(
-            f"{agent}'s prompt states how many actions a reply may run, so it needs the Loop's "
-            f"max_actions_per_step at 1 or more; it is {'unbounded' if limit is None else limit}"
+            f"{agent}'s prompt states how many actions a reply may run, so it needs a Loop that "
+            f"sets max_actions_per_step; this one leaves it unbounded"
         )
     return limit
 

@@ -25,8 +25,8 @@ a browser, a desktop VM or an Android emulator unchanged.
 - **The output contract.** The Loop owns ``max_actions_per_step`` and is what
   truncates; ``AgentRuntime`` hands it to :meth:`UITarsAgent.prepare`, which
   renders the budget (:func:`_action_contract`): one ``Action:`` line per
-  action, run in order, at most N. A Loop without a cap of 1 or more is
-  refused in ``AgentRuntime.prepare()`` (:meth:`UITarsAgent.check_run_settings`).
+  action, run in order, at most N (ReAct's N is at least 1). A Loop that sets
+  no cap is refused in ``AgentRuntime.prepare()`` (:meth:`UITarsAgent.check_run_settings`).
 """
 
 from __future__ import annotations

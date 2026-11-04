@@ -173,20 +173,6 @@ def _ui_tars_config(max_actions_per_step: int) -> dict[str, Any]:
     return config
 
 
-def test_a_budget_below_one_is_a_config_error_refused_in_prepare_not_a_prompt() -> None:
-    """``AgentRuntime.prepare()`` refuses it (``RunSettingsCheck``), so ``config check`` does."""
-    raw = _ui_tars_config(0)
-    run = ConfigComposer.for_config(raw).compose(raw)
-    runtime = AgentRuntime.for_agent(run, run.ids("agent")[0])
-
-    with pytest.raises(ValueError, match="max_actions_per_step at 1 or more; it is 0"):
-        runtime.prepare()
-    with pytest.raises(ValueError, match="max_actions_per_step at 1 or more; it is unbounded"):
-        UITarsAgent().check_run_settings(
-            ExecutionLimits(unbounded=frozenset({"max_actions_per_step"}))
-        )
-
-
 @pytest.mark.parametrize("probe", [9, 1])
 async def test_runtime_carries_the_loops_limit_into_the_ui_tars_prompt(probe: int) -> None:
     """End to end through ``execute()``: composed agent, real loop, real runtime.

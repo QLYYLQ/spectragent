@@ -195,6 +195,23 @@ def test_a_name_refusal_is_a_validation_error(tmp_path, capsys, change, code, lo
     assert [(issue["code"], issue["path"]) for issue in error["issues"]] == [(code, location)]
 
 
+def test_a_loop_that_may_run_no_action_per_reply_is_a_validation_error(tmp_path, capsys):
+    """``max_actions_per_step: 0`` is a run that can never act, whatever the agent: the ReAct
+    Loop's schema refuses it before anything is composed."""
+    raw = yaml.safe_load(Path("configs/browser_use_local.yaml").read_text())
+    raw["agent"][0]["agent_loop"]["max_actions_per_step"] = 0
+    path = tmp_path / "no_actions.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    assert main(["--json", "config", "check", str(path)]) == 2
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert (error["type"], error["stage"]) == ("ValidationError", "validation")
+    assert [
+        issue["type"]
+        for issue in error["issues"]
+        if issue["location"][-1] == "max_actions_per_step"
+    ] == ["greater_than_equal"]
+
+
 def test_yaml_syntax_error_never_echoes_a_credential_line(tmp_path, capsys):
     path = tmp_path / "invalid.yaml"
     path.write_text("llm:\n  api_key: [secret-malformed-yaml-sentinel\n")
