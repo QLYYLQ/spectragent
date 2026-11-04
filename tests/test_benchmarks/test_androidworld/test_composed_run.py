@@ -19,6 +19,7 @@ stack, with a fake AndroidWorld installation and nothing launched:
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -28,7 +29,9 @@ from pydantic import JsonValue
 from spectragent.benchmarks.androidworld.benchmark import AndroidWorldBenchmark
 from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
 from spectragent.benchmarks.androidworld.setup import AndroidWorldSetup
+from spectragent.benchmarks.androidworld.tasks import TASK_LIST_FORMAT
 from spectragent.benchmarks.androidworld.verifier import AndroidWorldVerifier
+from spectragent.benchmarks.operations import benchmark_of
 from spectragent.core.capabilities.android.actions import AndroidOpenAppAction
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.composer import ComposedRun, ConfigComposer
@@ -134,6 +137,43 @@ def test_the_benchmark_gives_the_avd_and_the_app_table(run: ComposedRun) -> None
     assert capability.backend.avd == "AndroidWorldAvd"  # type: ignore[attr-defined]
     (open_app,) = [a for a in capability.actions if isinstance(a, AndroidOpenAppAction)]
     assert open_app.apps == ANDROIDWORLD_APPS
+
+
+def test_a_subset_with_other_tasks_than_miniwob_waits_up_to_6_s(run: ComposedRun) -> None:
+    """AndroidWorld's runner waits up to 6 s for a still screen (env/interface.py:247); this
+    subset mixes a MiniWoB++ task in, and only an all-MiniWoB++ subset waits less."""
+    capability = run.single("capability")
+    assert isinstance(capability, AndroidCapability)
+    assert capability.settle_max_wait_s == 6.0
+
+
+def test_a_subset_of_miniwob_tasks_waits_up_to_2_s_whatever_its_name(tmp_path: Path) -> None:
+    """Decided by the tasks' family, so a MiniWoB++ subset split under its own name counts too."""
+    data = androidworld_data(tmp_path / "data")
+    click = androidworld_task(
+        "click-button",
+        family="miniwob",
+        goal="Follow the instructions shown on the top of the screen.",
+        goal_at_initialize="made",
+    )
+    (data / "part1.json").write_text(json.dumps({"format": TASK_LIST_FORMAT, "tasks": [click]}))
+    (data / "data_info.json").write_text(
+        json.dumps({"split": {"All": "All.json", "part1": "part1.json"}})
+    )
+
+    def wait(subset: str) -> JsonValue:
+        loader = {"benchmark_name": "androidworld", "data_dir": str(data), "subset": subset}
+        cls, config = benchmark_of(
+            {
+                "benchmark_id": "androidworld",
+                "task_loader": loader,
+                "setup": {"setup_id": "androidworld"},
+            }
+        )
+        (part,) = cls.computed_capability(config)
+        return part["settle_max_wait_s"]
+
+    assert (wait("part1"), wait("All")) == (2.0, 6.0)
 
 
 def test_a_goal_made_on_the_device_is_known_on_the_first_prepare(run: ComposedRun) -> None:

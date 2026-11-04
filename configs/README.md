@@ -547,7 +547,7 @@ benchmark:
   trace.
 - **Teacher sampling.** The branches of one checkpoint get identical inputs, so only the
   teacher's sampling makes them differ: the shipped file sets the teacher's
-  `temperature: 0.8` (the recording ran at the openai default, 0.2) and
+  `temperature: 0.8` (the recording runs at UI-TARS's own 0) and
   `branches_per_step: 3`. An explicit `prompt_contribution` hook can generate an
   additional instruction after restoration. Its stable Python function receives
   `PromptRequest` and may return text or structured `PromptContribution`; the Agent
@@ -920,7 +920,9 @@ benchmark:
     verifiers:
       - verifier_id: online_mind2web
         require_screenshots: true      # a trace with no screenshot is an error, not a text-only verdict
-        llm: { model_type: openai, model: <a verified vision model>, provider: { name: direct } }
+        # temperature 0: WebJudge's own (Online-Mind2Web src/utils.py:115); a provider sends no
+        # sampling value the configuration does not write.
+        llm: { model_type: openai, model: <a verified vision model>, provider: { name: direct }, temperature: 0 }
 ```
 
 Where a verifier is attached follows from what it declares it needs (`__needs__`): one that

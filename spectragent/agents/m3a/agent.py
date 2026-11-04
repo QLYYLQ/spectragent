@@ -256,6 +256,21 @@ class M3AAgent(AgentBase):
             "cut_off_reply": "read_as_is",
         },
         "memory": {"memory_id": "sliding_window", "window_size": 1},
+        # AndroidWorld's runner runs M3A on ``Gpt4Wrapper`` (``run.py``, agent
+        # ``m3a_gpt4v``), which sends temperature 0.0 and no penalty:
+        # https://github.com/google-research/android_world/blob/55ddaf5edc6f6c25673aed343907d5b9dca66f84/android_world/agents/infer.py#L261
+        # and #L290-L300. No provider named: the template writes it into
+        # whichever model block it chooses.
+        "llm": {"temperature": 0.0},
+    }
+    #: Where a new ``config template`` starts the Android block: M3A sleeps 2 s
+    #: after every action before it reads the screen again
+    #: (``wait_after_action_seconds``,
+    #: https://github.com/google-research/android_world/blob/55ddaf5edc6f6c25673aed343907d5b9dca66f84/android_world/agents/m3a.py#L342 and #L540). M3A's own habit,
+    #: not the benchmark's: AndroidWorld's runner settings for every agent
+    #: come from ``configs/benchmarks/androidworld.yaml``.
+    __template_capabilities__: ClassVar[Mapping[str, Mapping[str, JsonValue]]] = {
+        "android": {"settle_min_after_action_ms": 2000}
     }
 
     # ── config ─────────────────────────────────────────────────

@@ -925,11 +925,15 @@ _ANTHROPIC_BODY = {
 
 
 def _openai_gateway(wire: _Wire) -> ChatOpenAI:
+    # The sampling values this request carried when reasoning was first
+    # recorded, written out since an unset value is no longer sent.
     return ChatOpenAI(
         model="qwen3.8-flash",
         api_key="stub",
         base_url=_GATEWAY,
         reasoning_effort="low",
+        temperature=0.2,
+        frequency_penalty=0.3,
         http_client=wire.client(),
     )
 

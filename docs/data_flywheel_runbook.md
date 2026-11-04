@@ -614,7 +614,7 @@ for record in RunTrace(Path("traces/branches/<run>")).step_records:
 
 ### teacher 采样
 
-同一个检查点的几个分叉输入完全相同：同一个源、同一个检查点、同一份任务和环境。分支编号只记进 trace，teacher 看不到，所以分叉之间的差别全靠采样。发布的分叉配置因此把 teacher 的 `temperature` 设成 0.8（录制配置没写，用的是 openai 的默认值 0.2），每步分 3 个（`branches_per_step: 3`）。原路径回放配置不变，用录制时的模型和默认温度：分叉不要求 teacher 与源 run 不同。温度原样记在分叉 run 的 `config.json`（`resolved.agent[0].llm.temperature`）。分得够不够散，看度量报告的重复分叉率：同一个检查点上执行了相同动作的分叉占比。
+同一个检查点的几个分叉输入完全相同：同一个源、同一个检查点、同一份任务和环境。分支编号只记进 trace，teacher 看不到，所以分叉之间的差别全靠采样。发布的分叉配置因此把 teacher 的 `temperature` 设成 0.8（录制配置写的是 UI-TARS 官方的 0；provider 不发配置没写的采样值，`architecture_design.md` §4.7），每步分 3 个（`branches_per_step: 3`）。原路径回放配置不变，用录制时的模型和温度：分叉不要求 teacher 与源 run 不同。温度原样记在分叉 run 的 `config.json`（`resolved.agent[0].llm.temperature`）。分得够不够散，看度量报告的重复分叉率：同一个检查点上执行了相同动作的分叉占比。
 
 `history_source: source` 默认严格重建源对话，使用源观测、原贡献及其位置，并逐次验证 Agent 主决策 prompt。`history_source: restored` 改用本次恢复的观测、实际 retarget 后动作及完整结果，通过 Agent 的公开历史方法构建消息。两者与恢复器的 `verify: strict | warn` 独立；第一策略步始终使用恢复后的 live 检查点观测，不为验证再拍一次。恢复步骤的旧回复位于 `source_history`，不能当成本次新 thought；`actions` / `action_results` 则描述本次恢复执行。
 
@@ -886,7 +886,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
    set -a; . ./.env; set +a
    ```
 
-   密钥只放在环境变量里，不要写进 YAML 的 `api_key`：链把每段的 YAML 原样复制到 `<root>/configs/`，隐私一项只看发给模型的请求和导出的数据集，不扫描那个目录。路由写在 `llm` 块（`model_type`、`model`，需要时 `base_url`）；`openai/direct` 在 YAML 未写 `base_url` 时由 SDK 读取 `OPENAI_BASE_URL`；其他 provider 可有独立默认地址，例如 `openai/deepseek` 默认官方接口。本轮 teacher 由准备脚本把私有地址显式写入副本，不依赖这个隐式回退。`coordinate_space` 要与模型实际输出的坐标网格一致，Qwen-VL 这类在 0 到 1000 网格上回答的模型用 `normalized_1000`。录制、原路径回放、分叉的提示、坐标系、memory 和动作上限保持一致，loop 按各段职责配置；分叉在开跑前核对兼容性，teacher 的模型和采样可以换（通用 GPT-4o 分叉示例用温度 0.8；本轮 DeepSeek 思考配置不发温度），原路径回放通常用录制时的模型和默认温度。
+   密钥只放在环境变量里，不要写进 YAML 的 `api_key`：链把每段的 YAML 原样复制到 `<root>/configs/`，隐私一项只看发给模型的请求和导出的数据集，不扫描那个目录。路由写在 `llm` 块（`model_type`、`model`，需要时 `base_url`）；`openai/direct` 在 YAML 未写 `base_url` 时由 SDK 读取 `OPENAI_BASE_URL`；其他 provider 可有独立默认地址，例如 `openai/deepseek` 默认官方接口。本轮 teacher 由准备脚本把私有地址显式写入副本，不依赖这个隐式回退。`coordinate_space` 要与模型实际输出的坐标网格一致，Qwen-VL 这类在 0 到 1000 网格上回答的模型用 `normalized_1000`。录制、原路径回放、分叉的提示、坐标系、memory 和动作上限保持一致，loop 按各段职责配置；分叉在开跑前核对兼容性，teacher 的模型和采样可以换（通用 GPT-4o 分叉示例用温度 0.8；本轮 DeepSeek 思考配置不发温度），原路径回放通常用录制时的模型和温度。
 2. 选任务。先取 10 个，只跑录制、原路径回放和报告，看保真度和花费；再扩到 10 到 20 个任务跑整条链。通用匿名演练先选无需登录的公开任务；本轮前瞻采集则按冻结清单保留所需登录种子。被 Cloudflare 等拦截的画面不能当任务正常内容。online_mind2web 的每个任务有 `task_id`、`task_text`、`start_url`、`difficulty` 和 `metadata.reference_length`，可以离线挑：先挑 `easy`，每个可注册域名只取一个任务，跳过任务文本要求账号的，跳过已知重度反爬的站点。会不会被拦截离线判断不了，被拦截的站点会出现在报告的 anti-bot 一节和剔除名单里，代价是一次录制。`lexbench_browser` 的起始页在数据里不带协议头，加载器补成 `https://`；写成文字或几个站点的任务在开跑前的检查里被拒，挑任务时直接跳过。POST 请求也能命中录下的应答：方法、URL、正文经同一套脱敏和匹配规则比较。分叉产生未录制的提交内容时可能 miss，不能把所有 POST 任务判为必然失败。
 3. token 上限。真跑的规格写一个具体的数，例如 `token_limit: 2000000`（默认 `unlimited` 不限）。链从每个 run 的模型调用记录里数用量，每跑完一个任务加一次；达到上限时，那个任务照常跑完，之后的任务和段（包括导出）都不开始，报告照样按已有的数据算，并写明是因为 token 上限停的，`spectragent flywheel run` 退出码 4（见"度量报告"）。按段跑时上限照样管住整条链：链每次开跑前先数链根下已有的 run。上限按估算加上余量来定；一个任务不会被打断，实际用量最多超出上限一个任务的用量。不含解析重试、传输重试与独立 helper 的策略调用预算：
 

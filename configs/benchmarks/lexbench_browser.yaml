@@ -17,4 +17,8 @@ benchmark:
     #   verifiers:
     #     - verifier_id: lexbench_browser    # rubric-scored, with the task's pass mark
     #       eval_strategy: stepwise          # final: the last frame only
-    #       llm: { model_type: openai, model: <a verified vision model>, provider: { name: direct } }
+    #       # temperature 1.0 is the LexBench-Browser v1.0.0 protocol's judge setting (its judge,
+    #       # gpt-5.4, takes only 1): https://github.com/lexmount/browseruse-agent-bench/blob/313b0cf7f75b3a61f9be9041612b7873ac6354cc/config.example.yaml#L370-L378
+    #       # Its code falls back to 0.3 when a config writes none:
+    #       # https://github.com/lexmount/browseruse-agent-bench/blob/313b0cf7f75b3a61f9be9041612b7873ac6354cc/browseruse_bench/eval/lexbench_browser/lexmount_eval.py#L401
+    #       llm: { model_type: openai, model: <a verified vision model>, provider: { name: direct }, temperature: 1.0 }

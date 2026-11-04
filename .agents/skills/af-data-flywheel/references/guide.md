@@ -518,8 +518,8 @@ uv run spectragent run --config configs/flywheel/branch_ui_tars_archive.yaml \
 - Teacher sampling (architecture §4.1 "teacher 采样"). The branches of one checkpoint get
   identical inputs (the branch index reaches only the trace), so sampling alone makes them
   differ: the shipped branch config runs the teacher at `temperature: 0.8` with
-  `branches_per_step: 3`; the same-path config keeps the recording's model and default
-  temperature, and nothing requires the teacher to differ from the source. The metrics
+  `branches_per_step: 3`; the same-path config keeps the recording's model and
+  temperature (UI-TARS's own 0, written out), and nothing requires the teacher to differ from the source. The metrics
   report's duplicate-branch rate says whether the spread is enough.
 - `history_source: source` reconstructs and compares the exact recorded decision prompts;
   only `purpose=agent_decision` calls pass through the parser. `restored` instead uses

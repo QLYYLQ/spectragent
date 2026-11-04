@@ -392,10 +392,16 @@ def _androidworld_m3a_config(tmp_path, monkeypatch, **loop) -> Path:
     import sys
 
     from tests._helpers.android_device import fake_service_apk
-    from tests._helpers.benchmark_data import androidworld_data
+    from tests._helpers.benchmark_data import androidworld_data, androidworld_task
     from tests._helpers.fake_androidworld import fake_installation
 
-    data = androidworld_data(tmp_path / "data" / "android" / "androidworld")
+    click = androidworld_task(
+        "click-button",
+        family="miniwob",
+        goal="Follow the instructions shown on the top of the screen.",
+        goal_at_initialize="made",
+    )
+    data = androidworld_data(tmp_path / "data" / "android" / "androidworld", miniwob=[click])
     fake_installation(data / "installation", monkeypatch)
     monkeypatch.setenv("SPECTRAGENT_BENCHMARK_DATA", str(tmp_path / "data"))
     # The emulator's gRPC token was measured on macOS only (``local_emulator``).
@@ -404,7 +410,7 @@ def _androidworld_m3a_config(tmp_path, monkeypatch, **loop) -> Path:
         "capability_id": "android",
         "service_apk": str(fake_service_apk(tmp_path)),
         "tap_injector": {"injector_id": "shell_injection"},
-        "typing_backend": {"typing_id": "set_text"},
+        # No typing_backend: the benchmark supplies AndroidWorld's (key_events).
         "ui_tree_cleaner": {"cleaner_id": "androidworld"},
         "ui_tree_serializer": {"serializer_id": "m3a"},
     }
@@ -451,6 +457,7 @@ def test_config_check_with_androidworld_alone_merges_its_part_and_checks_without
     explained = json.loads(capsys.readouterr().out)
     (block,) = explained["resolved"]["environment"][0]["capabilities"]
     assert block["backend"]["avd"] == "AndroidWorldAvd"
+    assert (block["typing_backend"]["typing_id"], block["settle_max_wait_s"]) == ("key_events", 6.0)
     (open_app,) = [a for a in block["actions"] if a["action_id"] == "android.open_app"]
     assert open_app["apps"] == ANDROIDWORLD_APPS
 
@@ -479,6 +486,17 @@ def test_a_loaders_refusal_reaches_the_user_in_its_own_short_words(
     assert "\n" not in message and len(message) < 500
     if command[0] == "config":
         assert error["issues"][0]["code"] == "component_refused"
+
+
+@pytest.mark.parametrize(("subset", "wait"), [(None, 6.0), ("All", 6.0), ("miniwob", 2.0)])
+def test_the_still_screen_wait_follows_the_subset_run(tmp_path, capsys, monkeypatch, subset, wait):
+    """``--subset`` reaches the benchmark block before it is composed, so the wait AndroidWorld's
+    runner gives that subset is the one merged: 6 s, and 2 s for MiniWoB++ tasks."""
+    config = _androidworld_m3a_config(tmp_path, monkeypatch)
+    argv = ["--json", "config", "explain", str(config), "--benchmark", "androidworld"]
+    assert main([*argv, *(["--subset", subset] if subset else [])]) == 0
+    (block,) = json.loads(capsys.readouterr().out)["resolved"]["environment"][0]["capabilities"]
+    assert (block["settle_max_wait_s"], block["settle_quiet_ms"]) == (wait, 300)
 
 
 def test_config_check_refuses_a_loop_m3a_cannot_run_on(tmp_path, capsys, monkeypatch):

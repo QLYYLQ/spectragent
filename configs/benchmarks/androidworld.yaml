@@ -21,9 +21,23 @@
 #
 # The benchmark's part of the Android capability's configuration is merged into
 # the run configuration's Android block (§4.10.1): the AVD AndroidWorld's one-time
-# setup prepared, below, and the open_app name table, read from beside the task
-# lists. The run configuration writes neither; a field both write differently is
-# refused.
+# setup prepared and its runner's typing and scroll, below; the open_app name table,
+# read from beside the task lists; and the longest wait for a still screen, 6 s
+# (2 s for a subset of MiniWoB++ tasks), computed in code from the subset run. The
+# run configuration writes none of them; a field both write differently is refused.
+#
+# The typing and scroll are how AndroidWorld's own runner drives every agent, at
+# its pinned commit 55ddaf5e (android_world/ in its checkout):
+#   typing: adb shell input text with the text decomposed and every non-ASCII
+#     character dropped (env/adb_utils.py:472-494, 511-545), which is the
+#     key_events backend with fold_accents;
+#   android.scroll: from the centre of the element (else the screen) to its edge
+#     (env/actuation.py:138-163), sent as adb shell input swipe with no duration
+#     (env/adb_utils.py:754-783), which the device runs in 300 ms (Android's
+#     InputShellCommand.sendSwipe).
+# The still period stays the capability's own 300 ms: AndroidWorld's 1 s compares
+# element lists, ours also counts drawn frames, and a focused field's cursor would
+# keep 1 s from ever passing (docs/architecture_design.md §4.10.1).
 #
 # Each task boots its own emulator. With spectragent bench --reuse-environment the
 # tasks of a sweep share one: the setup resets the device between tasks, as
@@ -43,3 +57,6 @@ benchmark:
     capability:
       - capability_id: android
         backend: {provider_id: local_emulator, avd: AndroidWorldAvd}
+        typing_backend: {typing_id: key_events, fold_accents: true}
+        actions:
+          - {action_id: android.scroll, swipe_to: target_edge, duration_ms: 300}
