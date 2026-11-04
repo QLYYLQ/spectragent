@@ -21,10 +21,7 @@ agent:
       model_type: openai
       model: gpt-4o
       provider: { name: direct }
-      # The openai provider sent these two by default until 2026-11-04 and now
-      # sends none it is not given: written out, this run samples as before.
-      temperature: 0.2
-      frequency_penalty: 0.3
+      temperature: 0             # Skyvern's own (LLM_CONFIG_TEMPERATURE); no frequency_penalty
     # Bounded: every step's user message carries a whole element tree (20-33K
     # tokens on the pages measured), so keeping 200 messages overflowed
     # gpt-4o's 128K context at about step 6. The system prompt is always

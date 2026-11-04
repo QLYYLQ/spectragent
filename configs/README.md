@@ -546,7 +546,7 @@ benchmark:
   trace.
 - **Teacher sampling.** The branches of one checkpoint get identical inputs, so only the
   teacher's sampling makes them differ: the shipped file sets the teacher's
-  `temperature: 0.8` (the recording runs at 0.2) and
+  `temperature: 0.8` (the recording runs at UI-TARS's own 0) and
   `branches_per_step: 3`. An explicit `prompt_contribution` hook can generate an
   additional instruction after restoration. Its stable Python function receives
   `PromptRequest` and may return text or structured `PromptContribution`; the Agent

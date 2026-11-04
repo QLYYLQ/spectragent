@@ -19,10 +19,7 @@ agent:
       model_type: openai
       model: gpt-4o
       provider: { name: direct }
-      # The openai provider sent these two by default until 2026-11-04 and now
-      # sends none it is not given: written out, this run samples as before.
-      temperature: 0.2
-      frequency_penalty: 0.3
+      temperature: 0             # UI-TARS's own (README_deploy.md); no frequency_penalty
     memory: { memory_id: simple, max_messages: 200 }
 
 environment:
