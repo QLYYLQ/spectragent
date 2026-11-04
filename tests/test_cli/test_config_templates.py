@@ -668,6 +668,47 @@ def test_a_template_flag_overrides_the_agents_capability_start(
     AgentRuntime.for_agent(composer.compose(raw), "main").prepare()
 
 
+def test_a_flag_picks_the_skeletons_receptor_and_keeps_its_knobs_when_it_names_the_same(composer):
+    """The flag comes first: it replaces the skeleton's implementation, or keeps its knobs."""
+    source = yaml.safe_load(Path("configs/skyvern_agent_local.yaml").read_text())
+    _browser(source)["dom_cleaner"]["max_text_length"] = 777
+
+    def cleaner(key: str) -> dict[str, Any]:
+        choices = TemplateChoices(capability_flags={"--dom-cleaner": key})
+        return _browser(yaml.safe_load(render_config_template(choices, source, composer=composer)))[
+            "dom_cleaner"
+        ]
+
+    replaced = cleaner("browser_use")
+    assert replaced["cleaner_type"] == "browser_use" and "max_text_length" not in replaced
+    kept = cleaner("skyvern")
+    assert (kept["cleaner_type"], kept["max_text_length"]) == ("skyvern", 777)
+
+
+def test_a_flag_against_a_setting_the_benchmark_supplies_is_refused(
+    composer, tmp_path, monkeypatch
+):
+    """A flag never overrides the benchmark: naming another implementation is a conflict."""
+    from spectragent.core.capabilities.android import declarations
+
+    flag = TemplateFlag("--typing-backend", "typing_backend", "Android typing backend.")
+    monkeypatch.setattr(declarations, "TEMPLATE_FLAGS", (flag,))
+    benchmark = str(_shipped_androidworld(tmp_path))
+
+    def template(key: str) -> str:
+        choices = TemplateChoices(
+            agent="m3a", model="m", benchmark=benchmark, capability_flags={flag.flag: key}
+        )
+        return render_config_template(choices, composer=composer)
+
+    with pytest.raises(ComposeError, match="typing_id"):
+        template("set_text")
+    # The benchmark's own implementation agrees with it: its other settings still come from it.
+    agreed = template("key_events")
+    assert _android(yaml.safe_load(agreed))["typing_backend"]["typing_id"] == "key_events"
+    assert "# typing_backend.fold_accents: true, from the benchmark androidworld" in agreed
+
+
 def test_a_skeletons_capability_values_win_over_the_new_agents_start(composer):
     source = yaml.safe_load(Path("configs/browser_use_local.yaml").read_text())
     expanded = yaml.safe_load(

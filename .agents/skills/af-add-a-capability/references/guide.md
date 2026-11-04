@@ -439,10 +439,11 @@ TEMPLATE_FLAGS: tuple[TemplateFlag, ...] = ()
   (Android's `avd` and `service_apk`). `{}` when the block needs nothing; the template then
   refuses a missing required field by name (design doc §4.17 "capability 的模板起点").
   An agent may start some fields differently for itself (its `__template_capabilities__`,
-  keyed by `capability_id`: Skyvern's own cleaner, M3A's pause after an action); a
-  skeleton's values, the template flags and what a benchmark supplies all come before the
-  agent's, and the agent's before this block (§4.17 "agent 也给它所在 environment 的
-  capability 块起点"). Keep this block agent-neutral.
+  keyed by `capability_id`: Skyvern's own cleaner, M3A's pause after an action). The
+  order, highest first: a template flag (it picks the receptor's implementation, keeping a
+  skeleton's knobs when it names the same one), a `--from` skeleton's values, what a
+  benchmark supplies, the agent's start, this block (§4.17 "capability 块的起点的优先次序").
+  Keep this block agent-neutral.
 - **`TEMPLATE_FLAGS`** — a tuple of `TemplateFlag(flag, receptor, help)`
   (`core/registries.py`): each a `config template` flag whose value is a registry key of
   the receptor's layer, replacing that receptor's strategy in this capability's block
