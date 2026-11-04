@@ -139,9 +139,12 @@ class _Observation:
 
 @dataclass
 class _Summarizer:
-    """A chat model answering each call with the next reply, keeping each call and its attribution."""
+    """A chat model answering each call with the next reply, keeping each call and its attribution.
 
-    replies: list[str]
+    An exception among the replies is raised by its call, as a provider raises one.
+    """
+
+    replies: list[str | BaseException]
     context: RunCallContext = field(default_factory=RunCallContext)
     calls: list[tuple[list[BaseMessage], CallAttribution]] = field(default_factory=list)
     inference_kind: str = "chat"
@@ -152,7 +155,10 @@ class _Summarizer:
         self, messages: Sequence[BaseMessage], output_format: object = None
     ) -> ChatInvokeCompletion:
         self.calls.append((list(messages), self.context.current))
-        return ChatInvokeCompletion(completion=self.replies.pop(0), usage=None)
+        reply = self.replies.pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        return ChatInvokeCompletion(completion=reply, usage=None)
 
     async def aclose(self, *, timeout: float = 5.0) -> tuple[()]:
         return ()
@@ -287,6 +293,37 @@ async def test_the_summary_is_a_helper_call_with_androidworlds_prompt_and_the_ma
         'Step 1- Action selected: {"action_type": "click", "index": 0}. Wi-Fi page opened.'
         in _text(second)
     )
+
+
+@pytest.mark.parametrize(("generated", "line"), [("Opened Sett", "Opened Sett"), (None, "")])
+async def test_a_summary_cut_off_at_the_ceiling_is_the_text_it_had_generated(
+    generated: str | None, line: str
+) -> None:
+    """AndroidWorld's model wrapper returns a cut-off summary's content like any other, so the
+    history line carries what it had generated and the step goes on: no Loop setting decides it."""
+    cut_off = ModelOutputTruncatedError(
+        model="scripted",
+        stop_reason="length",
+        ceiling_field="max_completion_tokens",
+        ceiling=32768,
+        partial_output=generated,
+    )
+    summarizer = _Summarizer([cut_off])
+    agent = _agent(summarizer)
+    opened = "Reason: r\nAction: {'action_type': 'open_app', 'app_name': 'Settings'}"
+
+    await agent.build_react_prompt(_Observation(), context=_context(0))
+    (message,) = await agent.build_react_prompt(
+        _Observation(
+            history=HistoryObs(items=[_record(0, opened, results=[ActionResult(success=True)])])
+        ),
+        context=_context(1),
+    )
+
+    assert len(summarizer.calls) == 1
+    assert (
+        f'Step 1- Action selected: {{"action_type": "open_app", "app_name": "Settings"}}. {line}\n'
+    ) in _text(message)
 
 
 async def test_a_step_whose_action_failed_is_written_with_its_error_and_not_summarized() -> None:

@@ -72,8 +72,12 @@ apart from the step's decision and it never becomes a thought or a decision
 (§4.1). A step whose reply could not be read gets M3A's line for that and no
 call; a step whose action failed gets ``Action selected: <action>. The action
 failed: <error>`` and no call (AndroidWorld makes none when an action cannot
-run). The summary call fails the step when it fails, like any helper call. As
-AndroidWorld does, the screenshot before is sent without its ``before`` label
+run). The summary call fails the step when it fails, like any helper call,
+except when it is cut off at the completion-token ceiling: AndroidWorld's model
+wrapper returns the content whatever the finish reason, so the line is written
+with the text the summary had generated (empty when none), whatever the Loop's
+``cut_off_reply``, which governs the step's decision only. The call record keeps
+the cut. As AndroidWorld does, the screenshot before is sent without its ``before`` label
 (it labels a copy it does not send), though the prompt says it has one.
 
 **What M3A's replies run as** is ``reply.py``'s, which also lists where it
@@ -108,6 +112,7 @@ from spectragent.agents.prompts import load_prompt_fragment
 from spectragent.core.action_guard import executed_descriptor
 from spectragent.core.llm.base import BaseChatModel
 from spectragent.core.llm.call_context import RunCallContext
+from spectragent.core.llm.exceptions import ModelOutputTruncatedError
 from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartImageParam,
@@ -423,7 +428,13 @@ class M3AAgent(AgentBase):
         after: _Screen,
         after_marked: Image.Image,
     ) -> str:
-        """The summary call: the step's action, its reason and its screens before and after."""
+        """The summary call: the step's action, its reason and its screens before and after.
+
+        A summary cut off at the completion-token ceiling is the text it had
+        generated (empty when none), as AndroidWorld's model wrapper returns the
+        content whatever the finish reason, whatever the Loop's ``cut_off_reply``:
+        this call is M3A's own, not the step's decision. Its call record keeps the cut.
+        """
         if self._summarizer is None or self._call_context is None:
             raise RuntimeError(
                 "M3A's step summary needs the model and call context Runtime binds "
@@ -448,7 +459,10 @@ class M3AAgent(AgentBase):
             ]
         )
         with self._call_context.scope(caller="agent", purpose=SUMMARY_PURPOSE, step=after.step):
-            completion = await self._summarizer.ainvoke([message])
+            try:
+                completion = await self._summarizer.ainvoke([message])
+            except ModelOutputTruncatedError as exc:
+                return exc.partial_output or ""
         return completion.completion
 
 
