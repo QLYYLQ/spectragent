@@ -34,6 +34,7 @@ measure  spectragent flywheel run | report      a chain spec, not a run YAML
 | Layer | Owns | Where |
 |---|---|---|
 | Browser capability | Capture (the recorder connection, each bound archiver's run-time session, redaction before a file is built), the replayability tier, replay serving and miss answers, retargeting and restoration checks, the student capture check, and every reader of its own evidence formats | `core/capabilities/browser/`: `recorder.py`, `archive/`, `replay/`, `restoration.py`, `capture_check.py`, `index_points.py`, `archive_stats.py`, `cooperation.py`, `navigation.py`, `settle.py` |
+| Android capability | The same two halves for a device: `RestorationSupport` (retarget by bounds and attributes, `AndroidRestorationEvidence`) and `RestorationAlignment` (pins the device clock), the `DeviceAtCapture` record each capture carries, pure functions in `android/restoration.py` | `core/capabilities/android/` |
 | Archive axis | `ArchiverRegistrar`, the `ArchivingCapability` and `ArchiveConsumer` Protocols, `ArchiveFile` / `ArchiveBatch`, the shared privacy rules and ledger, the replay read side (`ArchiveReader`, `open_archive`) | `core/archive/` |
 | Negotiation and runtime | `negotiate_archive` (right after memory negotiation), `bind_archivers` as the last step of `prepare()` on the raw environment, `seed_messages`, typed Loop inputs, the branch provenance handed to the trace | `core/negotiation/archive.py`, `core/runtime.py` |
 | Recording component, WAL, reader | Archive demands, pulling `collect_archive()` at commit points, call/step attribution, usage, the `env/` subtree, immutable run-record versions, gaps and recording health; manifest-based reading and shared context reconstruction | `core/hooks/`, `core/trace/` |
@@ -492,6 +493,21 @@ uv run spectragent run --config configs/flywheel/branch_ui_tars_archive.yaml \
   or, not written, what each capability it ran declares in `BRANCH_ARCHIVES`), has
   no recoverable setup context, or shares its `run_id`) stops the sweep with every reason at
   once, or is left out under `on_unbranchable: skip`.
+- Branching an Android recording (architecture §11.2 "分支回放"; M3A and UI-TARS both
+  branch). It is prefix replay from the task start, no mid-task snapshot. Each capture
+  records a `DeviceAtCapture` (device clock, foreground package, Activity, window) on its
+  screenshot, tree and foreground fragments; the restorer pins the device clock to the
+  recorded one before each restored observation (no switch, never after the checkpoint);
+  `verify_restoration` judges foreground, clock, tree signature, keyboard and focus, and a
+  status-bar-masked screenshot hash (`core/image_hash.py`, shared with the browser). Android
+  declares `BRANCH_ARCHIVES = ()`, so its branches YAML leaves `require_archive` out and
+  the task gets no `replay_archive`. Time-driven state (a running stopwatch) fails the
+  check by design, and a source whose task text its setup fills in (MiniWoB++) is refused
+  at `prepare()`. Write the branch config's capability settings (`settle_*`, scroll
+  duration, `animation_scale`) to equal the recording's: `BranchLoop` does not compare
+  them. Under `history_source: source` M3A reads its recorded summaries instead of
+  calling its helper model (`ReactPromptContext.source_helper_replies`), so the replayed
+  prefix makes no model call; each step after the checkpoint calls the helper live.
 - Unloaded checkpoints (architecture §4.4 "初次加载是否完成", §4.10). With
   `exclude_unloaded_checkpoints: true` (default; both shipped branch configs write it), a
   chosen step whose recorded capture state says `settle_state.loaded is False` (the main

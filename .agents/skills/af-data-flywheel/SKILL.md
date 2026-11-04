@@ -14,6 +14,7 @@ Read [references/guide.md](references/guide.md) by task:
 - Adding or changing a strategy: §3.0, then the recipe for its axis (§3.1–§3.9).
 - Before calling it done: §4, the invariants and traps.
 - An error, a refusal or a surprising number: §5.
+- Branching an Android recording (device record, clock pinning, `require_archive` left out, M3A's recorded summaries): the Android bullet in §2.3.
 
 The mechanics this guide points to live in sibling skills: `af-add-a-receptor` (receptor shapes and the conscribe traps), `af-regenerate-and-verify` (proving a knob reached YAML), `af-add-a-capability` (the archive contract, `RestorationSupport`, `RestorationAlignment`), `af-add-a-loop` (`BranchLoop`, optional slots) and `af-trace-and-hooks` (the WAL, `env/`, privacy).
 

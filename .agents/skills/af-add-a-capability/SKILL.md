@@ -15,4 +15,6 @@ Use [references/guide.md](references/guide.md) as the detailed implementation gu
 - Config generation or a new registrar: Step 7.
 - Resuming recorded runs (branching): the optional `RestorationSupport` and `RestorationAlignment` sections under Step 0.
 
+- What the package declares and implements for the viewer: the declarations list and the `core/presentation.py` Protocols, in the checklist.
+
 Follow sibling skills when the work adds a discrete action, observation fragment, or wired receptor. Do not preserve a superseded compatibility path.

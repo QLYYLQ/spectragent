@@ -287,6 +287,12 @@ async def align_next_observation(self, recorded: Any) -> None: ...
   waits for a still screen again so what shows the time redraws, sets it once more so that
   wait's own time is taken back, then asks its sources; the report is a `ClockAlignment` on
   `AndroidRestorationEvidence.clock_alignment`, judged through `clock_difference`.
+  What it compares comes from the recording: every Android capture also reads a
+  `DeviceAtCapture{clock_ms, package, activity, window}` onto its fragments
+  (`AndroidCaptureFragment.device`; `None` plus a WARNING when unreadable, never a lost
+  observation). A capability with state to put back records what it needs at capture time
+  the same way. `animation_scale` is the capability knob that makes the replayed screens
+  stable (default `null`: untouched; setup restores the device's old values at teardown).
 - **Belongs to one observation only.** Bind the request to the next cycle
   (`begin_observation`); a later cycle drops it, and the next `verify_restoration` takes
   the report whether or not a capture acted on it. So nothing is ever aligned after the
