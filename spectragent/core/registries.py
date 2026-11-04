@@ -11,7 +11,11 @@ framework needs before importing it (``docs/architecture_design.md``
 ``OPTIONAL_EXTRA_MODULES``  modules whose top-level imports need an optional
                             extra, which discovery never imports;
 ``START_FLAGS``             its single-task start flags, which ``spectragent
-                            run`` generates (§4.9 "起始参数").
+                            run`` generates (§4.9 "起始参数");
+``TEMPLATE_BLOCK``          where ``spectragent config template`` starts its
+                            block in a new template (§4.17);
+``TEMPLATE_FLAGS``          its template flags, which ``config template``
+                            generates (§4.17).
 
 So adding a capability edits no file here. Every subpackage of
 ``spectragent/agents/`` is an agent family, named by the part of an
@@ -28,13 +32,15 @@ objects.
 
 from __future__ import annotations
 
+import copy
 import importlib
 import pkgutil
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from conscribe import LayerRegistrar, discover, get_registry
+from pydantic import JsonValue
 
 if TYPE_CHECKING:
     from spectragent.schemas.task import SetupBase, StartFlag
@@ -63,6 +69,37 @@ DECLARATIONS_MODULE = "declarations"
 
 
 @dataclass(frozen=True)
+class TemplateFlag:
+    """A ``config template`` flag a capability declares in its ``declarations.py`` (``TEMPLATE_FLAGS``).
+
+    ``docs/architecture_design.md`` §4.17 "capability 的模板起点": ``spectragent
+    config template`` adds every capability's flags, listed by capability, and
+    refuses one whose capability the template's environment holds no block of.
+    Its value is a registry key of the receptor's layer, and replaces the
+    strategy in that receptor of the capability's block, as ``--agent``
+    replaces the agent.
+
+    Attributes:
+        flag: The command-line flag, ``--replayability``.
+        receptor: The receptor of the capability block it selects, ``replayability``.
+        help: What it selects, for ``--help``.
+    """
+
+    flag: str
+    receptor: str
+    help: str
+
+
+class CapabilityFlag(Protocol):
+    """What the CLI reads of a capability's start or template flag to offer it."""
+
+    @property
+    def flag(self) -> str: ...
+    @property
+    def help(self) -> str: ...
+
+
+@dataclass(frozen=True)
 class CapabilityDeclarations:
     """What one capability package declares in its ``declarations`` module."""
 
@@ -74,6 +111,12 @@ class CapabilityDeclarations:
     optional_extra_modules: tuple[str, ...]
     #: Its single-task start flags, in declared order.
     start_flags: tuple[StartFlag, ...]
+    #: Where a new ``config template`` starts its block: a capability block as
+    #: YAML writes one, without its ``capability_id``. A starting point the
+    #: template writes into the YAML, never a default a run falls back on.
+    template_block: Mapping[str, JsonValue]
+    #: Its ``config template`` flags, in declared order.
+    template_flags: tuple[TemplateFlag, ...]
 
 
 def capability_ids() -> tuple[str, ...]:
@@ -116,18 +159,44 @@ def start_flags() -> dict[str, tuple[StartFlag, ...]]:
     Raises:
         ValueError: two packages declare one flag.
     """
-    flags: dict[str, tuple[StartFlag, ...]] = {}
+    return _flags_by_capability(
+        "start flag", {item.capability_id: item.start_flags for item in capability_declarations()}
+    )
+
+
+def template_flags() -> dict[str, tuple[TemplateFlag, ...]]:
+    """Every capability package's ``config template`` flags, by ``capability_id``, in that order.
+
+    The static union ``spectragent config template`` offers
+    (``docs/architecture_design.md`` §4.17 "capability 的模板起点"), read like
+    :func:`start_flags`. Imports no implementation.
+
+    Raises:
+        ValueError: two packages declare one flag.
+    """
+    return _flags_by_capability(
+        "template flag",
+        {item.capability_id: item.template_flags for item in capability_declarations()},
+    )
+
+
+_Flag = TypeVar("_Flag", bound=CapabilityFlag)
+
+
+def _flags_by_capability(
+    kind: str, declared: Mapping[str, tuple[_Flag, ...]]
+) -> dict[str, tuple[_Flag, ...]]:
+    """*declared* as given, once no two capabilities declare one flag."""
     owners: dict[str, str] = {}
-    for capability in capability_declarations():
-        for flag in capability.start_flags:
-            owner = owners.setdefault(flag.flag, capability.capability_id)
-            if owner != capability.capability_id:
+    for capability_id, flags in declared.items():
+        for flag in flags:
+            owner = owners.setdefault(flag.flag, capability_id)
+            if owner != capability_id:
                 raise ValueError(
-                    f"capabilities {owner!r} and {capability.capability_id!r} both declare the "
-                    f"start flag {flag.flag}"
+                    f"capabilities {owner!r} and {capability_id!r} both declare the {kind} "
+                    f"{flag.flag}"
                 )
-        flags[capability.capability_id] = capability.start_flags
-    return flags
+    return dict(declared)
 
 
 def collect_registrars(capabilities: Iterable[str] | None = None) -> dict[str, type]:
@@ -333,7 +402,8 @@ def _read_declarations(capability_id: str) -> CapabilityDeclarations:
         raise ImportError(
             f"capability package {package} has no {DECLARATIONS_MODULE} module. Every "
             f"subpackage of {CAPABILITIES_PACKAGE} is a capability and declares its strategy "
-            f"axes, task setup, optional-extra modules and start flags there "
+            f"axes, task setup, optional-extra modules, start flags and template starting "
+            f"block and flags there "
             f"(docs/architecture_design.md §4.2.1)."
         ) from exc
     from spectragent.schemas.task import SetupBase, StartFlag
@@ -368,12 +438,37 @@ def _read_declarations(capability_id: str) -> CapabilityDeclarations:
         values = [getattr(flag, field) for flag in flags]
         if len(set(values)) != len(values):
             raise ValueError(f"{name}.START_FLAGS declares one {field} twice: {values}")
+    block = getattr(module, "TEMPLATE_BLOCK", None)
+    if not (isinstance(block, Mapping) and all(isinstance(key, str) for key in block)):
+        raise TypeError(
+            f"{name}.TEMPLATE_BLOCK must map the fields of a capability block to their "
+            f"starting values, not {block!r}"
+        )
+    if "capability_id" in block:
+        raise ValueError(f"{name}.TEMPLATE_BLOCK names the capability_id: leave it out")
+    template = getattr(module, "TEMPLATE_FLAGS", None)
+    if not (
+        isinstance(template, tuple) and all(isinstance(flag, TemplateFlag) for flag in template)
+    ):
+        raise TypeError(f"{name}.TEMPLATE_FLAGS must be a tuple of TemplateFlag, not {template!r}")
+    for flag in template:
+        if not flag.flag.startswith("--") or not flag.receptor or not flag.help:
+            raise ValueError(
+                f"{name}.TEMPLATE_FLAGS: {flag!r} needs a flag starting with '--', a receptor "
+                f"and a help text"
+            )
+    for field in ("flag", "receptor"):
+        values = [getattr(flag, field) for flag in template]
+        if len(set(values)) != len(values):
+            raise ValueError(f"{name}.TEMPLATE_FLAGS declares one {field} twice: {values}")
     return CapabilityDeclarations(
         capability_id=capability_id,
         strategy_axes=dict(axes),
         task_setup=setup,
         optional_extra_modules=optional,
         start_flags=flags,
+        template_block=copy.deepcopy(dict(block)),
+        template_flags=template,
     )
 
 

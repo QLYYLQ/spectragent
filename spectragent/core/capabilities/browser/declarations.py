@@ -7,6 +7,10 @@ reading it loads no agent-cdp, websockets or numpy
 (``tests/test_core/test_capabilities/test_capability_declarations.py``).
 """
 
+from collections.abc import Mapping
+
+from pydantic import JsonValue
+
 from spectragent.core.capabilities.browser.backends._registrar import BrowserProviderRegistrar
 from spectragent.core.capabilities.browser.dom.cleaning import DOMCleanerRegistrar
 from spectragent.core.capabilities.browser.dom.serializers import DOMSerializerRegistrar
@@ -16,6 +20,7 @@ from spectragent.core.capabilities.browser.replay.miss_policy import MissPolicyR
 from spectragent.core.capabilities.browser.replay.network_source import NetworkSourceRegistrar
 from spectragent.core.capabilities.browser.replay.replayability import ReplayabilityRegistrar
 from spectragent.core.capabilities.browser.task_setup import BrowserSetup
+from spectragent.core.registries import TemplateFlag
 from spectragent.schemas.task import REPLAY_ARCHIVE_KEY, StartFlag
 
 #: The browser's internal strategy axes, layer name → registrar. An axis left
@@ -56,6 +61,37 @@ START_FLAGS = (
         REPLAY_ARCHIVE_KEY,
         "Recorded run directory to replay the browser's network from (needs network_source: "
         "archive).",
+    ),
+)
+
+#: Where ``spectragent config template`` starts the browser block of a new
+#: template (§4.17 "capability 的模板起点"): a local Chrome, instant mouse and
+#: typing, BrowserUse's DOM cleaning printed as text, no pinning, the live
+#: network. These are the template's starting choices, written into the YAML
+#: it prints, not defaults: a run still names its ``backend``, ``dom_cleaner``
+#: and ``dom_serializer`` itself (§4.2.1 "单实例策略受体省略即默认").
+TEMPLATE_BLOCK: Mapping[str, JsonValue] = {
+    "backend": {"provider_id": "local_chrome"},
+    "mouse_trajectory": {"trajectory_type": "instant"},
+    "typing_rhythm": {"rhythm_type": "instant"},
+    "dom_cleaner": {"cleaner_type": "browser_use"},
+    "dom_serializer": {"serializer_type": "text"},
+    "replayability": {"replayability_id": "none"},
+    "network_source": {"source_id": "live"},
+}
+
+#: The browser's ``config template`` flags (§4.17): each replaces the strategy
+#: in one receptor of the template's browser block.
+TEMPLATE_FLAGS = (
+    TemplateFlag(
+        "--backend",
+        "backend",
+        "Browser provider registry key; new templates use local_chrome.",
+    ),
+    TemplateFlag(
+        "--replayability",
+        "replayability",
+        "Replayability registry key (none/pinned). Network source and archive remain independent.",
     ),
 )
 

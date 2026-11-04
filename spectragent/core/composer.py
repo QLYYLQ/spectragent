@@ -458,7 +458,7 @@ class ConfigComposer:
                 for layer in sorted(raw, key=str)
                 if layer in self._left_out
             ]
-            merged = self._merged(
+            merged = self.merge_capability_parts(
                 {str(key): value for key, value in raw.items() if key not in self._left_out}
             )
             sections, unused = merged.sections, merged.unused
@@ -473,14 +473,18 @@ class ConfigComposer:
             raise _refusal(problems)
         return ValidatedConfig(cfg, unused)
 
-    def _merged(self, sections: dict[str, object]) -> MergedSections:
+    def merge_capability_parts(self, sections: Mapping[str, object]) -> MergedSections:
         """*sections* with the benchmark's parts merged into the run's capability blocks.
 
-        Only a run that starts an environment (it writes ``environment`` or
-        ``capability``) takes a benchmark's parts; any other root (an export's,
-        an evaluation's) has nothing to merge them into and leaves them. The
-        benchmark blocks are validated first: what a benchmark computes in code
-        reads its validated block.
+        The run root a run validates (:meth:`validated` merges through this),
+        and the settings the parts supplied that the run configuration leaves
+        out, which ``config template --benchmark`` leaves out of the run
+        configuration it writes (``docs/architecture_design.md`` §4.17). Only a
+        run that starts an environment (it writes ``environment`` or
+        ``capability``) takes a benchmark's parts; any other root (an
+        export's, an evaluation's) has nothing to merge them into and leaves
+        them. The benchmark blocks are validated first: what a benchmark
+        computes in code reads its validated block. *sections* is not changed.
 
         Options a part sets on a list entry the run's list leaves out are not
         used, and returned with the sections.
@@ -499,7 +503,7 @@ class ConfigComposer:
             and BENCHMARK_LAYER in self._registrars
             and (ENVIRONMENT_SECTION in sections or CAPABILITY_SECTION in sections)
         ):
-            return MergedSections(sections)
+            return MergedSections(dict(sections))
         validated = getattr(
             self.top_level_type.model_validate({BENCHMARK_LAYER: benchmarks}), BENCHMARK_LAYER
         )
@@ -517,7 +521,7 @@ class ConfigComposer:
                 for part in computed
             ]
         if not contributions:
-            return MergedSections(sections)
+            return MergedSections(dict(sections))
         merge = CapabilityMerge(self._catalog, self._registrars)
         try:
             for contribution in contributions:

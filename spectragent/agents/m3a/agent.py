@@ -102,12 +102,13 @@ where no summary model is called. ``parse_react_thought`` reads its reason.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar, Protocol
 
 from PIL import Image
 from pydantic import Field as PydanticField
+from pydantic import JsonValue
 
 from spectragent.agents._registrar import AgentBase
 from spectragent.agents.m3a.marks import Bounds, jpeg, label, mark_elements, open_image
@@ -226,6 +227,25 @@ class M3AAgent(AgentBase):
         "llm": "llm",
         # One message per step: the window keeps it alone (``check_run_settings``).
         "memory": ("memory", ["sliding_window"]),
+    }
+
+    #: Where a new ``config template`` starts M3A: as AndroidWorld runs it
+    #: (module docstring). :meth:`check_run_settings` refuses a run whose memory
+    #: or Loop limits do not meet these: one message in the memory, at least two
+    #: actions a step for ``input_text``, no re-ask within a step, no end on
+    #: unreadable replies. ``cut_off_reply: read_as_is`` is AndroidWorld's behaviour, a
+    #: reply cut off at the token ceiling read as it is; the template starts
+    #: from it and nothing enforces it. Starting values written into the YAML,
+    #: not defaults: a run takes only what its configuration says.
+    __template_block__: ClassVar[Mapping[str, JsonValue]] = {
+        "agent_loop": {
+            "loop_id": "react",
+            "max_actions_per_step": 2,
+            "parse_retries_per_step": 0,
+            "max_consecutive_parse_errors": None,
+            "cut_off_reply": "read_as_is",
+        },
+        "memory": {"memory_id": "sliding_window", "window_size": 1},
     }
 
     # ── config ─────────────────────────────────────────────────

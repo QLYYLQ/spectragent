@@ -23,9 +23,11 @@ from spectragent.agents._registrar import AgentRegistrar
 from spectragent.core.capabilities.browser import declarations as browser_declarations
 from spectragent.core.capabilities.browser.input.rhythm import TypingRhythmRegistrar
 from spectragent.core.registries import (
+    TemplateFlag,
     capability_declarations,
     collect_registrars,
     start_flags,
+    template_flags,
 )
 from spectragent.schemas.task import StartFlag
 
@@ -136,6 +138,11 @@ def test_a_layer_two_owners_declare_is_refused(monkeypatch: pytest.MonkeyPatch) 
         ("OPTIONAL_EXTRA_MODULES", ("spectragent.core.registries",)),
         ("START_FLAGS", None),
         ("START_FLAGS", [StartFlag("--start-url", "start_url", "where it starts")]),
+        ("TEMPLATE_BLOCK", None),
+        ("TEMPLATE_BLOCK", [("backend", {"provider_id": "local_chrome"})]),
+        ("TEMPLATE_FLAGS", None),
+        ("TEMPLATE_FLAGS", [TemplateFlag("--backend", "backend", "which provider")]),
+        ("TEMPLATE_FLAGS", (StartFlag("--backend", "backend", "which provider"),)),
     ],
 )
 def test_a_malformed_declaration_is_refused(
@@ -193,3 +200,62 @@ def test_one_start_flag_two_capabilities_declare_is_refused(
     monkeypatch.setattr(android_declarations, "START_FLAGS", (flag,))
     with pytest.raises(ValueError, match="'android' and 'browser' both declare"):
         start_flags()
+
+
+@pytest.mark.parametrize(
+    ("flags", "problem"),
+    [
+        ((TemplateFlag("backend", "backend", "which"),), "needs a flag starting with '--'"),
+        ((TemplateFlag("--backend", "", "which"),), "needs a flag starting with '--'"),
+        (
+            (TemplateFlag("--a", "backend", "x"), TemplateFlag("--a", "replayability", "y")),
+            "declares one flag twice",
+        ),
+        (
+            (TemplateFlag("--a", "backend", "x"), TemplateFlag("--b", "backend", "y")),
+            "declares one receptor twice",
+        ),
+    ],
+)
+def test_a_malformed_template_flag_is_refused(
+    monkeypatch: pytest.MonkeyPatch, flags: tuple[TemplateFlag, ...], problem: str
+) -> None:
+    monkeypatch.setattr(browser_declarations, "TEMPLATE_FLAGS", flags)
+    with pytest.raises(ValueError, match=problem):
+        capability_declarations()
+
+
+def test_a_template_block_naming_its_capability_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    block = {**browser_declarations.TEMPLATE_BLOCK, "capability_id": "browser"}
+    monkeypatch.setattr(browser_declarations, "TEMPLATE_BLOCK", block)
+    with pytest.raises(ValueError, match="names the capability_id"):
+        capability_declarations()
+
+
+def test_each_reading_returns_its_own_template_block() -> None:
+    (first,) = capability_declarations(["browser"])
+    first.template_block["backend"]["provider_id"] = "changed"  # type: ignore[index]
+    (second,) = capability_declarations(["browser"])
+    assert second.template_block["backend"] == {"provider_id": "local_chrome"}
+
+
+def test_the_template_flags_are_every_capabilitys_by_capability() -> None:
+    flags = template_flags()
+    assert list(flags) == [capability.capability_id for capability in capability_declarations()]
+    assert [(flag.flag, flag.receptor) for flag in flags["browser"]] == [
+        ("--backend", "backend"),
+        ("--replayability", "replayability"),
+    ]
+
+
+def test_one_template_flag_two_capabilities_declare_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from spectragent.core.capabilities.android import declarations as android_declarations
+
+    flag = TemplateFlag("--backend", "backend", "which Android provider")
+    monkeypatch.setattr(android_declarations, "TEMPLATE_FLAGS", (flag,))
+    with pytest.raises(ValueError, match="'android' and 'browser' both declare the template flag"):
+        template_flags()

@@ -1,21 +1,47 @@
-"""Templates remain ordinary configuration with the same effective behavior."""
+"""Templates remain ordinary configuration with the same effective behavior.
+
+``docs/architecture_design.md`` §4.17: the framework starts the agent, the
+agent's wiring picks the environment, each capability's declarations start its
+block and give its template flags, and with a benchmark the template leaves out
+every capability setting the benchmark supplies, naming each where it would sit.
+"""
 
 import copy
 import json
+from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Annotated, Protocol, runtime_checkable
+from typing import Annotated, Any, ClassVar, Protocol, runtime_checkable
 
 import pytest
 import yaml
 from conscribe import create_registrar
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, JsonValue, ValidationError
 
+from spectragent.agents.browser_use.dom import BrowserUseDomAgent
+from spectragent.agents.m3a.agent import M3AAgent
+from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FILE, OPEN_APP_FORMAT
+from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
+from spectragent.benchmarks.androidworld.tasks import instance_seed
+from spectragent.benchmarks.selection import BenchmarkSelectionError, read_benchmark, run_root
 from spectragent.cli import main
 from spectragent.cli.config_templates import TemplateChoices, render_config_template
 from spectragent.core.composer import ConfigComposer, UnresolvedWiringError
+from spectragent.core.registries import (
+    TemplateFlag,
+    capability_declarations,
+    collect_registrars,
+    template_flags,
+)
 from spectragent.core.runtime import AgentRuntime
+from tests._helpers.android_device import fake_service_apk
+
+#: A two-name ``open_app`` table, as AndroidWorld's task list writer would read it.
+TABLE = {
+    "clock": "com.google.android.deskclock/com.android.deskclock.DeskClock",
+    "markor": "net.gsantner.markor/net.gsantner.markor.activity.MainActivity",
+}
 
 
 @pytest.fixture(scope="module")
@@ -196,7 +222,11 @@ def test_replayability_does_not_change_network_or_archive(composer):
 def test_pinned_new_template_keeps_live_network_without_archive(composer):
     expanded = yaml.safe_load(
         render_config_template(
-            TemplateChoices(model="selected", replayability="pinned", recording=("none",)),
+            TemplateChoices(
+                model="selected",
+                recording=("none",),
+                capability_flags={"--replayability": "pinned"},
+            ),
             composer=composer,
         )
     )
@@ -419,3 +449,273 @@ def test_cursor_presentation_knobs_expand_validate_compose_and_explain(
     _browser(raw)["screenshot_cursor"] = "typo"
     with pytest.raises(ValidationError, match="screenshot_cursor"):
         composer.compose(raw)
+
+
+# ── every capability: its own starting block, the agent's environment ──
+
+
+def test_the_agents_wiring_picks_the_environment_and_its_declared_starting_block(composer):
+    template = render_config_template(TemplateChoices(agent="m3a", model="m"), composer=composer)
+    raw = yaml.safe_load(template)
+    (environment,) = raw["environment"]
+    assert (environment["env_type"], environment["id"]) == ("android", "android_env")
+    (android,) = environment["capabilities"]
+    (declared,) = capability_declarations(["android"])
+    for name, start in declared.template_block.items():
+        if isinstance(start, dict):
+            assert {key: android[name][key] for key in start} == start, name
+        else:
+            assert android[name] == start, name
+    # M3A's wiring takes only sliding_window, not the template's simple memory.
+    assert raw["agent"][0]["memory"]["memory_id"] == "sliding_window"
+    assert "browser" not in template
+    composer.compose(raw)
+
+
+def test_m3a_starts_from_the_run_settings_its_own_prepare_requires(composer, tmp_path):
+    raw = yaml.safe_load(
+        render_config_template(TemplateChoices(agent="m3a", model="m"), composer=composer)
+    )
+    agent = raw["agent"][0]
+    for receptor, start in M3AAgent.__template_block__.items():
+        assert isinstance(start, dict)
+        assert {key: agent[receptor][key] for key in start} == start, receptor
+    assert agent["agent_loop"]["cut_off_reply"] == "read_as_is"
+    # With the APK placeholder replaced, prepare() passes M3A's own run-settings check.
+    raw["environment"][0]["capabilities"][0]["service_apk"] = str(fake_service_apk(tmp_path))
+    AgentRuntime.for_agent(composer.compose(raw), "main").prepare()
+    # Naming the declared Loop keeps its values; another Loop would reset them.
+    again = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="m3a", loop="react", model="m"), composer=composer
+        )
+    )
+    assert again["agent"][0]["agent_loop"] == agent["agent_loop"]
+
+
+def test_an_agents_declared_loop_stands_where_its_wiring_refuses_the_frameworks():
+    from spectragent.agents.ui_tars.agent import UITarsAgent
+    from spectragent.core.loops.react import ReactLoop
+
+    class SecondReact(ReactLoop):
+        __registry_key__ = "second_react"
+
+    class PinnedLoopAgent(UITarsAgent):
+        __registry_key__ = "pinned_loop"
+        __wiring__: ClassVar[dict[str, Any]] = {
+            "agent_loop": ("agent_loop", ["branch", "second_react"])
+        }
+        __template_block__: ClassVar[Mapping[str, JsonValue]] = {
+            "agent_loop": {"loop_id": "second_react"}
+        }
+
+    # Built after the two registrations, without discovery.
+    composer = ConfigComposer(registrars=collect_registrars())
+    raw = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="pinned_loop", environment="browser", model="m"),
+            composer=composer,
+        )
+    )
+    assert raw["agent"][0]["agent_loop"]["loop_id"] == "second_react"
+
+
+def test_an_agent_without_declared_values_starts_from_the_frameworks_choices(composer):
+    assert BrowserUseDomAgent.__template_block__ == {}
+    raw = yaml.safe_load(render_config_template(TemplateChoices(model="m"), composer=composer))
+    agent = raw["agent"][0]
+    assert agent["agent_loop"]["loop_id"] == "react"
+    assert agent["memory"]["memory_id"] == "simple"
+
+
+def test_every_environment_starts_from_its_capabilities_declared_blocks(composer):
+    for environment in composer.catalog.components["environment"]:
+        raw = yaml.safe_load(
+            render_config_template(
+                TemplateChoices(environment=environment, model="m"), composer=composer
+            )
+        )
+        blocks = raw["environment"][0]["capabilities"]
+        for block, declared in zip(
+            blocks, capability_declarations(b["capability_id"] for b in blocks), strict=True
+        ):
+            assert set(declared.template_block) <= set(block), environment
+
+
+def test_an_agent_whose_wiring_runs_in_several_environments_needs_one_named(composer):
+    with pytest.raises(
+        ValueError, match="can run in android, browser; choose one with --environment"
+    ):
+        render_config_template(TemplateChoices(agent="ui_tars", model="m"), composer=composer)
+    raw = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="ui_tars", environment="android", model="m"), composer=composer
+        )
+    )
+    assert raw["environment"][0]["capabilities"][0]["capability_id"] == "android"
+
+
+def test_a_template_flag_needs_its_capabilitys_block(composer):
+    with pytest.raises(ValueError, match="--replayability is a template flag of the browser"):
+        render_config_template(
+            TemplateChoices(agent="m3a", model="m", capability_flags={"--replayability": "pinned"}),
+            composer=composer,
+        )
+
+
+def test_changing_environment_and_agent_restarts_what_the_new_wiring_does_not_take(composer):
+    raw = yaml.safe_load(Path("configs/browser_use_local.yaml").read_text())
+    raw["agent"][0]["llm"]["model"] = "chosen-model"
+    expanded = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="m3a", environment="android"), raw, composer=composer
+        )
+    )
+    (environment,) = expanded["environment"]
+    assert environment["env_type"] == "android"
+    assert [block["capability_id"] for block in environment["capabilities"]] == ["android"]
+    agent = expanded["agent"][0]
+    # Simple memory is not M3A's: it restarts from M3A's own starting values.
+    start = M3AAgent.__template_block__["memory"]
+    assert isinstance(start, dict)
+    assert {key: agent["memory"][key] for key in start} == start
+    assert agent["llm"]["model"] == "chosen-model", "a receptor the new agent takes is kept"
+    # The skeleton's ReAct Loop is M3A's too: its written values win.
+    assert agent["agent_loop"]["max_actions_per_step"] == 4
+
+
+def test_a_loop_written_without_its_omittable_receptor_is_kept_when_the_agent_changes(composer):
+    raw = yaml.safe_load(Path("configs/browser_use_local.yaml").read_text())
+    raw["agent"][0]["agent_loop"] = {"loop_id": "branch"}
+    expanded = yaml.safe_load(
+        render_config_template(TemplateChoices(agent="ui_tars"), raw, composer=composer)
+    )
+    assert expanded["agent"][0]["agent_loop"]["loop_id"] == "branch"
+
+
+def test_cli_lists_template_flags_by_capability_and_refuses_one_without_its_block(capsys):
+    assert main(["config", "template", "--help"]) == 0
+    text = capsys.readouterr().out
+    assert "browser template flags" in text
+    for flag in template_flags()["browser"]:
+        assert flag.flag in text
+    argv = ["config", "template", "--agent", "m3a", "--model", "m", "--json"]
+    assert main([*argv, "--replayability", "pinned"]) == 2
+    assert "browser capability" in json.loads(capsys.readouterr().out)["error"]["message"]
+
+
+def test_a_capability_flag_that_shadows_a_framework_flag_is_refused(monkeypatch, capsys):
+    from spectragent.core.capabilities.android import declarations
+
+    monkeypatch.setattr(declarations, "TEMPLATE_FLAGS", (TemplateFlag("--model", "backend", "x"),))
+    assert main(["config", "template", "--json", "--help"]) == 2
+    message = json.loads(capsys.readouterr().out)["error"]["message"]
+    assert "android capability declares --model" in message
+    assert "the template command already takes it" in message
+
+
+# ── with a benchmark: what it supplies stays out of the run configuration ──
+
+
+def _androidworld(root: Path) -> Path:
+    """An AndroidWorld benchmark YAML over a small data directory: one task, a two-name table."""
+    data = root / "data"
+    data.mkdir(parents=True)
+    (data / OPEN_APP_FILE).write_text(
+        json.dumps({"format": OPEN_APP_FORMAT, "commit": PINNED_COMMIT, "apps": TABLE})
+    )
+    (data / "data_info.json").write_text(json.dumps({"split": {"All": "All.json"}}))
+    task = {
+        "commit": PINNED_COMMIT,
+        "family": "android",
+        "task": "SystemBrightnessMax",
+        "index": 0,
+        "suite_seed": 42,
+        "params": {"max_or_min": "max", "seed": instance_seed(42, "SystemBrightnessMax", 0)},
+        "goal": "Turn brightness to the max value.",
+        "goal_at_initialize": "unchanged",
+        "complexity": 1.0,
+        "start_on_home_screen": True,
+    }
+    (data / "All.json").write_text(json.dumps({"format": "androidworld-tasks-2", "tasks": [task]}))
+    benchmark = root / "androidworld.yaml"
+    block = {
+        "benchmark_id": "androidworld",
+        "task_loader": {"benchmark_name": "androidworld", "data_dir": str(data)},
+        "setup": {"setup_id": "androidworld"},
+        "capability": [
+            {
+                "capability_id": "android",
+                "backend": {"provider_id": "local_emulator", "avd": "AW"},
+                "ui_tree_cleaner": {"cleaner_id": "androidworld"},
+            }
+        ],
+    }
+    benchmark.write_text(yaml.safe_dump({"benchmark": [block]}))
+    return benchmark
+
+
+def _android(raw):
+    return raw["environment"][0]["capabilities"][0]
+
+
+def _open_app(raw):
+    return next(a for a in _android(raw)["actions"] if a["action_id"] == "android.open_app")
+
+
+def test_what_the_benchmark_supplies_is_left_out_and_named_where_it_would_sit(composer, tmp_path):
+    benchmark = str(_androidworld(tmp_path))
+    text = render_config_template(
+        TemplateChoices(agent="m3a", model="m", benchmark=benchmark), composer=composer
+    )
+    raw = yaml.safe_load(text)
+    assert "benchmark" not in raw
+    assert not {"provider_id", "avd"} & set(_android(raw)["backend"]), "the placeholder gave way"
+    assert "apps" not in _open_app(raw)
+    # A block every setting of which the benchmark supplies is left out whole.
+    assert "ui_tree_cleaner" not in _android(raw)
+    assert "# ui_tree_cleaner.cleaner_id: androidworld, from the benchmark androidworld" in text
+    assert "# backend.avd: AW, from the benchmark androidworld; left out here." in text
+    assert "# Source: the benchmark androidworld." in text, "the backend block it fills"
+    assert "# backend.provider_id: local_emulator, from the benchmark androidworld" in text
+    assert (
+        "# actions[android.open_app].apps: 2 entries, from the benchmark androidworld, "
+        "computed in code; left out here."
+    ) in text
+    assert f"--benchmark {benchmark}" in text
+    run = composer.compose(run_root(raw, read_benchmark(benchmark)))
+    capability = run.single("capability")
+    assert capability.backend.avd == "AW"
+    open_app = next(a for a in capability.actions if a.action_id == "android.open_app")
+    assert open_app.apps == TABLE
+
+
+def test_from_with_a_benchmark_keeps_the_run_and_the_values_its_author_wrote(composer, tmp_path):
+    benchmark = str(_androidworld(tmp_path))
+    source = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="m3a", model="m", benchmark=benchmark), composer=composer
+        )
+    )
+    del _android(source)["actions"]
+    _android(source)["backend"] = {"provider_id": "local_emulator"}
+    text = render_config_template(TemplateChoices(benchmark=benchmark), source, composer=composer)
+    expanded = yaml.safe_load(text)
+    assert _android(expanded)["backend"]["provider_id"] == "local_emulator", "written: kept"
+    assert "avd" not in _android(expanded)["backend"]
+    assert "apps" not in _open_app(expanded)
+    block = read_benchmark(benchmark)
+
+    def resolved(raw):
+        config = composer.compose(run_root(raw, block)).top_level_cfg
+        assert config is not None
+        return config.model_dump(mode="json")
+
+    assert resolved(source) == resolved(expanded)
+
+
+def test_a_skeleton_holding_a_benchmark_is_refused_with_one_selected(composer, tmp_path):
+    benchmark = _androidworld(tmp_path)
+    source = yaml.safe_load(benchmark.read_text())
+    with pytest.raises(BenchmarkSelectionError, match="never holds a benchmark"):
+        render_config_template(TemplateChoices(benchmark=str(benchmark)), source, composer=composer)
