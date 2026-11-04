@@ -3219,7 +3219,7 @@ benchmark:
 #   spectragent run --config run.yaml --benchmark ./my_androidworld.yaml --task-id <任务 id>
 ```
 
-**数据（用户 2026-11-03 的裁决）。** 放在仓库之外的共用缓存里：`$SPECTRAGENT_BENCHMARK_DATA`，例如 `~/.cache/spectragent/benchmarks/`，每个 worktree 都用它。今天这个变量已经有了，是加载器数据根的覆盖；没设时数据根是包里的 `spectragent/benchmark_data/`，在仓库里（`core/data_loader/_common.py::benchmark_data_root`）。目标里没设时也落在仓库之外（提议：就是上面那个例子）。
+**数据（用户 2026-11-03 的裁决）。** 放在仓库之外的共用缓存里：`$SPECTRAGENT_BENCHMARK_DATA`，例如 `~/.cache/spectragent/benchmarks/`，每个 worktree 都用它。这个变量是加载器数据根的覆盖；没设时数据根就是那个例子，`$XDG_CACHE_HOME/spectragent/benchmarks`（`XDG_CACHE_HOME` 也没设时是 `~/.cache/spectragent/benchmarks`），在仓库之外（`core/data_loader/_common.py::benchmark_data_root`，d 段起；之前是包里的 `spectragent/benchmark_data/`，在仓库里，只有设了变量才走得通）。与 Android 服务 APK 的构建缓存（`$XDG_CACHE_HOME/spectragent/android-service`，§11.2）同在一个缓存目录下。
 
 - 从不悄悄下载：缺了数据源就拒绝，给出确切的命令（`spectragent benchmark fetch <alias>`）；`run` 与 `bench` 带 `--fetch` 才下载。用户说的是在 `prepare()` 里拒绝；可任务加载器在构造时就读数据（`TaskLoaderBase.__post_init__`，`core/data_loader/task/_registrar.py`），那是在组装时、`prepare()` 之前，所以这一查要在加载器读数据之前做，不能等到 `prepare()`（协调者 2026-11-03 指出）。拒绝照样在 trace 打开之前、任何东西启动之前。
 - 数据源与版本都钉住（Hugging Face 的仓库加 revision，或 git 加 commit），下载之后核对，版本记进 trace。

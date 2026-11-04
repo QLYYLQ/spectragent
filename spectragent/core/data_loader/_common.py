@@ -15,17 +15,18 @@ import os
 from pathlib import Path
 from typing import Any
 
-from spectragent import BENCHMARK_DATA_ROOT
-
-#: Environment variable naming an alternative benchmark-data root.
+#: Environment variable naming the benchmark-data root.
 #:
-#: The shipped tree is not part of the distribution (see
-#: ``[tool.setuptools.package-data]``), so an installed spectragent has no
-#: data at all. ``data_dir`` on the loader config only fixes one loader at
-#: a time — a run needs the same benchmark named twice, once on the task
-#: loader and once on the eval loader — so pointing the *root* somewhere
-#: else has to be expressible in one place.
+#: No data ships with spectragent, and the root is shared by every checkout
+#: and worktree, so it lives outside the repository: unset, it is the cache
+#: below (``docs/architecture_design.md`` §4.10.1 "数据"). ``data_dir`` on
+#: the loader config only fixes one loader at a time — a run needs the same
+#: benchmark named twice, once on the task loader and once on the eval
+#: loader — so pointing the *root* somewhere else has to be expressible in
+#: one place.
 BENCHMARK_DATA_ENV: str = "SPECTRAGENT_BENCHMARK_DATA"
+#: The root under the user's cache directory when the variable is unset.
+_CACHE_SUBDIR = ("spectragent", "benchmarks")
 
 #: Wrapper keys recognised when a JSON data file holds records under a key.
 _WRAPPER_KEYS = ("tasks", "data", "records", "items")
@@ -42,15 +43,20 @@ class BenchmarkDataError(RuntimeError):
 def benchmark_data_root() -> Path:
     """The root every benchmark's data directory hangs off.
 
-    ``$SPECTRAGENT_BENCHMARK_DATA`` wins over the in-package default so a
-    single environment variable relocates *every* loader in a run. Read on
-    each call rather than captured at import: a module-level snapshot would
-    be global state, and tests that relocate the root would need a reload.
+    ``$SPECTRAGENT_BENCHMARK_DATA`` when set, so a single environment
+    variable relocates *every* loader in a run; otherwise the shared cache,
+    ``$XDG_CACHE_HOME/spectragent/benchmarks`` (``~/.cache/spectragent/benchmarks``
+    when that is unset too), where ``spectragent benchmark fetch`` and
+    ``spectragent benchmark setup`` write. Read on each call rather than
+    captured at import: a module-level snapshot would be global state, and
+    tests that relocate the root would need a reload.
     """
     override = os.environ.get(BENCHMARK_DATA_ENV)
     if override:
         return Path(override).expanduser()
-    return BENCHMARK_DATA_ROOT
+    cache = os.environ.get("XDG_CACHE_HOME")
+    base = Path(cache).expanduser() if cache else Path.home() / ".cache"
+    return base.joinpath(*_CACHE_SUBDIR)
 
 
 def resolve_data_dir(env_type: str, registry_key: str, data_dir: str | None) -> Path:

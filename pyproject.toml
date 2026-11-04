@@ -108,11 +108,12 @@ include-package-data = false
 # directory is deliberately not a package, so discovery never imports them
 # (they import android_world), and this glob is what ships them.
 #
-# `benchmark_data/**` is deliberately NOT here. Globbing it made the wheel a
+# No benchmark data is here. Globbing a data directory made the wheel a
 # function of the build machine's disk: a checkout without the data emits a
 # smaller wheel under the same version, and a licensed 5 MB dataset is not
-# something to ship by accident. Loaders find it via `data_dir:` or
-# `$SPECTRAGENT_BENCHMARK_DATA` instead — see configs/README.md.
+# something to ship by accident. Loaders read it from the shared cache
+# outside the checkout (`$SPECTRAGENT_BENCHMARK_DATA`, else
+# `~/.cache/spectragent/benchmarks`) or a loader's `data_dir:` — see configs/README.md.
 [tool.setuptools.package-data]
 "spectragent" = [
     "prompts/**/*",

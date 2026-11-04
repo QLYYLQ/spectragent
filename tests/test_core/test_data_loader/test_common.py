@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from spectragent import BENCHMARK_DATA_ROOT
 from spectragent.core.data_loader._common import (
     BENCHMARK_DATA_ENV,
     BenchmarkDataError,
+    benchmark_data_root,
     load_split_map,
     parse_file,
     resolve_data_dir,
@@ -22,29 +22,44 @@ from spectragent.core.data_loader._common import (
     resolve_task_id,
 )
 
+#: The default root when neither variable is set: the shared cache.
+_CACHE_ROOT = Path.home() / ".cache" / "spectragent" / "benchmarks"
+
 
 class TestResolveDataDir:
     @pytest.fixture(autouse=True)
     def _unset_env_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The default-root cases must not depend on the developer's shell."""
         monkeypatch.delenv(BENCHMARK_DATA_ENV, raising=False)
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+
+    def test_the_default_root_is_the_shared_cache_outside_the_repository(self) -> None:
+        """Every checkout and worktree reads one copy (docs/architecture_design.md §4.10.1)."""
+        from spectragent import REPO_ROOT
+
+        assert benchmark_data_root() == _CACHE_ROOT
+        assert REPO_ROOT not in benchmark_data_root().parents
+
+    def test_the_cache_follows_xdg_cache_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+        assert benchmark_data_root() == tmp_path / "spectragent" / "benchmarks"
+        monkeypatch.setenv(BENCHMARK_DATA_ENV, str(tmp_path / "root"))
+        assert benchmark_data_root() == tmp_path / "root"
 
     def test_env_type_is_the_directory_segment(self) -> None:
         assert resolve_data_dir("browser", "lexbench_browser", None) == (
-            BENCHMARK_DATA_ROOT / "browser" / "lexbench_browser"
+            _CACHE_ROOT / "browser" / "lexbench_browser"
         )
 
     def test_non_browser_env_types_are_addressable(self) -> None:
         # The whole point of the fix: these were unreachable when the
         # "browser" segment was hardcoded.
-        assert resolve_data_dir("docker", "swebench", None) == (
-            BENCHMARK_DATA_ROOT / "docker" / "swebench"
-        )
-        assert resolve_data_dir("desktop", "osworld", None) == (
-            BENCHMARK_DATA_ROOT / "desktop" / "osworld"
-        )
+        assert resolve_data_dir("docker", "swebench", None) == (_CACHE_ROOT / "docker" / "swebench")
+        assert resolve_data_dir("desktop", "osworld", None) == (_CACHE_ROOT / "desktop" / "osworld")
         assert resolve_data_dir("mobile", "androidworld", None) == (
-            BENCHMARK_DATA_ROOT / "mobile" / "androidworld"
+            _CACHE_ROOT / "mobile" / "androidworld"
         )
 
     def test_no_browser_segment_leaks_in(self) -> None:
@@ -67,7 +82,7 @@ class TestResolveDataDir:
         assert resolve_data_dir("browser", "browsecomp", None) == (
             tmp_path / "browser" / "browsecomp"
         )
-        assert BENCHMARK_DATA_ROOT not in resolve_data_dir("browser", "browsecomp", None).parents
+        assert _CACHE_ROOT not in resolve_data_dir("browser", "browsecomp", None).parents
 
     def test_explicit_data_dir_beats_the_env_var(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -81,7 +96,7 @@ class TestResolveDataDir:
         """``SPECTRAGENT_BENCHMARK_DATA=`` must not resolve to the CWD."""
         monkeypatch.setenv(BENCHMARK_DATA_ENV, "")
         assert resolve_data_dir("browser", "browsecomp", None) == (
-            BENCHMARK_DATA_ROOT / "browser" / "browsecomp"
+            _CACHE_ROOT / "browser" / "browsecomp"
         )
 
     def test_tilde_is_expanded_on_both_escape_hatches(

@@ -808,8 +808,9 @@ benchmark:
       data_dir: ~/somewhere/else/browsecomp
 ```
 
-Precedence is `data_dir:` > `$SPECTRAGENT_BENCHMARK_DATA` > the in-package
-`spectragent/benchmark_data/` directory. Tests that read shipped data skip
+Precedence is `data_dir:` > `$SPECTRAGENT_BENCHMARK_DATA` > the shared cache
+`$XDG_CACHE_HOME/spectragent/benchmarks` (`~/.cache/spectragent/benchmarks` when
+`XDG_CACHE_HOME` is unset), outside every checkout, so all worktrees read one copy. Tests that read shipped data skip
 themselves — naming the dataset — when none of the three resolves.
 
 A browser task's start page must be one complete `http://` or `https://` URL.
