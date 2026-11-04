@@ -220,7 +220,9 @@ async def verify_restoration(self, recorded: Any, restored: Any) -> MyRestoratio
   only the action reasons (`retarget_*`, `action_failed`) and `strict | warn`
   (`core/loops/restore/checks.py::judge`). The browser's is
   `core/capabilities/browser/restoration_evidence.py::BrowserRestorationEvidence`
-  (`screenshot_max_distance`, `media_time_tolerance_s` are BrowserCapability knobs).
+  (`screenshot_max_distance`, `media_time_tolerance_s` are BrowserCapability knobs);
+  Android's is `core/capabilities/android/restoration_evidence.py::AndroidRestorationEvidence`
+  (`screenshot_max_distance`, `clock_max_difference_s` are AndroidCapability knobs).
 - **Reads the two observations handed to it**, whole `NegotiatedObservation`s. Read
   your own fragments by local name and check their type (a failed capture is a
   `FragmentFailure`, a fragment this run did not negotiate is absent). No step numbers, no
@@ -230,8 +232,12 @@ async def verify_restoration(self, recorded: Any, restored: Any) -> MyRestoratio
   call. That makes `verify_restoration` order-dependent, so restorers call it exactly once
   per restored observation; test that a second call reads 0.
 - **Put the logic in pure functions of its own module** and keep the capability methods
-  one-line delegations (the browser: `retarget_action`, `measure`, `element_signature`,
-  `dhash` in `core/capabilities/browser/restoration.py`). A knob it needs is an
+  one-line delegations (the browser: `retarget_action`, `measure`, `element_signature`
+  in `core/capabilities/browser/restoration.py`; Android: the same in
+  `core/capabilities/android/restoration.py`). A screenshot comparison uses the shared
+  difference hash (`core/image_hash.py`: `dhash`, `image_dhash`, `hamming`), masking
+  first what your screens change on their own (the browser its media areas, Android
+  its status bar). A knob it needs is an
   `Annotated` constructor parameter (`retarget_tolerance_px`), regenerated like any other.
   State it needs between measurements (the browser's last-seen replay-log
   `diverged_total`) is reset in `setup` / `teardown`.
@@ -276,6 +282,11 @@ async def align_next_observation(self, recorded: Any) -> None: ...
   second, higher-priority connection of the screenshot resolver with the complementary
   filter); every other capture keeps the connection order. Measured: with the DOM first a
   playing video moved 0.6 s at 5,000 elements and 3.5 s at 30,000, past the 1 s tolerance.
+  Android aligns its device clock the same way, with no switch (§11.2 "分支回放落地了什么"):
+  after the settle wait it sets the clock to the recorded capture's (`cmd alarm set-time`),
+  waits for a still screen again so what shows the time redraws, sets it once more so that
+  wait's own time is taken back, then asks its sources; the report is a `ClockAlignment` on
+  `AndroidRestorationEvidence.clock_alignment`, judged through `clock_difference`.
 - **Belongs to one observation only.** Bind the request to the next cycle
   (`begin_observation`); a later cycle drops it, and the next `verify_restoration` takes
   the report whether or not a capture acted on it. So nothing is ever aligned after the
