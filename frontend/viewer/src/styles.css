@@ -673,6 +673,7 @@ pre {
   color: #8a969d;
   margin-top: 16px;
   max-width: 820px;
+  overflow-wrap: anywhere;
 }
 .text-button {
   color: var(--accent);
