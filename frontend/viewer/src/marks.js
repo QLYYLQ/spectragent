@@ -71,7 +71,10 @@ export function markLayout(data) {
         }
         if (box) shape.box = box;
         if (shape.end) shape.angle = angle(shape, shape.end);
-        if (mark.kind === "type" && mark.typed) shape.typed = mark.typed;
+        if (mark.kind === "type" && mark.typed) {
+          shape.typed = mark.typed;
+          shape.typedLeft = x / data.width > 0.55;
+        }
         return shape;
       }),
   }));

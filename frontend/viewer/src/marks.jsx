@@ -88,7 +88,7 @@ export function MarkLayer({ data }) {
             </span>
             {shape.typed && (
               <span
-                className="mark-typed"
+                className={`mark-typed ${shape.typedLeft ? "left" : ""}`}
                 style={{ ...at(shape), "--mark": set.color, "--stack": shape.stack }}
               >
                 “{shape.typed}”

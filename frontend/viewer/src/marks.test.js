@@ -116,3 +116,11 @@ test("an element named with no recorded point is drawn as its box, numbered at t
   assert.equal(row.drawn, true);
   assert.match(row.note, /虚线框/);
 });
+
+test("typed text near an image's right edge is labelled to the left of its dot", () => {
+  const layout = markLayout({ width: 100, height: 100, sets: [{ marks: [
+    { number: 1, kind: "type", x: 80, y: 10, typed: "Emilia", text: "输入" },
+    { number: 2, kind: "type", x: 20, y: 10, typed: "Gonzalez", text: "输入" },
+  ] }] });
+  assert.deepEqual(layout.sets[0].shapes.map((shape) => shape.typedLeft), [true, false]);
+});

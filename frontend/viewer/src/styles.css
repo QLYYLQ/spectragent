@@ -1746,11 +1746,14 @@ pre {
   width: auto;
   height: auto;
 }
+/* On a phone a pair stays side by side: both shrink to the same size, top-aligned. */
 @media (max-width: 600px) {
   .compare-row {
     --compare-height: 380px;
-    grid-template-columns: repeat(var(--compare-count, 2), minmax(120px, 1fr));
-    overflow-x: auto;
+    gap: 6px;
+  }
+  .compare-box {
+    padding: 3px;
   }
 }
 .compare-legend {
