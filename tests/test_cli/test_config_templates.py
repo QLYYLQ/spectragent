@@ -27,7 +27,7 @@ from spectragent.benchmarks.androidworld.tasks import instance_seed
 from spectragent.benchmarks.selection import BenchmarkSelectionError, read_benchmark, run_root
 from spectragent.cli import main
 from spectragent.cli.config_templates import TemplateChoices, render_config_template
-from spectragent.core.composer import ConfigComposer, UnresolvedWiringError
+from spectragent.core.composer import ComposeError, ConfigComposer, UnresolvedWiringError
 from spectragent.core.registries import (
     TemplateFlag,
     capability_declarations,
@@ -721,8 +721,8 @@ def test_a_capability_flag_that_shadows_a_framework_flag_is_refused(monkeypatch,
 # ── with a benchmark: what it supplies stays out of the run configuration ──
 
 
-def _androidworld(root: Path) -> Path:
-    """An AndroidWorld benchmark YAML over a small data directory: one task, a two-name table."""
+def _androidworld_data(root: Path) -> Path:
+    """A small AndroidWorld data directory: one task, a two-name table."""
     data = root / "data"
     data.mkdir(parents=True)
     (data / OPEN_APP_FILE).write_text(
@@ -742,6 +742,12 @@ def _androidworld(root: Path) -> Path:
         "start_on_home_screen": True,
     }
     (data / "All.json").write_text(json.dumps({"format": "androidworld-tasks-2", "tasks": [task]}))
+    return data
+
+
+def _androidworld(root: Path) -> Path:
+    """An AndroidWorld benchmark YAML over a small data directory: one task, a two-name table."""
+    data = _androidworld_data(root)
     benchmark = root / "androidworld.yaml"
     block = {
         "benchmark_id": "androidworld",
@@ -756,6 +762,15 @@ def _androidworld(root: Path) -> Path:
         ],
     }
     benchmark.write_text(yaml.safe_dump({"benchmark": [block]}))
+    return benchmark
+
+
+def _shipped_androidworld(root: Path) -> Path:
+    """The shipped ``configs/benchmarks/androidworld.yaml``, its task loader over a small data directory."""
+    shipped = yaml.safe_load(Path("configs/benchmarks/androidworld.yaml").read_text())
+    shipped["benchmark"][0]["task_loader"]["data_dir"] = str(_androidworld_data(root))
+    benchmark = root / "androidworld.yaml"
+    benchmark.write_text(yaml.safe_dump(shipped))
     return benchmark
 
 
@@ -792,6 +807,63 @@ def test_what_the_benchmark_supplies_is_left_out_and_named_where_it_would_sit(co
     assert capability.backend.avd == "AW"
     open_app = next(a for a in capability.actions if a.action_id == "android.open_app")
     assert open_app.apps == TABLE
+
+
+def test_m3a_on_androidworld_writes_its_official_values_and_none_the_benchmark_supplies(
+    composer, tmp_path
+):
+    """AndroidWorld's runner settings come from the benchmark; M3A's own from its start."""
+    benchmark = str(_shipped_androidworld(tmp_path))
+    text = render_config_template(
+        TemplateChoices(agent="m3a", model="m", benchmark=benchmark), composer=composer
+    )
+    raw = yaml.safe_load(text)
+    block = read_benchmark(benchmark)
+    supplied = composer.merge_capability_parts(run_root(raw, block)).supplied
+    # The benchmark's part: AndroidWorld's AVD, its runner's waits, typing and
+    # scroll (configs/benchmarks/androidworld.yaml), and the open_app table.
+    scroll_entry = ("actions", ("action_id", "android.scroll"))
+    assert {setting.path for setting in supplied} >= {
+        ("settle_max_wait_s",),
+        ("settle_quiet_ms",),
+        ("typing_backend", "typing_id"),
+        ("typing_backend", "fold_accents"),
+        (*scroll_entry, "swipe_to"),
+        (*scroll_entry, "duration_ms"),
+        ("backend", "avd"),
+    }
+    android = _android(raw)
+    assert not {"settle_max_wait_s", "settle_quiet_ms", "typing_backend"} & set(android)
+    scroll = next(a for a in android["actions"] if a["action_id"] == "android.scroll")
+    assert not {"swipe_to", "duration_ms"} & set(scroll)
+    assert "# settle_max_wait_s: 6.0, from the benchmark androidworld; left out here." in text
+    assert (
+        "# typing_backend.fold_accents: true, from the benchmark androidworld; left out here."
+    ) in text
+    # M3A's official llm and Loop values (AndroidWorld's Gpt4Wrapper: temperature 0.0).
+    agent = raw["agent"][0]
+    assert (agent["llm"]["temperature"], agent["llm"]["frequency_penalty"]) == (0.0, None)
+    loop = M3AAgent.__template_block__["agent_loop"]
+    assert isinstance(loop, dict)
+    assert {key: agent["agent_loop"][key] for key in loop} == loop
+    # Composed with the benchmark, the run gets AndroidWorld's settings.
+    capability = composer.compose(run_root(raw, block)).single("capability")
+    assert (capability.settle_max_wait_s, capability.settle_quiet_ms) == (6.0, 1000)
+    assert capability.typing_backend.fold_accents is True
+    scroll = next(a for a in capability.actions if a.action_id == "android.scroll")
+    assert (scroll.swipe_to, scroll.duration_ms) == ("target_edge", 300)
+
+
+def test_a_run_that_writes_a_benchmark_setting_differently_is_refused(composer, tmp_path):
+    benchmark = str(_shipped_androidworld(tmp_path))
+    raw = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="m3a", model="m", benchmark=benchmark), composer=composer
+        )
+    )
+    _android(raw)["settle_max_wait_s"] = 2.0
+    with pytest.raises(ComposeError, match="settle_max_wait_s"):
+        composer.compose(run_root(raw, read_benchmark(benchmark)))
 
 
 def test_from_with_a_benchmark_keeps_the_run_and_the_values_its_author_wrote(composer, tmp_path):

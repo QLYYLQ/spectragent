@@ -404,7 +404,7 @@ def _androidworld_m3a_config(tmp_path, monkeypatch, **loop) -> Path:
         "capability_id": "android",
         "service_apk": str(fake_service_apk(tmp_path)),
         "tap_injector": {"injector_id": "shell_injection"},
-        "typing_backend": {"typing_id": "set_text"},
+        # No typing_backend: the benchmark supplies AndroidWorld's (key_events).
         "ui_tree_cleaner": {"cleaner_id": "androidworld"},
         "ui_tree_serializer": {"serializer_id": "m3a"},
     }
@@ -451,6 +451,7 @@ def test_config_check_with_androidworld_alone_merges_its_part_and_checks_without
     explained = json.loads(capsys.readouterr().out)
     (block,) = explained["resolved"]["environment"][0]["capabilities"]
     assert block["backend"]["avd"] == "AndroidWorldAvd"
+    assert (block["typing_backend"]["typing_id"], block["settle_max_wait_s"]) == ("key_events", 6.0)
     (open_app,) = [a for a in block["actions"] if a["action_id"] == "android.open_app"]
     assert open_app["apps"] == ANDROIDWORLD_APPS
 

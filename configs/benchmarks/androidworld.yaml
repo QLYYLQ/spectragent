@@ -21,9 +21,24 @@
 #
 # The benchmark's part of the Android capability's configuration is merged into
 # the run configuration's Android block (§4.10.1): the AVD AndroidWorld's one-time
-# setup prepared, below, and the open_app name table, read from beside the task
-# lists. The run configuration writes neither; a field both write differently is
-# refused.
+# setup prepared, AndroidWorld's harness settings, below, and the open_app name
+# table, read from beside the task lists. The run configuration writes none of
+# them; a field both write differently is refused.
+#
+# The harness settings are how AndroidWorld's own runner drives every agent, at
+# its pinned commit 55ddaf5e (android_world/ in its checkout):
+#   settle_max_wait_s 6, settle_quiet_ms 1000: before each step's screen it waits
+#     up to 6 s for the element list to stay the same over three reads 0.5 s apart
+#     (env/interface.py:243-290, from agents/base_agent.py:101-106);
+#   typing: adb shell input text with the text decomposed and every non-ASCII
+#     character dropped (env/adb_utils.py:472-494, 511-545), which is the
+#     key_events backend with fold_accents;
+#   android.scroll: from the centre of the element (else the screen) to its edge
+#     (env/actuation.py:138-163), sent as adb shell input swipe with no duration
+#     (env/adb_utils.py:754-783), which the device runs in 300 ms (Android's
+#     InputShellCommand.sendSwipe).
+# Its MiniWoB++ tasks wait differently (no still-screen wait, a 0.2 s pause before
+# each read, run.py:141-142, 218-222); this file does not set that yet.
 #
 # Each task boots its own emulator. With spectragent bench --reuse-environment the
 # tasks of a sweep share one: the setup resets the device between tasks, as
@@ -43,3 +58,8 @@ benchmark:
     capability:
       - capability_id: android
         backend: {provider_id: local_emulator, avd: AndroidWorldAvd}
+        settle_max_wait_s: 6.0
+        settle_quiet_ms: 1000
+        typing_backend: {typing_id: key_events, fold_accents: true}
+        actions:
+          - {action_id: android.scroll, swipe_to: target_edge, duration_ms: 300}
