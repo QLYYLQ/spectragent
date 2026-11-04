@@ -46,6 +46,7 @@ from spectragent.core.capability_merge import (
     CapabilityMergeError,
     Contribution,
     UnusedOptions,
+    written,
 )
 from spectragent.core.composer import ComposeError, ConfigComposer
 from spectragent.core.data_loader._common import BenchmarkDataError
@@ -286,6 +287,39 @@ def test_the_merged_block_is_what_the_run_builds_and_records(tmp_path: Path) -> 
     (environment,) = resolved["environment"]
     assert environment["capabilities"][0]["backend"]["avd"] == "AW"
     assert resolved["benchmark"][0]["capability"][0]["backend"]["avd"] == "AW", "its part stays"
+
+
+def test_what_a_part_supplies_is_recorded_field_by_field(tmp_path: Path) -> None:
+    # The run leaves the backend out: each of its fields is the benchmark's.
+    raw = _run(
+        _android(backend=None),
+        _table(tmp_path),
+        {"capability_id": "android", "backend": {"provider_id": "local_emulator", "avd": "AW"}},
+    )
+    supplied = ConfigComposer.for_config(raw).merge_capability_parts(raw).supplied
+
+    block = ("environment", 0, "capabilities", 0)
+    assert [(item.block, written(item.path), item.source) for item in supplied] == [
+        (block, "backend.provider_id", "the benchmark androidworld"),
+        (block, "backend.avd", "the benchmark androidworld"),
+        (block, "actions[android.open_app].apps", "the benchmark androidworld, computed in code"),
+    ]
+    assert supplied[-1].path == ("actions", ("action_id", "android.open_app"), "apps")
+    assert supplied[-1].value == TABLE, "a free-form map is one setting"
+
+
+def test_a_value_the_run_writes_too_is_not_recorded_as_supplied(tmp_path: Path) -> None:
+    raw = _run(
+        _android(backend={"provider_id": "local_emulator"}),
+        _table(tmp_path),
+        {"capability_id": "android", "backend": {"provider_id": "local_emulator", "avd": "AW"}},
+    )
+    supplied = ConfigComposer.for_config(raw).merge_capability_parts(raw).supplied
+
+    assert [written(item.path) for item in supplied] == [
+        "backend.avd",
+        "actions[android.open_app].apps",
+    ]
 
 
 # ── what is refused ──────────────────────────────────────────────────

@@ -35,6 +35,12 @@ that capability (:meth:`CapabilityMerge.merge`):
   instead, since its entries are not the default list (coordinator decision
   2026-11-04).
 
+The merge records each setting a part supplied that the run configuration
+leaves out (:class:`SuppliedSetting`), one per leaf: a field of a strategy
+block or of a block of settings, or a free-form map whole. ``config template
+--benchmark`` leaves them out of the run configuration it writes (§4.17 "带基准
+的模板").
+
 The per-task data stays in the per-task setup channel (``TaskContext.env``)
 and is never merged. The merged block is what the run validates, constructs
 and records (``resolved``), so the trace and ``config_hash`` hold the merged
@@ -64,6 +70,29 @@ ENVIRONMENT_CAPABILITIES = "capabilities"
 _SHOWN = 120
 #: How many keys of a map in a conflict are named before the rest are counted.
 _NAMED = 3
+
+#: Where a setting sits inside a capability block: its field names, and for an
+#: entry of a list of strategy blocks (``actions``) the entry's discriminator
+#: field and key: ``("actions", ("action_id", "android.open_app"), "apps")``.
+SettingPath = tuple[str | tuple[str, str], ...]
+#: Where a capability block sits in the run root: ``("environment", 0, "capabilities", 0)``.
+BlockLocation = tuple[str | int, ...]
+
+
+def written(path: SettingPath) -> str:
+    """*path* as messages write it: ``backend.avd``, ``actions[android.open_app].apps``."""
+    text = ""
+    for part in path:
+        text += f"[{part[1]}]" if isinstance(part, tuple) else f".{part}" if text else part
+    return text
+
+
+def located(location: BlockLocation) -> str:
+    """*location* as messages write it: ``environment[0].capabilities[0]``."""
+    text = ""
+    for part in location:
+        text += f"[{part}]" if isinstance(part, int) else f".{part}" if text else part
+    return text
 
 
 @dataclass(frozen=True)
@@ -116,11 +145,30 @@ class UnusedOptions:
 
 
 @dataclass(frozen=True)
+class SuppliedSetting:
+    """A setting a part wrote that the run configuration's block leaves out: the part supplied it.
+
+    Attributes:
+        block: Where the capability block sits in the run root.
+        path: Where the setting sits in the block.
+        source: Who wrote it: ``the benchmark androidworld``.
+        value: What it wrote.
+    """
+
+    block: BlockLocation
+    path: SettingPath
+    source: str
+    value: JsonValue
+
+
+@dataclass(frozen=True)
 class MergedSections:
-    """The run's sections with the parts merged in, and the options the merge left unused."""
+    """The run's sections with the parts merged in, the options left unused and the settings supplied."""
 
     sections: dict[str, object]
     unused: tuple[UnusedOptions, ...] = ()
+    #: In the order the parts wrote them.
+    supplied: tuple[SuppliedSetting, ...] = ()
 
 
 class CapabilityMergeError(ValueError):
@@ -146,18 +194,35 @@ class _Side:
 
 @dataclass
 class _Block:
-    """A capability block of the run configuration being merged: its path, its fields, who wrote each."""
+    """A capability block of the run configuration being merged: where it is, its fields, who wrote each."""
 
-    path: str
+    location: BlockLocation
     fields: dict[str, JsonValue]
     #: The layers the run writes a top-level section of, with entries: a list
     #: the block leaves out takes that section's instances when it is composed.
     pooled: frozenset[str] = frozenset()
-    #: Field path within the block (``backend.avd``) → who wrote it; the run
-    #: configuration for what this map leaves out.
-    written_by: dict[str, _Side] = field(default_factory=dict)
+    #: Setting path within the block → who wrote it; the run configuration for
+    #: what this map leaves out.
+    written_by: dict[SettingPath, _Side] = field(default_factory=dict)
     #: Options parts set on list entries this block's lists leave out.
     unused: list[UnusedOptions] = field(default_factory=list)
+    #: What the parts supplied, in the order they wrote it.
+    supplied: list[SuppliedSetting] = field(default_factory=list)
+
+    @property
+    def path(self) -> str:
+        return located(self.location)
+
+    def at(self, path: SettingPath) -> str:
+        """The setting at *path* in this block, as messages write it."""
+        return f"{self.path}.{written(path)}"
+
+    def wrote(self, path: SettingPath, side: _Side, value: JsonValue) -> None:
+        """Record that *side* supplied *value* at *path*, which the run configuration leaves out."""
+        self.written_by[path] = side
+        self.supplied.append(
+            SuppliedSetting(self.location, path, side.source, copy.deepcopy(value))
+        )
 
 
 class CapabilityMerge:
@@ -224,7 +289,7 @@ class CapabilityMerge:
         and each environment's ``capabilities``; a part goes into every block of
         its ``capability_id``. *sections* is not changed: the result is a copy,
         with the options set on entries a block's list leaves out, which are
-        not used.
+        not used, and the settings the parts supplied.
 
         Raises:
             CapabilityMergeError: ``capability_without_block`` when a part's
@@ -235,7 +300,9 @@ class CapabilityMerge:
         pooled = frozenset(
             name for name, value in merged.items() if isinstance(value, list) and value
         )
-        blocks = [_Block(block.path, block.fields, pooled) for block in _capability_blocks(merged)]
+        blocks = [
+            _Block(block.location, block.fields, pooled) for block in _capability_blocks(merged)
+        ]
         problems: list[MergeProblem] = []
         missing: list[MergeProblem] = []
         for contribution in contributions:
@@ -257,13 +324,17 @@ class CapabilityMerge:
                     side,
                     definition.implementation,
                     definition.config_model,
-                    here="",
+                    here=(),
                 )
         if missing:
             raise CapabilityMergeError(missing)
         if problems:
             raise CapabilityMergeError(problems)
-        return MergedSections(merged, tuple(unused for block in blocks for unused in block.unused))
+        return MergedSections(
+            merged,
+            tuple(unused for block in blocks for unused in block.unused),
+            tuple(supplied for block in blocks for supplied in block.supplied),
+        )
 
     # -- one block --------------------------------------------------------
 
@@ -276,54 +347,53 @@ class CapabilityMerge:
         owner: type | None,
         model: type | None,
         *,
-        here: str,
+        here: SettingPath,
     ) -> list[MergeProblem]:
         """Merge *part* into *into* (inside *target* at *here*).
 
         *part* is a block of the component *owner* (``None``: a block of plain
         settings, which has no receptors), validated by *model*. A field
         *part* writes ``null`` is not written: ``null`` says an optional
-        setting is not set.
+        setting is not set. A strategy block or block of settings the run
+        configuration leaves out is merged into an empty one, so each of its
+        fields is recorded as supplied on its own.
         """
         problems: list[MergeProblem] = []
         slots = wiring_slots(owner) if owner is not None else {}
         for name, value in part.items():
             if value is None:
                 continue
-            at = f"{here}.{name}" if here else name
+            at = (*here, name)
             existing = into.get(name)
-            if existing is None:
-                if isinstance(value, list) and self._list_receptor(slots.get(name)):
-                    # Left out by the run configuration: the default list, set on.
-                    entry = slots[name]
-                    problems += self._merge_list(target, into, name, value, side, entry, at=at)
-                else:
-                    into[name] = copy.deepcopy(value)
-                    target.written_by[at] = side
-                continue
             entry = slots.get(name)
             if (
                 isinstance(value, list)
-                and isinstance(existing, list)
+                and (existing is None or isinstance(existing, list))
                 and self._list_receptor(entry)
             ):
+                # Left out by the run configuration: the default list, set on.
                 assert entry is not None
                 problems += self._merge_list(target, into, name, value, side, entry, at=at)
             elif (
                 isinstance(value, Mapping)
-                and isinstance(existing, dict)
+                and (existing is None or isinstance(existing, dict))
                 and self._strategy_receptor(entry)
             ):
                 assert entry is not None
-                problems += self._merge_strategy(target, existing, value, side, entry, at=at)
+                problems += self._merge_strategy(
+                    target, _block_in(into, name), value, side, entry, at=at
+                )
             elif (
                 isinstance(value, Mapping)
-                and isinstance(existing, dict)
+                and (existing is None or isinstance(existing, dict))
                 and (settings := _settings_model(model, name)) is not None
             ):
                 problems += self._merge_block(
-                    target, existing, value, side, None, settings, here=at
+                    target, _block_in(into, name), value, side, None, settings, here=at
                 )
+            elif existing is None:
+                into[name] = copy.deepcopy(value)
+                target.wrote(at, side, value)
             elif existing != value:
                 problems.append(self._conflict(target, at, existing, value, side))
         return problems
@@ -336,9 +406,9 @@ class CapabilityMerge:
         side: _Side,
         entry: WiringSlot,
         *,
-        at: str,
+        at: SettingPath,
     ) -> list[MergeProblem]:
-        """Merge one strategy block (``backend``) two sides write: inside it, when both name one strategy.
+        """Merge one strategy block (``backend``) into the run's: inside it, when both name one strategy.
 
         A side that names none takes the layer's only strategy: the part's
         check refused a block without its discriminator where there are two.
@@ -346,13 +416,13 @@ class CapabilityMerge:
         layer = entry.spec.registry_name
         discriminator = _discriminator(self._registrars.get(layer))
         if discriminator is None:
-            return [] if existing == value else [self._conflict(target, at, existing, value, side)]
+            return self._whole(target, existing, value, side, at)
         mine, theirs = existing.get(discriminator), value.get(discriminator)
         if mine is not None and theirs is not None and mine != theirs:
-            return [self._conflict(target, f"{at}.{discriminator}", mine, theirs, side)]
+            return [self._conflict(target, (*at, discriminator), mine, theirs, side)]
         definition = self._definition(layer, mine if mine is not None else theirs)
         if definition is None:
-            return [] if existing == value else [self._conflict(target, at, existing, value, side)]
+            return self._whole(target, existing, value, side, at)
         return self._merge_block(
             target,
             existing,
@@ -372,7 +442,7 @@ class CapabilityMerge:
         side: _Side,
         entry: WiringSlot,
         *,
-        at: str,
+        at: SettingPath,
     ) -> list[MergeProblem]:
         """Merge a list of strategy blocks (``actions``): options on entries already there, none added or removed.
 
@@ -388,14 +458,14 @@ class CapabilityMerge:
         if discriminator is None:
             if base is None:
                 into[name] = copy.deepcopy(value)
-                target.written_by[at] = side
+                target.wrote(at, side, value)
                 return []
             return [] if base == value else [self._conflict(target, at, base, value, side)]
         if not isinstance(base, list):
             if layer in target.pooled:
                 return [
                     MergeProblem(
-                        f"{target.path}.{at}",
+                        target.at(at),
                         f"{side} sets options on the {name} of this block, which leaves {name} "
                         f"out and so takes the run configuration's top-level {layer!r} section; a "
                         f"part sets options only on entries written in the capability block: "
@@ -415,12 +485,12 @@ class CapabilityMerge:
             if not isinstance(item, Mapping):
                 continue
             key = item.get(discriminator)
-            where = f"{at}[{key}]"
+            where = (*at, (discriminator, str(key)))
             if key in seen:
                 # A fault of the part: named where the part writes it.
                 problems.append(
                     MergeProblem(
-                        f"{side.path}.{at}[{position}]",
+                        f"{side.path}.{written(at)}[{position}]",
                         f"{side} sets options on {key!r} twice; a part sets each entry's "
                         f"options once",
                         "capability_contribution_invalid",
@@ -438,9 +508,9 @@ class CapabilityMerge:
                 if options:
                     target.unused.append(
                         UnusedOptions(
-                            f"{target.path}.{where}",
+                            target.at(where),
                             f"{side} sets {', '.join(options)} on {key}, which this run's {name} "
-                            f"list ({target.path}.{at}) leaves out",
+                            f"list ({target.at(at)}) leaves out",
                         )
                     )
                 continue
@@ -486,8 +556,23 @@ class CapabilityMerge:
             return only[0] if len(only) == 1 else None
         return components.get(key) if isinstance(key, str) else None
 
+    def _whole(
+        self,
+        target: _Block,
+        existing: dict[str, JsonValue],
+        value: Mapping[str, JsonValue],
+        side: _Side,
+        at: SettingPath,
+    ) -> list[MergeProblem]:
+        """A strategy block not merged inside: taken whole where the run left it empty, else compared."""
+        if not existing:
+            existing.update(copy.deepcopy(dict(value)))
+            target.wrote(at, side, dict(value))
+            return []
+        return [] if existing == value else [self._conflict(target, at, existing, value, side)]
+
     def _conflict(
-        self, target: _Block, at: str, existing: object, value: object, side: _Side
+        self, target: _Block, at: SettingPath, existing: object, value: object, side: _Side
     ) -> MergeProblem:
         first = _first_writer(target, at)
         if (
@@ -496,15 +581,15 @@ class CapabilityMerge:
             and max(len(repr(existing)), len(repr(value))) > _SHOWN
         ):
             # A map cut short (open_app's 117 names) says nothing: say where the two differ.
-            written = (
+            said = (
                 f"{first} writes {_entries(existing)} and {side} writes {_entries(value)}, "
                 f"which differ ({_difference(existing, value)})"
             )
         else:
-            written = f"{first} writes {_shown(existing)} and {side} writes {_shown(value)}"
+            said = f"{first} writes {_shown(existing)} and {side} writes {_shown(value)}"
         return MergeProblem(
-            f"{target.path}.{at}",
-            f"{written}; a run takes each setting from one side only: leave it out of one of "
+            target.at(at),
+            f"{said}; a run takes each setting from one side only: leave it out of one of "
             f"them, or write the same value in both",
             "capability_setting_conflict",
         )
@@ -519,14 +604,21 @@ def _without_block(contribution: Contribution, capability_id: object) -> MergePr
     )
 
 
-def _first_writer(target: _Block, at: str) -> _Side:
+def _first_writer(target: _Block, at: SettingPath) -> _Side:
     """Who wrote the value at *at* first: the nearest recorded writer of it or of a block holding it."""
-    parts = at.split(".")
-    for end in range(len(parts), 0, -1):
-        side = target.written_by.get(".".join(parts[:end]))
+    for end in range(len(at), 0, -1):
+        side = target.written_by.get(at[:end])
         if side is not None:
             return side
     return _Side("the run configuration", target.path)
+
+
+def _block_in(into: dict[str, JsonValue], name: str) -> dict[str, JsonValue]:
+    """The block *into* holds at *name*, an empty one put there when it holds none."""
+    block = into.get(name)
+    if not isinstance(block, dict):
+        block = into[name] = {}
+    return block
 
 
 def _capability_blocks(sections: dict[str, object]) -> list[_Block]:
@@ -535,19 +627,19 @@ def _capability_blocks(sections: dict[str, object]) -> list[_Block]:
     top = sections.get(CAPABILITY_SECTION)
     for index, item in enumerate(top if isinstance(top, list) else []):
         if isinstance(item, dict):
-            blocks.append(_Block(f"{CAPABILITY_SECTION}[{index}]", _json(item)))
+            blocks.append(_Block((CAPABILITY_SECTION, index), _json(item)))
     environments = sections.get(ENVIRONMENT_SECTION)
     for index, environment in enumerate(environments if isinstance(environments, list) else []):
         if not isinstance(environment, dict):
             continue
         held = environment.get(ENVIRONMENT_CAPABILITIES)
-        where = f"{ENVIRONMENT_SECTION}[{index}].{ENVIRONMENT_CAPABILITIES}"
+        where: BlockLocation = (ENVIRONMENT_SECTION, index, ENVIRONMENT_CAPABILITIES)
         if isinstance(held, dict):
             blocks.append(_Block(where, _json(held)))
         elif isinstance(held, list):
             for position, item in enumerate(held):
                 if isinstance(item, dict):
-                    blocks.append(_Block(f"{where}[{position}]", _json(item)))
+                    blocks.append(_Block((*where, position), _json(item)))
     return blocks
 
 
@@ -647,10 +739,15 @@ def _named(keys: Sequence[object]) -> str:
 
 
 __all__ = [
+    "BlockLocation",
     "CapabilityMerge",
     "CapabilityMergeError",
     "Contribution",
     "MergeProblem",
     "MergedSections",
+    "SettingPath",
+    "SuppliedSetting",
     "UnusedOptions",
+    "located",
+    "written",
 ]
