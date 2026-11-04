@@ -461,6 +461,29 @@ class TestErrors:
         assert "constructor-secret-sentinel" not in issue.message
         assert isinstance(refused.value.__cause__, ValueError)
 
+    def test_a_constructors_refusal_is_passed_through_in_its_own_words(
+        self, registrars: dict[str, Any]
+    ) -> None:
+        """A ``Refusal`` is written for the user (``core/refusal.py``): its message is the issue's."""
+        from spectragent.core.composer import InstantiationError
+        from spectragent.core.refusal import Refusal
+
+        class Refusing(_LocalBackend):
+            __registry_key__ = "refusing_plainly"
+
+            def __init__(self, **kwargs):
+                raise Refusal("no data at /data/x: fetch it with spectragent benchmark fetch x")
+
+        composer = ConfigComposer(registrars=registrars)
+        with pytest.raises(InstantiationError) as refused:
+            composer.compose({"cmp_backend": [{"name": "refusing_plainly"}]})
+        issue = refused.value.issue
+        assert issue is not None
+        assert (issue.code, issue.path) == ("component_refused", "cmp_backend[0]")
+        assert issue.message == "no data at /data/x: fetch it with spectragent benchmark fetch x"
+        assert str(refused.value) == f"cmp_backend[0]: {issue.message}"
+        assert isinstance(refused.value.__cause__, Refusal)
+
     def test_a_layer_with_no_implementation_is_left_out(self, registrars: dict[str, Any]) -> None:
         # A run composes against the layers whose implementations it imported:
         # an empty one is no section of the schema, not a refusal

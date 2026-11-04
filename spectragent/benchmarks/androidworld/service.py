@@ -56,6 +56,7 @@ from spectragent.core.capabilities.android.backends.base import (
 )
 from spectragent.core.capabilities.android.processes import ProcessGroup, finish, log_tail
 from spectragent.core.data_loader._common import resolve_data_dir
+from spectragent.core.refusal import Refusal
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,7 @@ class AndroidWorldError(RuntimeError):
     """AndroidWorld's service failed, answered an error, or answered something it never does."""
 
 
-class AndroidWorldSetupError(ValueError):
+class AndroidWorldSetupError(Refusal, ValueError):
     """The installation or the task is one the setup component would refuse to start; every problem named."""
 
 

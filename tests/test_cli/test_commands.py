@@ -455,6 +455,32 @@ def test_config_check_with_androidworld_alone_merges_its_part_and_checks_without
     assert open_app["apps"] == ANDROIDWORLD_APPS
 
 
+@pytest.mark.parametrize("command", [["config", "check"], ["run", "--dry-run", "--config"]])
+def test_a_loaders_refusal_reaches_the_user_in_its_own_short_words(
+    tmp_path, capsys, monkeypatch, command
+):
+    """A task list of an older format is refused by the loader's constructor; ``config check`` and
+    ``run --dry-run`` both show that refusal itself, in one line naming the file and the command
+    that writes it again, not a placeholder or pydantic's dump of every task."""
+    config = _androidworld_m3a_config(tmp_path, monkeypatch)
+    listing = tmp_path / "data" / "android" / "androidworld" / "All.json"
+    old = json.loads(listing.read_text())
+    old["format"] = "androidworld-tasks-1"
+    old["tasks"] = old["tasks"] * 40
+    listing.write_text(json.dumps(old))
+    task = ["--task-id", "SystemBrightnessMax/42/0"]
+
+    argv = ["--json", *command, str(config), "--benchmark", "androidworld", *task]
+    assert main(argv) == (2 if command[0] == "config" else 1)
+    error = json.loads(capsys.readouterr().out)["error"]
+    message = error["message"]
+    assert f"{listing} is not an AndroidWorld task list of format androidworld-tasks-2" in message
+    assert "spectragent benchmark fetch androidworld" in message
+    assert "\n" not in message and len(message) < 500
+    if command[0] == "config":
+        assert error["issues"][0]["code"] == "component_refused"
+
+
 def test_config_check_refuses_a_loop_m3a_cannot_run_on(tmp_path, capsys, monkeypatch):
     """M3A's ``input_text`` runs as two actions: one per reply is refused by ``prepare()``, so the
     check reports it rather than every task refusing at its start (``RunSettingsCheck``)."""

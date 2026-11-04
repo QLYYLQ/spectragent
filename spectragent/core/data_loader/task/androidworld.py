@@ -47,6 +47,7 @@ from spectragent.core.data_loader._common import (
     BenchmarkDataError,
     resolve_data_dir,
     resolve_split_file,
+    validation_summary,
 )
 from spectragent.core.data_loader.task._registrar import TaskLoaderBase
 from spectragent.core.registries import setup_class_for_env
@@ -100,8 +101,9 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
             ) from exc
         except ValidationError as exc:
             raise BenchmarkDataError(
-                f"{path} is not an AndroidWorld task list (format {TASK_LIST_FORMAT}, written "
-                f"by task_list.py; regenerate an older one): {exc}"
+                f"{path} is not an AndroidWorld task list of format {TASK_LIST_FORMAT} "
+                f"({validation_summary(exc)}): fetch it again with spectragent benchmark fetch "
+                f"androidworld"
             ) from exc
         setup_type = setup_class_for_env(self.env_type).__registry_key__
         tasks: dict[str, TaskDefinition] = {}

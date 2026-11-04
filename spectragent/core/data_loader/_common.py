@@ -15,6 +15,10 @@ import os
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
+from spectragent.core.refusal import Refusal
+
 #: Environment variable naming the benchmark-data root.
 #:
 #: No data ships with spectragent, and the root is shared by every checkout
@@ -36,8 +40,26 @@ _WRAPPER_KEYS = ("tasks", "data", "records", "items")
 _TASK_ID_KEYS = ("task_id", "id", "instance_id")
 
 
-class BenchmarkDataError(RuntimeError):
-    """Raised when benchmark data is missing, malformed, or empty."""
+class BenchmarkDataError(Refusal, RuntimeError):
+    """Raised when benchmark data is missing, malformed, or empty.
+
+    A :class:`~spectragent.core.refusal.Refusal`: its message names the file
+    and what is wrong with it in a few lines, so every command shows it as it
+    is, a loader's constructor included.
+    """
+
+
+def validation_summary(exc: ValidationError) -> str:
+    """*exc* in one line: how many problems, and where the first is and what it says.
+
+    A data file that is not what a loader reads can fail on every record;
+    pydantic's own text lists them all, hundreds of lines for one cause.
+    """
+    errors = exc.errors(include_input=False, include_context=False, include_url=False)
+    first = errors[0]
+    where = ".".join(str(part) for part in first["loc"]) or "the document"
+    count = f"{len(errors)} problems" if len(errors) > 1 else "1 problem"
+    return f"{count}, the first at {where}: {first['msg']}"
 
 
 def benchmark_data_root() -> Path:

@@ -26,7 +26,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
-from spectragent.core.data_loader._common import BenchmarkDataError
+from spectragent.core.data_loader._common import BenchmarkDataError, validation_summary
 
 #: The file beside the task lists that holds the table.
 OPEN_APP_FILE = "open_app.json"
@@ -61,8 +61,8 @@ def read_open_app_table(data_dir: Path) -> dict[str, str]:
     """
     path = data_dir / OPEN_APP_FILE
     rewrite = (
-        "task_list.py writes it beside the task lists (spectragent/benchmarks/androidworld/"
-        "androidworld_service/); run it again with the pinned checkout"
+        "task_list.py writes it beside the task lists; fetch them again with spectragent "
+        "benchmark fetch androidworld"
     )
     try:
         table = OpenAppTable.model_validate_json(path.read_bytes())
@@ -76,8 +76,8 @@ def read_open_app_table(data_dir: Path) -> dict[str, str]:
         ) from exc
     except ValidationError as exc:
         raise BenchmarkDataError(
-            f"{path} is not an AndroidWorld open_app table (format {OPEN_APP_FORMAT}): {exc}; "
-            f"{rewrite}"
+            f"{path} is not an AndroidWorld open_app table of format {OPEN_APP_FORMAT} "
+            f"({validation_summary(exc)}): {rewrite}"
         ) from None
     if table.commit != PINNED_COMMIT:
         raise BenchmarkDataError(
