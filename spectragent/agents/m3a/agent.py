@@ -228,6 +228,23 @@ class M3AAgent(AgentBase):
         "memory": ("memory", ["sliding_window"]),
     }
 
+    #: A new ``config template`` starts M3A as AndroidWorld runs it, the run
+    #: settings :meth:`prepare` requires (module docstring): one message in
+    #: the memory, two actions a step for ``input_text``, no re-ask within a
+    #: step, no end on unreadable replies, and a reply cut off at the token
+    #: ceiling read as it is. Starting values written into the YAML, not
+    #: defaults: a run takes only what its configuration says.
+    __template_block__: ClassVar[dict[str, Any]] = {
+        "agent_loop": {
+            "loop_id": "react",
+            "max_actions_per_step": 2,
+            "parse_retries_per_step": 0,
+            "max_consecutive_parse_errors": None,
+            "cut_off_reply": "read_as_is",
+        },
+        "memory": {"memory_id": "sliding_window", "window_size": 1},
+    }
+
     # ── config ─────────────────────────────────────────────────
     task_guidelines: Annotated[
         tuple[str, ...],

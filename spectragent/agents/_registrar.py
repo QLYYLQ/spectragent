@@ -102,6 +102,18 @@ class AgentBase(AgentReceptors, metaclass=AgentRegistrar.Meta):
         "memory": "memory",  # Mode 1: auto-discovery, allows all memories
     }
 
+    __template_block__: ClassVar[dict[str, Any]] = {}
+    """Where ``spectragent config template`` starts this agent's block in a new template.
+
+    The agent's block as YAML writes it, without ``agent_id``: settings of its
+    receptors (``agent_loop``, ``memory``) and knobs the agent needs to run as
+    it is meant to (``docs/architecture_design.md`` §4.17 "agent 的模板起点").
+    These are starting values the template writes into the YAML, never
+    defaults a run falls back on: a run takes only what its configuration
+    says. Empty (the default) for an agent with no such needs. A ``--from``
+    skeleton's own values win over them.
+    """
+
     id: Annotated[
         str | None,
         Field(

@@ -338,20 +338,29 @@ def _new_template(
     benchmarks: Sequence[Mapping[str, Any]],
     origins: dict[TemplatePath, str],
 ) -> dict[str, Any]:
-    """The framework's starting graph, with the selected agent, Loop, model and environment."""
+    """The starting graph, with the selected agent, Loop, model and environment.
+
+    The agent block starts from the agent's own declared values
+    (``__template_block__``); a receptor it leaves out starts from the
+    framework's starting choice. ``--loop`` and ``--llm`` then replace their
+    receptors as on a skeleton: naming the declared implementation keeps its
+    values.
+    """
     catalog = composer.catalog
     agent_key = choices.agent or STARTING_AGENT
     agent_cls = _definition(catalog, "agent", agent_key).implementation
-    agent: dict[str, Any] = {**_selector(catalog, "agent", agent_key), "id": "main"}
-    chosen = {"agent_loop": choices.loop, "llm": choices.llm}
-    loop_key = STARTING_RECEPTORS["agent_loop"]
+    agent: dict[str, Any] = {
+        **_selector(catalog, "agent", agent_key),
+        "id": "main",
+        **_declared_block(agent_cls),
+    }
     for receptor in wiring_slots(agent_cls).values():
-        if receptor.name not in STARTING_RECEPTORS or receptor.slot is None:
-            continue
-        key = chosen.get(receptor.name) or _starting_key(agent_cls, receptor)
-        agent[receptor.name] = _selector(catalog, receptor.spec.registry_name, key)
-        if receptor.name == "agent_loop":
-            loop_key = key
+        if receptor.name in STARTING_RECEPTORS and receptor.slot is not None:
+            agent.setdefault(
+                receptor.name,
+                _selector(catalog, receptor.spec.registry_name, _starting_key(agent_cls, receptor)),
+            )
+    loop_key = choices.loop or _key_of(catalog, "agent_loop", agent.get("agent_loop"))
     environment_key = choices.environment or _environment_for(catalog, agent_key, loop_key)
     raw: dict[str, Any] = {
         "agent": [agent],
@@ -373,13 +382,41 @@ def _new_template(
     _mark_origins(raw, (), origins, TEMPLATE_DEFAULT)
     for given, layer, path, flag in (
         (choices.agent, "agent", ("agent", 0), "--agent"),
-        (choices.loop, "agent_loop", ("agent", 0, "agent_loop"), "--loop"),
-        (choices.llm, "llm", ("agent", 0, "llm"), "--llm"),
         (choices.environment, ENVIRONMENT_SECTION, (ENVIRONMENT_SECTION, 0), "--environment"),
     ):
         if given is not None:
             _mark_origins(_selector(catalog, layer, given), path, origins, flag)
+    for field_name, key, flag in (
+        ("agent_loop", choices.loop, "--loop"),
+        ("llm", choices.llm, "--llm"),
+    ):
+        if key is not None:
+            _replace_component(
+                agent,
+                field_name,
+                field_name,
+                key,
+                composer,
+                benchmarks,
+                ("agent", 0, field_name),
+                origins,
+                flag,
+            )
     return raw
+
+
+def _declared_block(owner: type) -> dict[str, Any]:
+    """*owner*'s own template starting values (an agent's ``__template_block__``), a fresh copy."""
+    return copy.deepcopy(dict(getattr(owner, "__template_block__", {})))
+
+
+def _key_of(catalog: ConfigurationCatalog, layer: str, block: object) -> str:
+    """The implementation of *layer* that *block* names; the framework's starting key without one."""
+    if isinstance(block, dict):
+        for key, definition in catalog.components.get(layer, {}).items():
+            if _matches_selector(block, _constant_fields(definition.config_model)):
+                return key
+    return STARTING_RECEPTORS[layer]
 
 
 def _recording_plan(channels: Sequence[str]) -> dict[str, bool]:
@@ -440,7 +477,14 @@ def _replace_component(
         if name != "id" and not _accepted(catalog, slots[name], value)
     }
     retained.update(restarted)
-    owner[field_name] = {**selector, **retained}
+    # What the skeleton does not keep starts from the new implementation's own
+    # declared values (an agent's ``__template_block__``).
+    declared = {
+        name: value
+        for name, value in _declared_block(implementation).items()
+        if name not in retained
+    }
+    owner[field_name] = {**selector, **declared, **retained}
     for origin_path in tuple(origins):
         if origin_path[: len(path)] == path and (
             len(origin_path) == len(path)
@@ -448,7 +492,7 @@ def _replace_component(
             or origin_path[len(path)] in restarted
         ):
             del origins[origin_path]
-    for name, value in restarted.items():
+    for name, value in {**declared, **restarted}.items():
         _mark_origins(value, (*path, name), origins, TEMPLATE_DEFAULT)
     _mark_origins(selector, path, origins, flag)
 
@@ -478,9 +522,16 @@ def _starting_value(
     owner_key: str,
     receptor: WiringSlot,
 ) -> object:
-    """The template's starting choice for *receptor*: an environment's capability blocks, or one strategy."""
+    """The template's starting choice for *receptor*.
+
+    An environment's capability blocks; else the block *owner* declares for it
+    (an agent's ``__template_block__``); else one strategy (:func:`_starting_key`).
+    """
     if receptor.spec.registry_name == CAPABILITY_SECTION:
         return _capability_blocks(composer, owner_key, benchmarks)
+    declared = _declared_block(owner).get(receptor.name)
+    if declared is not None:
+        return declared
     return _selector(composer.catalog, receptor.spec.registry_name, _starting_key(owner, receptor))
 
 

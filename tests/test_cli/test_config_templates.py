@@ -18,6 +18,8 @@ import yaml
 from conscribe import create_registrar
 from pydantic import BaseModel, Field, ValidationError
 
+from spectragent.agents.browser_use.dom import BrowserUseDomAgent
+from spectragent.agents.m3a.agent import M3AAgent
 from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FILE, OPEN_APP_FORMAT
 from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
 from spectragent.benchmarks.androidworld.tasks import instance_seed
@@ -27,6 +29,7 @@ from spectragent.cli.config_templates import TemplateChoices, render_config_temp
 from spectragent.core.composer import ConfigComposer, UnresolvedWiringError
 from spectragent.core.registries import TemplateFlag, capability_declarations, template_flags
 from spectragent.core.runtime import AgentRuntime
+from tests._helpers.android_device import fake_service_apk
 
 #: A two-name ``open_app`` table, as AndroidWorld's task list writer would read it.
 TABLE = {
@@ -463,6 +466,36 @@ def test_the_agents_wiring_picks_the_environment_and_its_declared_starting_block
     composer.compose(raw)
 
 
+def test_m3a_starts_from_the_run_settings_its_own_prepare_requires(composer, tmp_path):
+    raw = yaml.safe_load(
+        render_config_template(TemplateChoices(agent="m3a", model="m"), composer=composer)
+    )
+    agent = raw["agent"][0]
+    for receptor, start in M3AAgent.__template_block__.items():
+        assert {key: agent[receptor][key] for key in start} == start, receptor
+    assert agent["agent_loop"]["cut_off_reply"] == "read_as_is"
+    # With the APK placeholder replaced, M3A's own refusals pass.
+    raw["environment"][0]["capabilities"][0]["service_apk"] = str(fake_service_apk(tmp_path))
+    runtime = AgentRuntime.for_agent(composer.compose(raw), "main")
+    runtime.prepare()
+    runtime.seed_messages("Turn wifi off.")
+    # Naming the declared Loop keeps its values; another Loop would reset them.
+    again = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="m3a", loop="react", model="m"), composer=composer
+        )
+    )
+    assert again["agent"][0]["agent_loop"] == agent["agent_loop"]
+
+
+def test_an_agent_without_declared_values_starts_from_the_frameworks_choices(composer):
+    assert BrowserUseDomAgent.__template_block__ == {}
+    raw = yaml.safe_load(render_config_template(TemplateChoices(model="m"), composer=composer))
+    agent = raw["agent"][0]
+    assert agent["agent_loop"]["loop_id"] == "react"
+    assert agent["memory"]["memory_id"] == "simple"
+
+
 def test_every_environment_starts_from_its_capabilities_declared_blocks(composer):
     for environment in composer.catalog.components["environment"]:
         raw = yaml.safe_load(
@@ -510,8 +543,12 @@ def test_changing_environment_and_agent_restarts_what_the_new_wiring_does_not_ta
     assert environment["env_type"] == "android"
     assert [block["capability_id"] for block in environment["capabilities"]] == ["android"]
     agent = expanded["agent"][0]
-    assert agent["memory"]["memory_id"] == "sliding_window"
+    # Simple memory is not M3A's: it restarts from M3A's own starting values.
+    start = M3AAgent.__template_block__["memory"]
+    assert {key: agent["memory"][key] for key in start} == start
     assert agent["llm"]["model"] == "chosen-model", "a receptor the new agent takes is kept"
+    # The skeleton's ReAct Loop is M3A's too: its written values win.
+    assert agent["agent_loop"]["max_actions_per_step"] == 4
 
 
 def test_a_loop_written_without_its_omittable_receptor_is_kept_when_the_agent_changes(composer):
