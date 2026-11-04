@@ -78,9 +78,14 @@ it once the device is up, stops it first at teardown, and implements
 ``SetupCheck`` by asking it (§4.9 "基准组件由 capability 承载", §11.2). It
 implements ``TaskTextFromSetup`` and ``EpisodeEnd`` by asking it too: the goal
 a component makes on the device completes the run's task text, and one whose
-benchmark ends episodes says when (§11.2 "MiniWoB++"). Until a benchmark's live
-verifier judges its runs itself, ``TaskOracle`` asks a component that judges
-(AndroidWorld's) for its judgment at the scoring point.
+benchmark ends episodes says when (§11.2 "MiniWoB++").
+
+**A benchmark's live verifiers** (``LiveVerifierHost``, ``live_verifier.py``;
+AndroidWorld's, written under its benchmark) judge each task on the device at
+the scoring point. ``prepare()`` routes them here with the setup component and
+binds them last (``bind_live_verifiers``); at the scoring point the
+environment asks ``verify_live`` once for each, and the capability hands the
+verifier the booted device and the setup component that prepared the task.
 
 **Archivers** (``archive/``, the archive axis of §4.5) are bound before setup
 and chosen only by the trace hook's ``archive`` list. Setup assembles the
@@ -156,6 +161,7 @@ from spectragent.core.capabilities.android.input._registrar import (
     AndroidTypingBackend,
     TypingBackendUnsupported,
 )
+from spectragent.core.capabilities.android.live_verifier import AndroidLiveVerifier
 from spectragent.core.capabilities.android.observations import (
     CAPTURE_STATE,
     FOREGROUND_APP,
@@ -196,15 +202,15 @@ from spectragent.core.capabilities.android.ui_tree._registrar import (
     default_ui_tree_source,
 )
 from spectragent.core.capabilities.android.ui_tree.models import ElementIndexError, UITree
-from spectragent.core.capabilities.base import TaskOracle
 from spectragent.core.trace.redaction import trace_safe
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.capture_state import SettleState
-from spectragent.schemas.verdict import Judgment, VerifierIdentity
+from spectragent.schemas.verdict import Judgment
 
 if TYPE_CHECKING:
     from spectragent.benchmarks._setup_registrar import BenchmarkSetup
+    from spectragent.verifiers.base import LiveVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +328,8 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
     _archive_sessions: list[AndroidArchiveSession]
     #: The benchmark's setup component this capability hosts (``bind_setup``); ``None``: none.
     _setup: AndroidBenchmarkSetup | None
+    #: The benchmark's live verifiers this capability hosts (``bind_live_verifiers``).
+    _live_verifiers: tuple[AndroidLiveVerifier, ...]
     #: The home screen's names, read at setup when the run names apps by them.
     _launcher_apps: dict[str, str] | None
 
@@ -446,8 +454,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 description=(
                     "Seconds the device side may take to come up at setup (the APK installed, "
                     "the helper started, the service enabled and answering a ping; about 12 s "
-                    "after a read-only boot on the emulator), and to come back when something "
-                    "on the device unbound the service."
+                    "after a read-only boot on the emulator), to read the home screen's apps "
+                    "at setup when the run names apps by them (over 5 s on a cold device under "
+                    "load), and to come back when something on the device unbound the service."
                 ),
             ),
         ] = 60.0,
@@ -509,6 +518,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._archive = None
         self._archive_sessions = []
         self._setup = None
+        self._live_verifiers = ()
         self._launcher_apps = None
         self.actions = actions
         self.ui_tree_source = default_ui_tree_source()
@@ -633,19 +643,26 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         negotiation: Any = None,
         archivers: Sequence[ArchiverBase] = (),
         setup: BenchmarkSetup | None = None,
+        live_verifiers: Sequence[LiveVerifier] = (),
     ) -> None:
         """Refuse now what setup would: a device the provider cannot give the setup component or
-        the typing backend, the APK, then the task (``SetupHost``).
+        the typing backend, a live verifier the device will not serve, the APK, then the task
+        (``LiveVerifierHost``).
 
         *setup* is the benchmark setup component about to be bound, ``None``
         when the run's benchmark has none: then a task carrying data for one
         (``oracle_task``) is refused, as nothing would prepare it.
+        *live_verifiers* are the live verifiers about to be bound; each one's
+        device needs are requirements the device booted for *setup* must
+        already meet.
 
         Raises:
-            TypeError: *setup* is no component this capability can host.
+            TypeError: *setup* or a verifier is no component this capability
+                can host.
             UnmetDeviceNeeds: The provider cannot meet what the component
-                needs of the device; names the component, the needs and the
-                provider.
+                needs of the device (naming the component, the needs and the
+                provider), or a verifier needs what the device will not offer
+                (naming the verifier, the needs and what the device offers).
             TypingBackendUnsupported: The device's API level, as the provider
                 reads it from configuration, cannot run the typing backend.
             ServiceApkError: ``service_apk`` names no APK with a sidecar that
@@ -654,10 +671,16 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             ValueError: A task carrying ``oracle_task`` with no component.
             Exception: The component's own refusal of its installation or task.
         """
-        self._check(context, _hostable(setup))
+        self._check(context, _hostable(setup), _judging(live_verifiers))
 
-    def _check(self, context: Mapping[str, Any], setup: AndroidBenchmarkSetup | None) -> None:
-        """:meth:`check_setup` with *setup* already known to be a component this capability hosts."""
+    def _check(
+        self,
+        context: Mapping[str, Any],
+        setup: AndroidBenchmarkSetup | None,
+        verifiers: Sequence[AndroidLiveVerifier] = (),
+    ) -> None:
+        """:meth:`check_setup` with *setup* and *verifiers* already known to be components this
+        capability hosts."""
         try:  # setup refuses a capability without a backend or a typing backend itself
             backend: BaseAndroidProvider | None = self.backend
         except AttributeError:
@@ -681,6 +704,7 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 _check_typing(
                     typing_backend, level, f"the {backend.provider_id!r} provider's device"
                 )
+        _check_requirements(verifiers, setup)
         ServiceApk.load(self.service_apk)
         start_app = context.get("start_app")
         if start_app is not None and not (isinstance(start_app, str) and start_app.strip()):
@@ -703,6 +727,14 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             TypeError: *setup* is no ``AndroidBenchmarkSetup``.
         """
         self._setup = _hostable(setup)
+
+    def bind_live_verifiers(self, verifiers: Sequence[LiveVerifier]) -> None:
+        """Host *verifiers* from the next setup on (``()``: host none). Acquires nothing (``LiveVerifierHost``).
+
+        Raises:
+            TypeError: One is no ``AndroidLiveVerifier``.
+        """
+        self._live_verifiers = _judging(verifiers)
 
     async def setup(
         self,
@@ -729,7 +761,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         self._ui_tree, self._actions_since_tree = None, 0
         self._polled_package = self._acted_at = None
         self._launcher_apps = None
-        self._check({"oracle_task": oracle_task, "start_app": start_app}, component)
+        self._check(
+            {"oracle_task": oracle_task, "start_app": start_app}, component, self._live_verifiers
+        )
         self._archive = AndroidArchiveContext(trees=TreeStore())
         self._archive_sessions = [archiver.open(self._archive) for archiver in self._archivers]
         self._apk = apk = ServiceApk.load(self.service_apk)
@@ -762,11 +796,14 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 self._events = await side.service.events()
                 self._newest_event_ms = None
             if self._configured_apps is None and (OPEN_APP in self._actions_by_name or start_app):
+                # Once, at setup, and on a device that may have just booted: a
+                # cold device under load took over 5 s to list its apps
+                # (2026-11-04), past one query's limit.
                 self._launcher_apps = await device.run(
                     lambda: _launcher_names(side),
                     what="reading the home screen's apps",
                     wait_s=self.queue_wait_s,
-                    run_s=self.query_timeout_s,
+                    run_s=self.service_start_timeout_s,
                 )
             if component is not None:
                 await component.start(session, oracle_task)
@@ -870,25 +907,27 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                 if session is not None:
                     await self._backend().close(session)
 
-    def oracle_identity(self) -> VerifierIdentity | None:
-        """Who judges this run at the scoring point: the bound setup component, when it judges (``TaskOracle``).
+    async def verify_live(self, verifier: LiveVerifier, *, answer: str | None) -> Judgment:
+        """Judge the task with *verifier* on the device it is still up on (``LiveVerifierHost``).
 
-        ``None`` when no bound component judges, and the environment asks
-        nothing. AndroidWorld's does, until its live verifier judges the run
-        itself.
+        The verifier gets the booted device and the setup component that
+        prepared the task on it, ``None`` when none did, and the run's
+        *answer*.
+
+        Raises:
+            ValueError: *verifier* is not one this capability hosts.
+            RuntimeError: The device is not up: setup never finished, or the
+                capability was torn down.
         """
-        component = self._setup
-        return component.oracle_identity() if isinstance(component, TaskOracle) else None
-
-    async def read_score(self, *, answer: str | None) -> Judgment:
-        """The bound setup component's judgment, given the run's *answer* (``TaskOracle``).
-
-        Asked only when :meth:`oracle_identity` is not ``None``.
-        """
-        component = self._setup
-        if not isinstance(component, TaskOracle):
-            raise RuntimeError("no bound setup component judges this run: its identity is None")
-        return await component.read_score(answer=answer)
+        hosted = next((v for v in self._live_verifiers if v is verifier), None)
+        if hosted is None:
+            raise ValueError(
+                f"the live verifier {verifier.verifier_id!r} is not bound to the android capability"
+            )
+        session = self._session
+        if session is None:
+            raise RuntimeError("the android device is not up: there is nothing to judge")
+        return await hosted.judge(session, self._setup, answer=answer)
 
     def sets_task_text(
         self, context: Mapping[str, Any], *, setup: BenchmarkSetup | None = None
@@ -1423,6 +1462,56 @@ def _hostable(setup: BenchmarkSetup | None) -> AndroidBenchmarkSetup | None:
         f"the benchmark setup {setup.setup_id!r} names the android capability as its host, and "
         f"it is no setup component the android capability can host (AndroidBenchmarkSetup)"
     )
+
+
+def _check_requirements(
+    verifiers: Sequence[AndroidLiveVerifier], setup: AndroidBenchmarkSetup | None
+) -> None:
+    """Refuse a live verifier whose device needs the run's device will not offer.
+
+    The device boots with what *setup* needs (nothing beyond ADB without one),
+    and a verifier only states what it requires (``docs/architecture_design.md``
+    §4.10.1 "capability 配置合并"), so its needs are never added to the boot.
+
+    Raises:
+        UnmetDeviceNeeds: Naming every verifier, what it needs and what the
+            device offers.
+    """
+    offered = DeviceNeeds() if setup is None else setup.device_needs
+    if setup is None:
+        source = "nothing beyond ADB, as no benchmark setup component asks for more"
+    else:
+        source = (
+            f"only what the benchmark setup {setup.setup_id!r} needs "
+            f"({', '.join(offered.named()) or 'nothing beyond ADB'})"
+        )
+    problems: list[str] = []
+    for verifier in verifiers:
+        missing = [need for need in verifier.device_needs.named() if need not in offered.named()]
+        if missing:
+            problems.append(
+                f"the live verifier {verifier.verifier_id!r} needs {', '.join(missing)} of the device"
+            )
+    if problems:
+        raise UnmetDeviceNeeds(
+            "; ".join(problems) + f", and this run's device offers {source}: a verifier states "
+            "what it requires and never changes how the device boots"
+        )
+
+
+def _judging(verifiers: Sequence[LiveVerifier]) -> tuple[AndroidLiveVerifier, ...]:
+    """*verifiers* as live verifiers the Android capability hosts.
+
+    Raises:
+        TypeError: Naming each one that is no ``AndroidLiveVerifier``.
+    """
+    foreign = [v.verifier_id for v in verifiers if not isinstance(v, AndroidLiveVerifier)]
+    if foreign:
+        raise TypeError(
+            f"the live verifier(s) {', '.join(repr(f) for f in foreign)} name the android "
+            f"capability as their host, and are no verifier it can host (AndroidLiveVerifier)"
+        )
+    return tuple(v for v in verifiers if isinstance(v, AndroidLiveVerifier))
 
 
 def _check_build(side: DeviceSide, apk: ServiceApk, typing_backend: AndroidTypingBackend) -> None:

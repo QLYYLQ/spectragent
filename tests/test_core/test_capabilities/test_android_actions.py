@@ -1137,6 +1137,22 @@ async def test_an_app_opens_by_its_name_on_the_home_screen_or_its_package(
     assert phone.focused == "com.android.settings/.Settings"
 
 
+async def test_the_home_screen_is_read_within_setups_limit_not_one_querys() -> None:
+    """Read once, at setup: a cold device under load took over 5 s to list its apps (2026-11-04),
+    past the limit of one query, so the read has the device side's setup limit."""
+    phone = ScriptedPhone(launcher_delay_s=1.5)
+    async with (
+        phone_server(phone) as adb,
+        android_capability(adb, query_timeout_s=1.0) as capability,
+    ):
+        assert (
+            capability.query_timeout_s < phone.launcher_delay_s < capability.service_start_timeout_s
+        )
+        assert capability.launcher_apps == {
+            "Settings": "com.android.settings/com.android.settings.Settings"
+        }
+
+
 async def test_a_label_two_apps_share_is_written_with_each_package() -> None:
     phone = ScriptedPhone(
         launchable={

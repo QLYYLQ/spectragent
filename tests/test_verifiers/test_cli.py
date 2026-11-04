@@ -204,6 +204,31 @@ async def test_a_benchmark_with_no_offline_verifier_is_refused(tmp_path):
         await evaluate(benchmark=benchmark, traces=[source], output=tmp_path / "eval")
 
 
+async def test_a_benchmark_whose_verifier_judges_live_says_so(tmp_path):
+    """AndroidWorld's verifier needs the live device: it judges at the scoring point, never here."""
+    from tests._helpers.benchmark_data import androidworld_data
+
+    data = androidworld_data(tmp_path / "androidworld")
+    block = {
+        "benchmark_id": "androidworld",
+        "task_loader": {"benchmark_name": "androidworld", "data_dir": str(data)},
+        "setup": {"setup_id": "androidworld"},
+        "verifiers": [{"verifier_id": "androidworld"}],
+    }
+    path = tmp_path / "androidworld.yaml"
+    path.write_text(yaml.safe_dump({"benchmark": [block]}))
+    source = write_trace(tmp_path / "traces", task_id="SystemBrightnessMax/42/0")
+
+    with pytest.raises(ValueError) as refused:
+        await evaluate(benchmark=str(path), traces=[source], output=tmp_path / "eval")
+
+    assert (
+        "configures no verifier that judges a recorded run (its androidworld judges a run "
+        "only at its scoring point, against the live environment)"
+    ) in str(refused.value)
+    assert not (tmp_path / "eval").exists()
+
+
 async def test_branch_uses_source_reference_without_losing_branch_identity(benchmark, tmp_path):
     source = write_trace(tmp_path / "traces", task_id="source/s2/b0", benchmark="trace_branches")
     path = source / "config.json"

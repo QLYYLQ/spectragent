@@ -1,13 +1,12 @@
-"""The ``androidworld`` setup component against a fake AndroidWorld service.
+"""The ``androidworld`` setup component and live verifier against a fake AndroidWorld service.
 
 ``tests/_helpers/fake_androidworld.py`` is started exactly as the setup starts
 the real service (through the installation's interpreter, with the launcher's
 arguments, a whitelisted environment and a process group of its own), so these
 cover the setup's lifecycle, its error mapping, cancellation and that the
-service's whole process group is gone on every path, and the score read from
-the same service, which the setup hands to the Android capability until
-AndroidWorld's live verifier reads it. The real service runs in
-``tests/test_core/test_capabilities/test_androidworld_live.py``.
+service's whole process group is gone on every path, and the judgment
+AndroidWorld's live verifier reads from the service the setup started. The
+real service runs in ``tests/test_core/test_capabilities/test_androidworld_live.py``.
 """
 
 from __future__ import annotations
@@ -37,15 +36,18 @@ from spectragent.benchmarks.androidworld.service import (
 )
 from spectragent.benchmarks.androidworld.setup import AndroidWorldSetup
 from spectragent.benchmarks.androidworld.tasks import AndroidWorldTask, instance_seed
+from spectragent.benchmarks.androidworld.verifier import AndroidWorldVerifier
 from spectragent.core.capabilities.android.backends.base import (
     AdbEndpoint,
     AndroidProviderSession,
     DeviceNeeds,
     EmulatorAccess,
     EmulatorGrpc,
+    UnmetDeviceNeeds,
 )
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
 from spectragent.schemas.verdict import Judgment, Verdict, VerifierIdentity
+from spectragent.verifiers.base import attachment_of
 from tests._helpers.android_device import unset_capability
 from tests._helpers.assembly import make_env
 from tests._helpers.fake_androidworld import fake_installation, requests, service, write_behaviour
@@ -137,6 +139,15 @@ def _after_the_reset(root: Path) -> list[tuple[str, str, JsonValue]]:
     ]
 
 
+async def _judged(setup: AndroidWorldSetup, answer: str | None) -> Judgment:
+    """AndroidWorld's live verifier on the task *setup* started, handed *answer*.
+
+    It reads no device of its own (AndroidWorld's check reads it through the
+    service), so the one handed over is never touched.
+    """
+    return await AndroidWorldVerifier().judge(_device(Path("/unread")), setup, answer=answer)
+
+
 async def _service_is_gone(root: Path) -> bool:
     """Whether the service, the ``sleep`` it left in its group and the group itself are all gone."""
     started = service(root)
@@ -156,12 +167,12 @@ async def test_a_task_is_prepared_scored_and_ended_and_the_service_is_gone_after
     setup = _setup(root)
     await setup.start(_device(tmp_path), _task())
     made = setup.made_goal()
-    reading = await setup.read_score(answer=None)
+    reading = await _judged(setup, None)
     await setup.stop()
 
     assert made is None, "the task's goal is the listed one"
     task = AndroidWorldTask.model_validate(_task())
-    assert setup.oracle_identity() == VerifierIdentity(
+    assert AndroidWorldVerifier().identity() == VerifierIdentity(
         verifier_id="androidworld", version=PINNED_COMMIT
     )
     assert reading == Judgment(
@@ -259,7 +270,7 @@ async def test_a_miniwob_task_reads_its_goal_after_initializing_and_that_goal_is
     await setup.start(_device(tmp_path), _miniwob_task())
     try:
         made = setup.made_goal()
-        reading = await setup.read_score(answer=None)
+        reading = await _judged(setup, None)
     finally:
         await setup.stop()
 
@@ -955,7 +966,7 @@ async def _scored(
     setup = _setup(root)
     await setup.start(_device(tmp_path), task)
     try:
-        return await setup.read_score(answer=answer)
+        return await _judged(setup, answer)
     finally:
         await setup.stop()
 
@@ -1005,7 +1016,7 @@ async def test_an_answer_the_service_refuses_is_an_ordinary_error_and_nothing_is
     try:
         write_behaviour(root, {"/execute_action": {"status": 500}})
         with pytest.raises(AndroidWorldError, match="POST /execute_action answered HTTP 500"):
-            await setup.read_score(answer="Mall")
+            await _judged(setup, "Mall")
     finally:
         await setup.stop()
 
@@ -1066,7 +1077,7 @@ async def test_a_score_the_service_cannot_give_is_an_ordinary_error(
     try:
         write_behaviour(root, {"/task/score": rule})
         with pytest.raises(AndroidWorldError, match=message):
-            await setup.read_score(answer=None)
+            await _judged(setup, None)
     finally:
         await setup.stop()
     assert await _service_is_gone(root)
@@ -1081,7 +1092,7 @@ async def test_a_bool_score_is_0_or_1_as_androidworlds_runner_counts_it(
     await setup.start(_device(tmp_path), _task())
     try:
         write_behaviour(root, {"/task/score": {"json": {"score": answered}}})
-        reading = await setup.read_score(answer=None)
+        reading = await _judged(setup, None)
     finally:
         await setup.stop()
 
@@ -1096,7 +1107,7 @@ async def test_a_dead_service_is_an_ordinary_error_that_says_so(root: Path, tmp_
         setup._service.process.kill()  # the setup's own child
         await setup._service.process.wait()
         with pytest.raises(AndroidWorldError, match="could not be reached .*exited with code"):
-            await setup.read_score(answer=None)
+            await _judged(setup, None)
     finally:
         await setup.stop()
     assert await _service_is_gone(root)
@@ -1120,7 +1131,7 @@ async def test_a_server_error_ends_with_the_traceback_the_service_logs_after_ans
             root, {"/task/score": {"status": 500, "log": traceback, "log_after_s": 0.5}}
         )
         with pytest.raises(AndroidWorldError, match="GET /task/score answered HTTP 500") as caught:
-            await setup.read_score(answer=None)
+            await _judged(setup, None)
     finally:
         await setup.stop()
 
@@ -1179,7 +1190,7 @@ async def test_a_server_error_whose_cause_is_never_logged_waits_only_its_limit(
         write_behaviour(root, {"/task/score": {"status": 500, "log": ""}})
         started = clock()
         with pytest.raises(AndroidWorldError, match="GET /task/score answered HTTP 500"):
-            await setup.read_score(answer=None)
+            await _judged(setup, None)
         waited = clock() - started
     finally:
         await setup.stop()
@@ -1225,7 +1236,7 @@ async def test_stop_is_safe_before_a_start_and_twice(root: Path, tmp_path: Path)
 
 async def test_a_score_before_any_task_is_an_ordinary_error(root: Path) -> None:
     with pytest.raises(AndroidWorldError, match="no AndroidWorld task was initialized"):
-        await _setup(root).read_score(answer=None)
+        await _judged(_setup(root), None)
 
 
 async def test_a_device_without_the_emulators_grpc_is_refused(root: Path, tmp_path: Path) -> None:
@@ -1258,7 +1269,7 @@ async def test_a_cancelled_score_stays_a_cancellation(root: Path, tmp_path: Path
     await setup.start(_device(tmp_path), _task())
     try:
         write_behaviour(root, {"/task/score": {"hang": True}})
-        scoring = asyncio.ensure_future(setup.read_score(answer=None))
+        scoring = asyncio.ensure_future(_judged(setup, None))
         assert await soon(lambda: "/task/score" in [p for _, p, _ in _calls(root)], within_s=20)
 
         scoring.cancel()
@@ -1272,24 +1283,29 @@ async def test_a_cancelled_score_stays_a_cancellation(root: Path, tmp_path: Path
 # ── at the scoring point, through the environment ────────────────────
 
 
-async def _environment_verdicts(setup: AndroidWorldSetup, timeout_s: float) -> list[Verdict]:
+async def _environment_verdicts(
+    setup: AndroidWorldSetup, device: AndroidProviderSession, timeout_s: float
+) -> list[Verdict]:
+    """The scoring point's verdicts, AndroidWorld's verifier bound beside *setup*."""
     capability = unset_capability()
     env = make_env(AndroidEnvironment, {"android": capability})
     env.bind_setups([setup])
+    env.bind_live_verifiers([AndroidWorldVerifier()])
+    capability._session = device  # the device its setup brought up, which *setup* started on
     return await env.verify_live(timeout_s=timeout_s, answer=None)
 
 
 async def test_the_environment_records_the_verdict_and_each_way_of_judging_nothing(
     root: Path, tmp_path: Path
 ) -> None:
-    setup = _setup(root)
-    await setup.start(_device(tmp_path), _task())
+    setup, device = _setup(root), _device(tmp_path)
+    await setup.start(device, _task())
     try:
-        (judged,) = await _environment_verdicts(setup, timeout_s=5.0)
+        (judged,) = await _environment_verdicts(setup, device, timeout_s=5.0)
         write_behaviour(root, {"/task/score": {"status": 500}})
-        (failed,) = await _environment_verdicts(setup, timeout_s=5.0)
+        (failed,) = await _environment_verdicts(setup, device, timeout_s=5.0)
         write_behaviour(root, {"/task/score": {"hang": True}})
-        (late,) = await _environment_verdicts(setup, timeout_s=0.5)
+        (late,) = await _environment_verdicts(setup, device, timeout_s=0.5)
     finally:
         await setup.stop()
 
@@ -1306,9 +1322,37 @@ async def test_the_environment_records_the_verdict_and_each_way_of_judging_nothi
     assert await _service_is_gone(root)
 
 
-async def test_with_no_setup_the_environment_records_nothing() -> None:
+async def test_with_no_verifier_the_environment_records_nothing(root: Path) -> None:
     env = make_env(AndroidEnvironment, {"android": unset_capability()})
+    env.bind_setups([_setup(root)])
     assert await env.verify_live(timeout_s=1.0, answer=None) == []
+
+
+async def test_the_verifier_judges_only_through_androidworlds_setup(tmp_path: Path) -> None:
+    """It reads the task and its state from the service that setup started, and nothing else."""
+    with pytest.raises(AndroidWorldError, match="the android capability hosts none"):
+        await AndroidWorldVerifier().judge(_device(tmp_path), None, answer=None)
+
+
+def test_the_verifier_judges_live_on_the_answer_as_androidworld_at_its_commit() -> None:
+    verifier = AndroidWorldVerifier()
+    assert attachment_of(verifier) == "live" and "answer" in verifier.needs
+    assert verifier.capability_id == "android"
+    assert verifier.identity() == VerifierIdentity(
+        verifier_id="androidworld", version=PINNED_COMMIT
+    )
+    # The slug every run's verdict file is named by, before and after the verifier landed.
+    assert verifier.identity().slug == "androidworld_44136fa3"
+
+
+def test_the_verifier_needs_of_the_device_only_what_the_setup_boots_it_with(root: Path) -> None:
+    """Requirements, checked in ``prepare()``: the androidworld setup's device meets them."""
+    verifier, setup = AndroidWorldVerifier(), _setup(root)
+    assert verifier.device_needs == DeviceNeeds(emulator_grpc=True, root=True)
+    assert set(verifier.device_needs.named()) <= set(setup.device_needs.named())
+    env = make_env(AndroidEnvironment, {"android": unset_capability()})
+    with pytest.raises(UnmetDeviceNeeds, match="'androidworld' needs emulator_grpc, root of the"):
+        env.check_setup({}, live_verifiers=[verifier])  # no setup: nothing beyond ADB
 
 
 # ── before anything starts: check_setup ──────────────────────────────

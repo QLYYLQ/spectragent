@@ -38,7 +38,7 @@ from spectragent.core.data_loader.task.base import BaseTaskLoader
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.verdict import Verdict
 from spectragent.verifiers._registrar import VerifierBase
-from spectragent.verifiers.base import OfflineVerifier, attachment_of
+from spectragent.verifiers.base import LiveVerifier, OfflineVerifier, attachment_of
 
 
 @runtime_checkable
@@ -62,6 +62,10 @@ class Benchmark(Protocol):
 
     def offline_verifiers(self) -> list[OfflineVerifier]:
         """Its verifiers that judge a run from the recorded trace, in the order its block lists them."""
+        ...
+
+    def live_verifiers(self) -> list[LiveVerifier]:
+        """Its verifiers that judge a run against the live environment, at the scoring point, in its block's order."""
         ...
 
     @property
@@ -193,25 +197,42 @@ class BenchmarkBase(metaclass=BenchmarkRegistrar.Meta):
             if attachment_of(verifier) == "offline" and isinstance(verifier, OfflineVerifier)
         ]
 
+    def live_verifiers(self) -> list[LiveVerifier]:
+        """Its verifiers attached live (needing the live environment), in its block's order.
+
+        They judge at the scoring point, each hosted by the capability it names
+        (``docs/architecture_design.md`` §4.9 "基准组件由 capability 承载"):
+        ``AgentRuntime.prepare()`` routes and binds them as it does the setup
+        component.
+
+        Raises:
+            TypeError: One needs the live environment and names no capability
+                to host it.
+        """
+        live: list[LiveVerifier] = []
+        for verifier in self.verifiers or []:
+            if attachment_of(verifier) != "live":
+                continue
+            if not isinstance(verifier, LiveVerifier):
+                raise TypeError(
+                    f"verifier {verifier.verifier_id!r} needs the live environment and names no "
+                    f"capability to host it (LiveVerifier)"
+                )
+            live.append(verifier)
+        return live
+
     def primary_verdict(self, verdicts: Mapping[str, Verdict]) -> Verdict | None:
         """Its primary verdict among a run's *verdicts* (slug → verdict); ``None`` when there is none.
 
         The verdict of the first verifier its block lists of its primary kind
-        (``__primary_verifier__``); when the block lists none of that kind,
-        the run's one live verdict of that kind, judged at the scoring point.
+        (``__primary_verifier__``); ``None`` when the block lists none of that
+        kind.
         """
         kind = self.primary_verifier
         if kind is None:
             return None
         listed = [v.identity().slug for v in self.verifiers or [] if v.verifier_id == kind]
-        if listed:
-            return verdicts.get(listed[0])
-        live = [
-            verdict
-            for verdict in verdicts.values()
-            if verdict.verifier.verifier_id == kind and verdict.attachment == "live"
-        ]
-        return live[0] if len(live) == 1 else None
+        return verdicts.get(listed[0]) if listed else None
 
     def success(self, verdict: Verdict, result: AgentResult | None) -> float | None:
         """Its success rule: how far the run succeeded by its primary *verdict*, from 0 to 1.

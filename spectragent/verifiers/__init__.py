@@ -27,6 +27,7 @@ from spectragent.verifiers._registrar import (
     VerifierRegistrar,
 )
 from spectragent.verifiers.base import (
+    LiveVerifier,
     OfflineVerifier,
     Verifier,
     VerifierLifecycle,
@@ -36,6 +37,7 @@ from spectragent.verifiers.base import (
 
 __all__ = [
     "LLMJudgeVerifier",
+    "LiveVerifier",
     "OfflineVerifier",
     "UsageTally",
     "Verifier",

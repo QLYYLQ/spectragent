@@ -576,14 +576,19 @@ judged by a dozen verifiers, months apart, on a machine with no browser installe
   without it cannot explain its own degraded steps.
 - **Judging that needs a live environment happens once, at the scoring point**, never in
   an offline verifier and never mid-run. AndroidWorld reads the device's databases, files
-  and settings: the capability that reaches the device implements the optional
-  `TaskOracle` Protocol (`core/capabilities/base.py`: `oracle_identity()` and
-  `read_score(answer=...) -> Judgment`), and `AgentRuntime` calls the woven
-  environment's `verify_live(timeout_s=verify_timeout, answer=...)` after the Loop
-  returned or raised, before close-out and teardown. The environment asks each oracle
-  concurrently, each within the limit, and turns a judgment into a `judged` live verdict
-  and a timeout or an exception into a `not_judged` one (`reason`: `timeout` | `error`,
-  with `detail`) under the same identity (`core/environments/_registrar.py`). The time
+  and settings, so its verifier needs `live_environment` and names the capability that
+  hosts it (`LiveVerifier.capability_id`, `verifiers/base.py`). `AgentRuntime.prepare()`
+  routes it there through `Environment.check_setup(live_verifiers=...)`: the host
+  (`LiveVerifierHost`, `core/capabilities/base.py`) refuses a verifier it cannot host
+  or whose requirements the run cannot meet (Android's are its `device_needs`), and
+  `env.bind_live_verifiers` binds it last, after the archivers and the setup component,
+  reading each verifier's `identity()` once. After the Loop returned or raised, before
+  close-out and teardown, `AgentRuntime` calls the woven environment's
+  `verify_live(timeout_s=verify_timeout, answer=...)`, which calls
+  `host.verify_live(verifier, answer=...)` once per bound verifier, concurrently and each
+  within the limit, and turns a `Judgment` into a `judged` live verdict and a timeout or
+  an exception into a `not_judged` one (`reason`: `timeout` | `error`, with `detail`),
+  under the identity read at bind time (`core/environments/_registrar.py`). The time
   limit is `--verify-timeout` on `run` and `bench`.
 - **Every verdict lands in the run's verdict store**, `verdicts/<slug>.json`
   (`core/trace/verdicts.py::write_verdict`; the slug is

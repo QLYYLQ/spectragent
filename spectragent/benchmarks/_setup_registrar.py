@@ -14,11 +14,10 @@ gives.
 
 What the device or environment must offer beyond its plain form comes from the
 component (Android: ``DeviceNeeds``), never from a provider setting. Judging is
-a verifier's, never a setup component's, once the benchmark's live verifier
-lands: until then AndroidWorld's component hands the Android capability's
-``oracle_identity`` and ``read_score`` (``TaskOracle``) its identity and its
-judgment, from the service it started, and the environment keeps them as the
-run's live verdict.
+a verifier's, never a setup component's: a live verifier is hosted the same
+way (``LiveVerifier``), and its host hands it the setup component that
+prepared the task (AndroidWorld's verifier judges through the service its
+component started).
 
 This module stays light: ``core/registries.py`` lists the registrar with the
 framework axes.

@@ -62,10 +62,17 @@ def offline_verifiers(benchmark: Benchmark, selection: str) -> list[OfflineVerif
     """
     verifiers = benchmark.offline_verifiers()
     if not verifiers:
+        live = [verifier.verifier_id for verifier in benchmark.live_verifiers()]
+        judged_live = (
+            f" (its {', '.join(live)} judges a run only at its scoring point, against the live "
+            f"environment)"
+            if live
+            else ""
+        )
         raise ValueError(
             f"--benchmark {selection}: the benchmark configures no verifier that judges a "
-            f"recorded run; list them under verifiers: in its block, in a benchmark YAML of "
-            f"your own"
+            f"recorded run{judged_live}; list them under verifiers: in its block, in a "
+            f"benchmark YAML of your own"
         )
     return verifiers
 

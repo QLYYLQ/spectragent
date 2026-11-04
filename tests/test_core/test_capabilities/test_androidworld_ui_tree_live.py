@@ -35,6 +35,7 @@ from tests._helpers.android_runs import (
     FORWARDER,
     androidworld_capability,
     androidworld_setup,
+    bind_androidworld,
     installation_problem,
     write_task_list,
 )
@@ -62,8 +63,7 @@ async def prepared(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Pr
     context = AndroidWorldTaskLoader(data_dir=str(data)).get_task_context(f"{TASK}/42/0")
     capability, setup = androidworld_capability(), androidworld_setup()
     env = AndroidEnvironment(capabilities={"android": capability})  # type: ignore[call-arg]
-    env.check_setup(context.env, setups=[setup])
-    env.bind_setups([setup])
+    bind_androidworld(env, context.env, setup)
     await env.setup(context.env)
     try:
         yield Prepared(env=env, capability=capability)

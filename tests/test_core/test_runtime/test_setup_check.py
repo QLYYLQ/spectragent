@@ -21,7 +21,7 @@ opens a trace, before anything is launched. Through a real runtime and a real
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +37,7 @@ from spectragent.core.negotiation import (
 )
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.prompt import ReactPromptContext
+from spectragent.schemas.verdict import Judgment, VerifierIdentity
 from tests._helpers.archive_fakes import (
     CAPABILITY_ID,
     CONSUMER_HOOK_ID,
@@ -376,10 +377,26 @@ class _Setup:
 
 
 @dataclass
+class _Verifier:
+    """A live verifier hosted by the contract's archiving capability."""
+
+    verifier_id: str = "contract_judge"
+    capability_id: str = CAPABILITY_ID
+    needs: frozenset[str] = frozenset({"live_environment"})
+
+    def identity(self) -> VerifierIdentity:
+        return VerifierIdentity(verifier_id=self.verifier_id)
+
+
+@dataclass
 class _Benchmark:
-    """The run's benchmark block, as far as ``prepare()`` reads it: its setup component."""
+    """The run's benchmark block, as far as ``prepare()`` reads it: its setup component and live verifiers."""
 
     setup: _Setup | None
+    verifiers: list[_Verifier] = field(default_factory=list)
+
+    def live_verifiers(self) -> list[_Verifier]:
+        return list(self.verifiers)
 
 
 class _HostingCap(_CheckingCap):
@@ -406,7 +423,35 @@ class _HostingCap(_CheckingCap):
         self.hosted.append(("bind", setup))
 
 
-def _benchmark_run(cap: FakeArchivingCapability | None, setup: _Setup | None) -> Any:
+class _JudgingCap(_HostingCap):
+    """A capability that hosts live verifiers too (``LiveVerifierHost``), recording what it is handed."""
+
+    __abstract__ = True
+
+    def check_setup(
+        self,
+        context: Mapping[str, Any],
+        *,
+        negotiation: Any = None,
+        archivers: Sequence[Any] = (),
+        setup: Any = None,
+        live_verifiers: Sequence[Any] = (),
+    ) -> None:
+        self.hosted.append(("check verifiers", tuple(live_verifiers)))
+        super().check_setup(context, negotiation=negotiation, archivers=archivers, setup=setup)
+
+    def bind_live_verifiers(self, verifiers: Sequence[Any]) -> None:
+        self.hosted.append(("bind verifiers", tuple(verifiers)))
+
+    async def verify_live(self, verifier: Any, *, answer: str | None) -> Judgment:
+        return Judgment(score=1.0)
+
+
+def _benchmark_run(
+    cap: FakeArchivingCapability | None,
+    setup: _Setup | None,
+    verifiers: Sequence[_Verifier] = (),
+) -> Any:
     env = None if cap is None else _composite(cap)
     return make_run(
         agent=ContractArchiveAgent(),
@@ -414,7 +459,7 @@ def _benchmark_run(cap: FakeArchivingCapability | None, setup: _Setup | None) ->
         env=env,
         llm=ContractArchiveLLM(),
         memory=ContractArchiveMemory(),
-        benchmark=_Benchmark(setup),
+        benchmark=_Benchmark(setup, list(verifiers)),
     )
 
 
@@ -456,4 +501,62 @@ class TestPrepareRoutesTheBenchmarksSetup:
             benchmark=_Benchmark(_Setup()),
         )
         with pytest.raises(ValueError, match="hosted by the 'contract_archive' capability, and "):
+            AgentRuntime.for_agent(run, AGENT_ID).prepare()
+
+
+class TestPrepareRoutesTheBenchmarksLiveVerifiers:
+    """Routed as the setup component is: checked by their host with it, then bound last."""
+
+    def test_the_host_checks_them_with_the_setup_and_they_are_bound_last(self) -> None:
+        cap, setup, verifier = _JudgingCap(), _Setup(), _Verifier()
+
+        AgentRuntime.for_agent(_benchmark_run(cap, setup, [verifier]), AGENT_ID).prepare()
+
+        assert cap.hosted == [
+            ("check verifiers", (verifier,)),
+            ("check", setup),
+            ("bind", setup),
+            ("bind verifiers", (verifier,)),
+        ]
+
+    def test_a_benchmark_without_one_binds_none(self) -> None:
+        cap = _JudgingCap()
+
+        AgentRuntime.for_agent(_benchmark_run(cap, _Setup()), AGENT_ID).prepare()
+
+        assert ("check verifiers", ()) in cap.hosted
+        assert [event for event, _ in cap.hosted if event == "bind verifiers"] == []
+
+    def test_a_refusing_host_binds_nothing(self) -> None:
+        cap = _JudgingCap()
+        cap.refuse(ValueError("cannot judge here"))
+
+        with pytest.raises(ValueError, match="cannot judge here"):
+            AgentRuntime.for_agent(_benchmark_run(cap, None, [_Verifier()]), AGENT_ID).prepare()
+
+        assert [event for event, _ in cap.hosted if event.startswith("bind")] == []
+
+    def test_a_capability_that_hosts_none_is_refused_by_name(self) -> None:
+        run = _benchmark_run(_HostingCap(), None, [_Verifier()])
+        with pytest.raises(
+            ValueError,
+            match="the live verifier 'contract_judge' is hosted by the 'contract_archive' "
+            "capability, which hosts no live verifier",
+        ):
+            AgentRuntime.for_agent(run, AGENT_ID).prepare()
+
+    def test_a_run_without_an_environment_is_refused(self) -> None:
+        run = make_run(
+            agent=_TaskOnlyAgent(),
+            loop=_EnvlessLoop(max_steps=3),
+            env=None,
+            llm=ContractArchiveLLM(),
+            memory=ContractArchiveMemory(),
+            benchmark=_Benchmark(None, [_Verifier()]),
+        )
+        with pytest.raises(
+            ValueError,
+            match="the live verifier 'contract_judge' is hosted by the 'contract_archive' "
+            "capability, and this run has no environment",
+        ):
             AgentRuntime.for_agent(run, AGENT_ID).prepare()

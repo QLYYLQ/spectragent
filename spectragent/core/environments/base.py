@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from spectragent.schemas.restoration import RestorationEvidence, Retarget
     from spectragent.schemas.task import SetupTaskText
     from spectragent.schemas.verdict import Verdict
+    from spectragent.verifiers.base import LiveVerifier
 
 
 @runtime_checkable
@@ -268,15 +269,16 @@ class Environment(Protocol):
 
         ``AgentRuntime`` calls it once on every run that reaches the scoring
         point (after the Loop returned or raised, before ``on_run_end`` and
-        teardown), so a structural implementation needs it too. Asks every
-        capability implementing ``TaskOracle`` (``core/capabilities/base.py``)
-        whose oracle judges the run, concurrently and each within
+        teardown), so a structural implementation needs it too. Judges with
+        every live verifier :meth:`bind_live_verifiers` bound, each through the
+        capability hosting it (``LiveVerifierHost``,
+        ``core/capabilities/base.py``), concurrently and each within
         *timeout_s*, handing each the run's final *answer* (``loop.done``'s
         text; ``None`` when the run ended without one). A judgment comes back
-        as a ``judged`` live verdict under the oracle's identity, with the
+        as a ``judged`` live verdict under the verifier's identity, with the
         start time and duration measured around the call, and a timeout or an
         ``Exception`` as a ``not_judged`` one. Never raises ``Exception``. A
-        cancellation cancels the oracles still running, waits for them, and
+        cancellation cancels the verifiers still running, waits for them, and
         then propagates.
         """
         ...
@@ -351,23 +353,27 @@ class Environment(Protocol):
         negotiation: Any = None,
         archivers: Sequence[ArchiverBase] = (),
         setups: Sequence[BenchmarkSetup] = (),
+        live_verifiers: Sequence[LiveVerifier] = (),
     ) -> None:
         """Refuse now, acquiring nothing, what :meth:`setup` would refuse for this task.
 
         ``AgentRuntime.prepare()`` calls it — before the trace is opened and
         before anything is launched, on a dry run too — with the task's setup
-        context, the observation negotiation result, and the archivers and
-        benchmark setup components it is about to bind. The context is routed
-        exactly as :meth:`setup` routes it (a key no capability's ``setup()``
-        declares is refused), each archiver goes to the capability its prefix
-        names, each setup component to the capability it names, and every
-        capability implementing ``SetupCheck`` or ``SetupHost``
-        (``core/capabilities/base.py``) checks its own slice.
+        context, the observation negotiation result, and the archivers,
+        benchmark setup components and live verifiers it is about to bind.
+        The context is routed exactly as :meth:`setup` routes it (a key no
+        capability's ``setup()`` declares is refused), each archiver goes to
+        the capability its prefix names, each setup component and live
+        verifier to the capability it names, and every capability
+        implementing ``SetupCheck``, ``SetupHost`` or ``LiveVerifierHost``
+        (``core/capabilities/base.py``) checks its own slice: a live
+        verifier's host refuses it when the run cannot meet what it requires.
 
         Raises:
             ValueError: A colliding capability set, a context key no
-                capability accepts, or a setup component no capability here
-                hosts.
+                capability accepts, a setup component or live verifier no
+                capability here hosts, or two live verifiers that would write
+                one verdict file.
             UnroutableArchiverError: An archiver that cannot be bound here.
             Exception: A capability's own refusal, naming both parties
                 (browser: ``BrowserCooperationError``).
@@ -386,6 +392,21 @@ class Environment(Protocol):
         Raises:
             ValueError: A component whose capability is not here, does not
                 host setup components, or is named by two components.
+        """
+        ...
+
+    def bind_live_verifiers(self, verifiers: Sequence[LiveVerifier]) -> None:
+        """Route each live verifier to the capability it names, and bind; :meth:`verify_live` asks them.
+
+        Validates every verifier before binding any, as :meth:`bind_setups`
+        does, reading each identity once, then hands every hosting capability
+        its verifiers, ``()`` to those that get none. Acquires no resource:
+        ``AgentRuntime.prepare`` calls it as its last step, with the setup
+        components, only when the run's benchmark lists a live verifier.
+
+        Raises:
+            ValueError: A verifier whose capability is not here or does not
+                host live verifiers, or two that would write one verdict file.
         """
         ...
 

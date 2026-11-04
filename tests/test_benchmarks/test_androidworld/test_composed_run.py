@@ -9,7 +9,10 @@ stack, with a fake AndroidWorld installation and nothing launched:
 - a task whose goal is made on the device at setup (a MiniWoB++ task) is
   known to have its text completed by the Android capability's setup on the
   first ``prepare()``, before the setup component is bound; one whose goal is
-  the listed one is not.
+  the listed one is not;
+- AndroidWorld's live verifier, listed in the benchmark block, is bound to the
+  Android capability beside the setup component, and is no part of the
+  configuration the run records.
 """
 
 from __future__ import annotations
@@ -21,7 +24,9 @@ import pytest
 from pydantic import JsonValue
 
 from spectragent.benchmarks.androidworld.benchmark import AndroidWorldBenchmark
+from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
 from spectragent.benchmarks.androidworld.setup import AndroidWorldSetup
+from spectragent.benchmarks.androidworld.verifier import AndroidWorldVerifier
 from spectragent.core.capabilities.android.actions import AndroidOpenAppAction
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.composer import ComposedRun, ConfigComposer
@@ -82,6 +87,7 @@ def run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ComposedRun:
                     "setup_id": "androidworld",
                     "root": str(fake_installation(tmp_path / "aw", monkeypatch)),
                 },
+                "verifiers": [{"verifier_id": "androidworld"}],
                 "capability": [
                     {
                         "capability_id": "android",
@@ -125,3 +131,18 @@ def test_a_goal_made_on_the_device_is_known_on_the_first_prepare(run: ComposedRu
 
 def test_a_listed_goal_is_the_tasks_text(run: ComposedRun) -> None:
     assert _prepared(run, BRIGHTNESS)._task_text_setter is None
+
+
+def test_the_live_verifier_is_bound_beside_the_setup_and_not_recorded(run: ComposedRun) -> None:
+    capability = run.single("capability")
+    assert isinstance(capability, AndroidCapability)
+
+    _prepared(run, BRIGHTNESS)
+
+    (verifier,) = capability._live_verifiers
+    assert isinstance(verifier, AndroidWorldVerifier)
+    assert verifier.identity().version == PINNED_COMMIT
+    recorded = run.run_configuration()
+    assert recorded is not None
+    (block,) = recorded.model_dump()["benchmark"]
+    assert block["verifiers"] is None, "a verifier never changes the run, so it is not recorded"

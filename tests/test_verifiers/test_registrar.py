@@ -10,12 +10,14 @@ import textwrap
 
 import pytest
 
+from spectragent.benchmarks.androidworld.verifier import AndroidWorldVerifier
 from spectragent.benchmarks.browsecomp import BrowseCompVerifier
 from spectragent.benchmarks.lexbench_browser import LexBenchBrowserVerifier
 from spectragent.benchmarks.online_mind2web import OnlineMind2WebVerifier
 from spectragent.core.data_loader.eval._registrar import EvalLoaderRegistrar
 from spectragent.core.data_loader.task._registrar import TaskLoaderRegistrar
 from spectragent.verifiers import (
+    LiveVerifier,
     LLMJudgeVerifier,
     OfflineVerifier,
     Verifier,
@@ -41,7 +43,17 @@ def test_registrar_is_keyed_on_verifier_id_and_written_only_inline():
 
 def test_every_verifier_is_registered():
     keys = set(VerifierRegistrar.keys())
-    assert keys == {"exact_match", *_BENCHMARK_VERIFIERS}
+    assert keys == {"exact_match", "androidworld", *_BENCHMARK_VERIFIERS}
+
+
+def test_androidworlds_verifier_judges_live_hosted_by_the_android_capability():
+    """Its own benchmark's key, in that benchmark's package, as every benchmark's own judge."""
+    verifier = AndroidWorldVerifier()
+    assert isinstance(verifier, LiveVerifier) and not isinstance(verifier, LLMJudgeVerifier)
+    assert attachment_of(verifier) == "live"
+    assert verifier.capability_id == "android"
+    assert AndroidWorldVerifier.__module__ == "spectragent.benchmarks.androidworld.verifier"
+    assert "androidworld" in set(TaskLoaderRegistrar.keys())
 
 
 @pytest.mark.parametrize("key", sorted(VerifierRegistrar.keys()))

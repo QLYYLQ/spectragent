@@ -83,7 +83,12 @@ class DeviceNeeds(BaseModel):
 
 
 class UnmetDeviceNeeds(ValueError):
-    """A provider cannot meet what the run needs of its device; the message names each need."""
+    """What the run needs of its device will not be met; the message names each need and who needs it.
+
+    Either the provider cannot meet what the benchmark setup component needs,
+    or a live verifier needs what the run's device will not offer: the device
+    offers what the setup component needs, and a verifier never changes that.
+    """
 
 
 class EmulatorGrpc(BaseModel):

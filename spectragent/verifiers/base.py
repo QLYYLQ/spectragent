@@ -77,6 +77,28 @@ class OfflineVerifier(Verifier, Protocol):
 
 
 @runtime_checkable
+class LiveVerifier(Verifier, Protocol):
+    """A verifier that judges a run against the live environment, at the scoring point.
+
+    It needs ``live_environment`` (:func:`attachment_of`) and names the
+    capability that hosts it: the one whose environment it judges
+    (``docs/architecture_design.md`` §4.9 "基准组件由 capability 承载").
+    ``AgentRuntime.prepare()`` routes it there, the capability's
+    ``check_setup`` refuses it when the run cannot meet what it requires, and
+    it is bound last, as a benchmark setup component is. At the scoring point
+    the environment asks the host to judge with it
+    (``LiveVerifierHost.verify_live``). How it judges is the host's own
+    contract (the Android capability's is ``AndroidLiveVerifier``): only the
+    host knows what access it gives.
+    """
+
+    @property
+    def capability_id(self) -> str:
+        """The ``capability_id`` of the capability that hosts it."""
+        ...
+
+
+@runtime_checkable
 class VerifierLifecycle(Protocol):
     """Optional: the resources a verifier owns for one judging pass (its judge model's client)."""
 
@@ -89,6 +111,7 @@ def attachment_of(verifier: Verifier) -> Attachment:
 
 
 __all__ = [
+    "LiveVerifier",
     "OfflineVerifier",
     "Verifier",
     "VerifierLifecycle",

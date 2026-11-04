@@ -24,12 +24,10 @@ device. One task is one run:
    device's changes are thrown away with the run; a failure is logged), then
    the service's process group.
 
-The task is judged against the same service at the scoring point
-(``scoring.py``). Until AndroidWorld's live verifier lands, this component
-hands its identity and its judgment to the capability's ``oracle_identity`` and
-``read_score`` (``TaskOracle``), and the environment keeps them as the run's
-live verdict: the scoring path is as it was when the capability's task oracle
-held both halves.
+The task is judged against the same service at the scoring point, by
+AndroidWorld's live verifier (``verifier.py``): the Android capability hands it
+this component, whose :meth:`AndroidWorldSetup.started` gives the running
+service and the task initialized on it.
 
 The service makes the task again from its address, so a task whose parameters
 it cannot rebuild cannot be the listed one: ``MarkorCreateFolder`` names its
@@ -50,7 +48,6 @@ from typing import Annotated
 from pydantic import Field, ValidationError
 
 from spectragent.benchmarks._setup_registrar import BenchmarkSetupBase
-from spectragent.benchmarks.androidworld import scoring
 from spectragent.benchmarks.androidworld.service import (
     FORWARDER_APK,
     PINNED_COMMIT,
@@ -65,7 +62,6 @@ from spectragent.benchmarks.androidworld.tasks import MINIWOB, UNREPRODUCIBLE, A
 from spectragent.core.capabilities.android.backends.base import AndroidProviderSession, DeviceNeeds
 from spectragent.core.capabilities.android.benchmark_setup import OracleTask
 from spectragent.core.capabilities.android.processes import finish
-from spectragent.schemas.verdict import Judgment, VerifierIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +230,7 @@ class AndroidWorldSetup(BenchmarkSetupBase):
                 answered no ``over``.
             TimeoutError: The service gave no answer in time.
         """
-        service, task = self._started()
+        service, task = self.started()
         if not self.answers_episode_over():
             return False
         reply = await service.call(
@@ -248,25 +244,8 @@ class AndroidWorldSetup(BenchmarkSetupBase):
             raise AndroidWorldError(f"GET /task/episode_over answered no over: {reply!r}")
         return over
 
-    def oracle_identity(self) -> VerifierIdentity | None:
-        """Who judges the started task: AndroidWorld at its pinned commit (``TaskOracle``, through the capability)."""
-        return scoring.identity()
-
-    async def read_score(self, *, answer: str | None) -> Judgment:
-        """The started task's judgment, given the run's *answer* (``TaskOracle``, through the capability).
-
-        The scoring path stays as it was until AndroidWorld's live verifier
-        lands and judges the task itself (``scoring.py``).
-
-        Raises:
-            AndroidWorldError: No task was initialized, or the service refused
-                the answer or gave no finite score.
-        """
-        service, task = self._started()
-        return await scoring.read_score(service, task, answer=answer, device_goal=self._device_goal)
-
-    def _started(self) -> tuple[AndroidWorldService, AndroidWorldTask]:
-        """The running service and the task initialized on it.
+    def started(self) -> tuple[AndroidWorldService, AndroidWorldTask]:
+        """The running service and the task initialized on it: what AndroidWorld's verifier judges.
 
         Raises:
             AndroidWorldError: No task was initialized on this device.

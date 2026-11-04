@@ -173,6 +173,8 @@ class ScriptedPhone:
             one it leaves out is labelled with its package name.
         more_launcher_apps: Further launcher activities the service lists,
             each ``{"label", "package", "activity"}``: a package with two.
+        launcher_delay_s: How long the service takes to answer
+            ``launcher_apps``: a cold device's package manager can be slow.
         helper_screenshots: Whether the helper takes screenshots (API 31-33);
             otherwise it answers ``unsupported`` and the service takes them.
         screenshot_fails: Every screenshot fails from now on.
@@ -233,6 +235,7 @@ class ScriptedPhone:
     )
     labels: dict[str, str] = field(default_factory=lambda: {"com.android.settings": "Settings"})
     more_launcher_apps: list[JsonValue] = field(default_factory=list)
+    launcher_delay_s: float = 0.0
     helper_screenshots: bool = True
     screenshot_fails: bool = False
     screen: bytes | None = None
@@ -320,6 +323,7 @@ class ScriptedPhone:
         return Answer({"uptime_ms": self.uptime_ms, "next_seq": 0})
 
     async def _launcher_apps(self, params: JsonObject) -> Answer:
+        await asyncio.sleep(self.launcher_delay_s)
         apps: list[JsonValue] = []
         for package, component in self.launchable.items():
             activity = component.partition("/")[2]

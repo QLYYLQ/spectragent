@@ -19,17 +19,18 @@ to require is written here once (it types with ``key_events`` and
 ``fold_accents``, as AndroidWorld and MiniWoB++ runs do, for parity with
 AndroidWorld's own typing), and :func:`androidworld_setup` builds the
 benchmark's setup component for that installation, which a module routes to
-the capability as ``prepare()`` does (``check_setup`` with it, then
-``bind_setups``). :func:`androidworld_composed` composes the environment and
-the benchmark through the real ``ConfigComposer`` instead, so the benchmark's
-part (the AVD, the ``open_app`` table) is merged as a run merges it.
+the capability with AndroidWorld's live verifier as ``prepare()`` does
+(:func:`bind_androidworld`). :func:`androidworld_composed` composes the
+environment and the benchmark through the real ``ConfigComposer`` instead, so
+the benchmark's part (the AVD, the ``open_app`` table) is merged as a run
+merges it.
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from pydantic import JsonValue
@@ -38,7 +39,9 @@ from spectragent import PACKAGE_ROOT
 from spectragent.benchmarks.androidworld.benchmark import AndroidWorldBenchmark
 from spectragent.benchmarks.androidworld.service import Installation
 from spectragent.benchmarks.androidworld.setup import AndroidWorldSetup
+from spectragent.benchmarks.androidworld.verifier import AndroidWorldVerifier
 from spectragent.core.capabilities.android.capability import AndroidCapability
+from spectragent.core.capabilities.android.environment import AndroidEnvironment
 from spectragent.core.composer import ComposedRun, ConfigComposer
 from spectragent.core.data_loader.task import AndroidWorldTaskLoader
 from spectragent.core.llm.messages import BaseMessage, UserMessage
@@ -127,15 +130,32 @@ def androidworld_setup() -> AndroidWorldSetup:
 
 
 def androidworld_benchmark(loader: AndroidWorldTaskLoader) -> AndroidWorldBenchmark:
-    """The ``androidworld`` benchmark of *loader*'s tasks, with :func:`androidworld_setup` as its setup.
+    """The ``androidworld`` benchmark of *loader*'s tasks, with :func:`androidworld_setup` as its
+    setup and AndroidWorld's live verifier as its verifier, as the shipped YAML lists it.
 
-    What ``make_run(benchmark=...)`` takes, so ``prepare()`` routes the setup
-    component to the Android capability as a composed run's would be.
+    What ``make_run(benchmark=...)`` takes, so ``prepare()`` routes both to the
+    Android capability as a composed run's would be.
     """
     benchmark = AndroidWorldBenchmark()
     benchmark.task_loader = loader
     benchmark.setup = androidworld_setup()
+    benchmark.verifiers = [AndroidWorldVerifier()]
     return benchmark
+
+
+def bind_androidworld(
+    env: AndroidEnvironment, context: Mapping[str, JsonValue], setup: AndroidWorldSetup
+) -> AndroidWorldVerifier:
+    """Route *setup* and AndroidWorld's live verifier to *env*'s capability as ``prepare()`` does.
+
+    Checked with the task's *context* first, then bound; the verifier is
+    returned, the one ``env.verify_live`` judges with.
+    """
+    verifier = AndroidWorldVerifier()
+    env.check_setup(context, setups=[setup], live_verifiers=[verifier])
+    env.bind_setups([setup])
+    env.bind_live_verifiers([verifier])
+    return verifier
 
 
 def androidworld_composed(data: Path) -> ComposedRun:
@@ -167,6 +187,7 @@ def androidworld_composed(data: Path) -> ComposedRun:
                 "benchmark_id": "androidworld",
                 "task_loader": {"benchmark_name": "androidworld", "data_dir": str(data)},
                 "setup": {"setup_id": "androidworld", "root": str(installation().root)},
+                "verifiers": [{"verifier_id": "androidworld"}],
                 "capability": [
                     {
                         "capability_id": "android",

@@ -13,7 +13,7 @@ from spectragent.benchmarks import BenchmarkRegistrar
 from spectragent.core.composer import ComposeError, ConfigComposer
 from spectragent.core.data_loader.eval._registrar import EvalLoaderRegistrar
 from spectragent.core.data_loader.task._registrar import TaskLoaderRegistrar
-from spectragent.schemas.verdict import Verdict, VerifierIdentity
+from spectragent.schemas.verdict import Judgment, Verdict, VerifierIdentity
 
 
 def _data(root: Path, benchmark: str, subset: str, *task_ids: str) -> Path:
@@ -130,7 +130,7 @@ def test_each_benchmark_names_the_verifier_kinds_it_takes() -> None:
         for key, cls in BenchmarkRegistrar.get_all().items()
     }
     assert taken == {
-        "androidworld": [],
+        "androidworld": ["androidworld"],
         "browsecomp": ["browsecomp", "exact_match"],
         "lexbench_browser": ["lexbench_browser"],
         "online_mind2web": ["online_mind2web"],
@@ -260,16 +260,41 @@ def test_the_primary_verdict_is_the_first_listed_verifier_of_the_primary_kind() 
     assert benchmark.primary_verdict(verdicts) is None
 
 
-def test_with_none_listed_the_primary_verdict_is_the_one_live_verdict_of_its_kind() -> None:
+def test_androidworlds_listed_verifier_gives_its_primary_verdict_from_the_scoring_point() -> None:
+    """Listed in its block, the live verifier's verdict is found by its slug, as any listed one's."""
     from spectragent.benchmarks.androidworld.benchmark import AndroidWorldBenchmark
+    from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
+    from spectragent.benchmarks.androidworld.verifier import AndroidWorldVerifier
 
     benchmark = AndroidWorldBenchmark()
-    live = _judged("androidworld", attachment="live", score=1.0)
-    other = _judged("exact_match", label=1)
-    assert benchmark.primary_verdict({live.slug: live, other.slug: other}) == live
-    assert benchmark.primary_verdict({other.slug: other}) is None
-    second = _judged("androidworld", attachment="live", score=0.0, config={"x": 1})
-    assert benchmark.primary_verdict({live.slug: live, second.slug: second}) is None
+    benchmark.verifiers = [AndroidWorldVerifier()]
+    live = Verdict.judged(
+        VerifierIdentity(verifier_id="androidworld", version=PINNED_COMMIT),
+        "live",
+        Judgment(score=1.0, evidence={"family": "miniwob"}),
+        started_at=1.0,
+        duration_ms=1,
+    )
+    assert benchmark.live_verifiers() == benchmark.verifiers
+    assert benchmark.offline_verifiers() == []
+    assert benchmark.primary_verdict({live.slug: live}) == live
+    assert benchmark.success(live, None) == 1.0
+
+
+def test_a_live_verifier_that_names_no_host_is_refused() -> None:
+    from spectragent.benchmarks.androidworld.benchmark import AndroidWorldBenchmark
+
+    class _Hostless:
+        verifier_id = "hostless"
+        needs = frozenset({"live_environment"})
+
+        def identity(self) -> VerifierIdentity:
+            return VerifierIdentity(verifier_id=self.verifier_id)
+
+    benchmark = AndroidWorldBenchmark()
+    benchmark.verifiers = [_Hostless()]  # type: ignore[list-item]
+    with pytest.raises(TypeError, match="'hostless' needs the live environment and names no"):
+        benchmark.live_verifiers()
 
 
 def test_the_default_success_rule_reads_the_label() -> None:

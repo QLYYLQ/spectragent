@@ -413,8 +413,8 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
         did not end the run, a Loop asks its environment (``env.episode_over``,
         ``docs/architecture_design.md`` §4.1). Over: an ``episode_over`` result,
         apart from the agent's ``done`` and from running out of steps, keeping
-        the best answer seen as ``max_steps`` does; the oracles are handed no
-        answer for it, which only ``loop.done`` gives. Not over: ``None``. A
+        the best answer seen as ``max_steps`` does; the live verifiers are handed
+        no answer for it, which only ``loop.done`` gives. Not over: ``None``. A
         question that fails is an environment failure: an ``error`` result with
         ``env_status: failed`` naming it and the step it followed. A veto and a
         cancellation propagate. An env-less run has no episode to end.

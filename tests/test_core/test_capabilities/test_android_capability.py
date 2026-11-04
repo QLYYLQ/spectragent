@@ -66,7 +66,12 @@ from spectragent.core.capabilities.android.task_setup import AndroidSetup
 from spectragent.core.capabilities.android.ui_tree.cleaning import AndroidWorldCleaner
 from spectragent.core.capabilities.android.ui_tree.serializers import M3ASerializer, T3ASerializer
 from spectragent.core.capabilities.android.ui_tree.source import AccessibilityServiceTreeSource
-from spectragent.core.capabilities.base import EpisodeEnd, SetupHost, TaskTextFromSetup
+from spectragent.core.capabilities.base import (
+    EpisodeEnd,
+    LiveVerifierHost,
+    SetupHost,
+    TaskTextFromSetup,
+)
 from spectragent.core.composer import ComposeError, ConfigComposer
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.loops import ReactLoop
@@ -75,6 +80,7 @@ from spectragent.schemas.action import Action
 from spectragent.schemas.observation.geometry import ScreenshotGeometry
 from spectragent.schemas.task import SetupTaskText
 from spectragent.schemas.verdict import Judgment, VerifierIdentity
+from spectragent.verifiers.base import VerifierNeed
 from tests._helpers.android_device import (
     APK_BYTES,
     FINGERPRINT,
@@ -826,14 +832,31 @@ class _RecordingSetup:
 
 
 @dataclass
-class _ScoringSetup(_RecordingSetup):
-    """A setup component that also scores, as AndroidWorld's does until its live verifier lands."""
+class _RecordingVerifier:
+    """A live verifier the capability hosts: writes what it was handed into *calls*, judges 0.5."""
 
-    def oracle_identity(self) -> VerifierIdentity | None:
-        return VerifierIdentity(verifier_id="recording")
+    calls: list[str] = field(default_factory=list)
+    verifier_id: str = "recording_judge"
+    needs: frozenset[VerifierNeed] = frozenset({"live_environment", "answer"})
+    #: What it requires of the device; the recording setup's device offers root and Wi-Fi.
+    needs_of_device: DeviceNeeds = field(default_factory=lambda: DeviceNeeds(root=True))
 
-    async def read_score(self, *, answer: str | None) -> Judgment:
-        self.calls.append(f"read_score {answer}")
+    @property
+    def capability_id(self) -> str:
+        return "android"
+
+    @property
+    def device_needs(self) -> DeviceNeeds:
+        return self.needs_of_device
+
+    def identity(self) -> VerifierIdentity:
+        return VerifierIdentity(verifier_id=self.verifier_id)
+
+    async def judge(
+        self, device: AndroidProviderSession, setup: object, *, answer: str | None
+    ) -> Judgment:
+        prepared_by = getattr(setup, "setup_id", None)
+        self.calls.append(f"judge {device.serial} {prepared_by} {answer}")
         return Judgment(score=0.5)
 
 
@@ -861,58 +884,77 @@ def test_the_capability_hosts_a_setup_component_and_refuses_another_kind() -> No
 async def test_the_setup_shapes_the_boot_and_is_stopped_before_the_device_goes(
     tmp_path: Path,
 ) -> None:
+    """The live verifier judges on the device the setup prepared, before the setup stops."""
     task: dict[str, JsonValue] = {"opaque": ["to", "the", "capability"]}
     async with phone_server(ScriptedPhone()) as adb:
-        setup = _ScoringSetup()
+        setup = _RecordingSetup()
+        verifier = _RecordingVerifier(calls=setup.calls)
         capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
         configured(capability, adb)
         capability.bind_setup(setup)
+        capability.bind_live_verifiers([verifier])
         provider = _ClosingProvider(adb.host, adb.port, log=setup.calls)
         capability.backend = provider
         await capability.setup(oracle_task=task)
-        identity = capability.oracle_identity()
-        reading = await capability.read_score(answer="Mall")
+        judgment = await capability.verify_live(verifier, answer="Mall")
         await capability.teardown()
 
     assert provider.needs == [DeviceNeeds(root=True, guest_wifi=True)]
     assert setup.tasks == [task] and setup.tasks[0] is task, "handed over as it came"
-    assert identity == VerifierIdentity(verifier_id="recording")
-    assert reading == Judgment(score=0.5)
+    assert judgment == Judgment(score=0.5)
     assert setup.calls == [
         "check_setup",
         f"start {SERIAL}",
-        "read_score Mall",  # the run's answer, handed over as it came
+        # The booted device, the setup that prepared it, the run's answer as it came.
+        f"judge {SERIAL} recording Mall",
         "stop",
         "provider closed",
     ]
 
 
-async def test_without_a_setup_the_device_boots_with_no_needs_and_nothing_judges(
-    tmp_path: Path,
-) -> None:
+async def test_without_a_setup_the_device_boots_with_no_needs(tmp_path: Path) -> None:
     async with phone_server(ScriptedPhone()) as adb:
         capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
         configured(capability, adb)
         provider = FakeServerProvider(adb.host, adb.port)
         capability.backend = provider
         await capability.setup()
-        try:
-            assert capability.oracle_identity() is None, "the environment asks nothing"
-        finally:
-            await capability.teardown()
+        await capability.teardown()
 
     assert provider.needs == [DeviceNeeds()]
 
 
-async def test_a_setup_that_judges_nothing_leaves_no_verdict() -> None:
+def test_the_capability_hosts_live_verifiers_and_refuses_another_kind() -> None:
+    capability = unset_capability()
+    assert isinstance(capability, LiveVerifierHost)
+
+    capability.bind_live_verifiers([_RecordingVerifier()])
+    capability.bind_live_verifiers([])
+    foreign = SimpleNamespace(verifier_id="foreign", capability_id="android")
+    with pytest.raises(TypeError, match=r"'foreign' name the android capability as their host"):
+        capability.bind_live_verifiers([foreign])  # type: ignore[list-item]
+    with pytest.raises(TypeError, match=r"'foreign' name the android capability as their host"):
+        capability.check_setup({}, live_verifiers=[foreign])  # type: ignore[list-item]
+
+
+async def test_it_judges_only_with_a_verifier_bound_to_it_on_a_device_that_is_up() -> None:
+    capability = unset_capability()
+    bound = _RecordingVerifier()
+    capability.bind_live_verifiers([bound])
+
+    with pytest.raises(ValueError, match="'other' is not bound to the android capability"):
+        await capability.verify_live(_RecordingVerifier(verifier_id="other"), answer=None)
+    with pytest.raises(RuntimeError, match="the android device is not up"):
+        await capability.verify_live(bound, answer=None)
+    assert bound.calls == []
+
+
+async def test_with_no_live_verifier_the_environment_judges_nothing() -> None:
     capability = unset_capability()
     capability.bind_setup(_RecordingSetup())
     env = make_env(AndroidEnvironment, {"android": capability})
 
-    assert capability.oracle_identity() is None
     assert await env.verify_live(timeout_s=1.0, answer=None) == []
-    with pytest.raises(RuntimeError, match="no bound setup component judges this run"):
-        await capability.read_score(answer=None)
 
 
 async def test_a_setup_that_fails_to_start_is_stopped_and_the_device_released(
@@ -1090,6 +1132,43 @@ def test_prepare_refuses_a_device_the_provider_cannot_give_naming_setup_needs_an
     )
     assert "measured on macOS only" in message and "fresh: read_only is false" in message
     assert setup.calls == [], "the device comes first: the setup's own check never ran"
+
+
+def test_prepare_refuses_a_live_verifier_whose_needs_the_device_will_not_offer() -> None:
+    """The device boots with what the setup needs; a verifier's needs are checked, never added."""
+    setup = _RecordingSetup(needs=DeviceNeeds(root=True, guest_wifi=True))
+    verifier = _RecordingVerifier(needs_of_device=DeviceNeeds(emulator_grpc=True, root=True))
+    env = make_env(AndroidEnvironment, {"android#0": unset_capability()})
+
+    with pytest.raises(UnmetDeviceNeeds) as refused:
+        env.check_setup({"oracle_task": {"a": 1}}, setups=[setup], live_verifiers=[verifier])
+
+    assert str(refused.value) == (
+        "the live verifier 'recording_judge' needs emulator_grpc of the device, and this run's "
+        "device offers only what the benchmark setup 'recording' needs (root, guest_wifi): a "
+        "verifier states what it requires and never changes how the device boots"
+    )
+    assert setup.calls == [], "refused before the setup's own check"
+
+
+def test_without_a_setup_a_verifier_needing_more_than_adb_is_refused() -> None:
+    verifier = _RecordingVerifier(needs_of_device=DeviceNeeds(root=True))
+    with pytest.raises(
+        UnmetDeviceNeeds,
+        match="offers nothing beyond ADB, as no benchmark setup component asks for more",
+    ):
+        unset_capability().check_setup({}, live_verifiers=[verifier])
+
+
+def test_a_verifier_whose_needs_the_setup_already_asks_for_is_hosted(tmp_path: Path) -> None:
+    setup = _RecordingSetup(needs=DeviceNeeds(root=True, guest_wifi=True))
+    capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)))
+
+    capability.check_setup(
+        {"oracle_task": {"a": 1}}, setup=setup, live_verifiers=[_RecordingVerifier()]
+    )
+
+    assert setup.calls == ["check_setup"]
 
 
 # ── the device side and its strategies ────────────────────────────────
