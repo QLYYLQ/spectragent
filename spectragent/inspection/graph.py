@@ -29,8 +29,6 @@ EXPANDED_RUNS = 8
 _SOURCE_ISSUES = {
     "ambiguous": "源运行 ID 对应多份记录，无法确定从哪条分出",
     "missing": "根目录内找不到源运行",
-    "outside_root": "源运行不在查看器的根目录内",
-    "unreadable": "源运行读不出来",
 }
 
 
@@ -160,39 +158,21 @@ def _checkpoint(row: Mapping[str, Any]) -> int:
     return int((row.get("branch") or {}).get("checkpoint_step", 0))
 
 
-def _parent(row: dict[str, Any], by_key: Mapping[str, dict[str, Any]]) -> tuple[Any, str | None]:
+def _parent(
+    row: Mapping[str, Any], runs: Mapping[str, Mapping[str, Any]]
+) -> tuple[dict[str, str | int] | None, str | None]:
     """The commit *row*'s branch leaves, ``{"key", "step"}``, or why it is drawn without one.
 
-    A branch with checkpoint ``k`` leaves its source's step ``k - 1`` (``-1``:
-    the source's start). When that step lies in a source branch's own restored
-    prefix, the run that actually decided it is that branch's source, and so on
-    up the recorded provenance.
+    A branch with checkpoint ``k`` leaves its recorded source's step ``k - 1``
+    (``-1``: the source's start). The branch loader branches only a run that
+    is no branch itself, at a step its record is complete through, so that
+    commit exists whenever the source is one of the task's readable runs.
     """
-    if row.get("source_resolution") != "found" or not row.get("source_key"):
-        return None, _SOURCE_ISSUES.get(row.get("source_resolution") or "", "没有可确认的源运行")
-    if row["source_key"] == row["key"]:
-        return None, "来源引用了运行自身"
-    step = _checkpoint(row) - 1
-    seen = {row["key"]}
-    source = by_key.get(row["source_key"])
-    while True:
-        if source is None:
-            return None, "源运行读不出来"
-        if source["key"] in seen:
-            return None, "来源引用形成循环，无法连接"
-        seen.add(source["key"])
-        if not source.get("branch") or step >= _checkpoint(source):
-            break
-        # The step is in this source branch's restored prefix: its source decided it.
-        if source.get("source_resolution") != "found":
-            return None, (
-                f"第 {step} 步在源分叉的恢复前缀里，而决定它的运行"
-                f"{_SOURCE_ISSUES.get(source.get('source_resolution') or '', '无法确认')}"
-            )
-        source = by_key.get(source.get("source_key") or "")
-    if step >= 0 and step in (source.get("missing_steps") or []):
-        return None, f"源运行的第 {step} 步没有提交（记录缺口），不画连线"
-    return {"key": source["key"], "step": step}, None
+    resolution = row.get("source_resolution") or "missing"
+    source = runs.get(row.get("source_key") or "") if resolution == "found" else None
+    if source is None:
+        return None, _SOURCE_ISSUES.get(resolution, _SOURCE_ISSUES["missing"])
+    return {"key": source["key"], "step": _checkpoint(row) - 1}, None
 
 
 def _outcome(verdict: Mapping[str, Any]) -> str:
@@ -275,12 +255,9 @@ def task_graph(rows: list[dict[str, Any]], key: str) -> dict[str, Any]:
     if not members:
         raise LookupError(f"No readable run of the task {key} in this directory")
     runs = {row["key"]: row for row in members}
-    readable = {row["key"]: row for row in rows if not row.get("read_error")}
     placed: dict[str, dict[str, Any]] = {}
     for row in members:
-        parent, detached = _parent(row, readable) if row.get("branch") else (None, None)
-        if parent is not None and parent["key"] not in runs:
-            parent, detached = None, "源运行记下的任务与这个分叉不同，不画连线"
+        parent, detached = _parent(row, runs) if row.get("branch") else (None, None)
         placed[row["key"]] = {
             "key": row["key"],
             "parent": parent,
@@ -294,24 +271,17 @@ def task_graph(rows: list[dict[str, Any]], key: str) -> dict[str, Any]:
             children.setdefault(at, []).append(line["key"])
     differs, ordinals = _differences([row for row in members if not row.get("branch")])
     ordered: list[dict[str, Any]] = []
-    visited: set[str] = set()
 
     def visit(line_key: str, depth: int) -> None:
-        visited.add(line_key)
         ordered.append({**placed[line_key], "depth": depth, "ordinal": ordinals.get(line_key)})
         for (parent, _), keys in sorted(children.items(), key=lambda item: item[0][1]):
             if parent == line_key:
                 for child in keys:
-                    if child not in visited:
-                        visit(child, depth + 1)
+                    visit(child, depth + 1)
 
     for line in sorted(placed.values(), key=lambda line: line["detached"] is not None):
-        if line["parent"] is None and line["key"] not in visited:
+        if line["parent"] is None:
             visit(line["key"], 0)
-    for line_key in [k for k in runs if k not in visited]:
-        # Reached by no top-level run: its recorded sources lead round in a circle.
-        placed[line_key].update(parent=None, detached="来源引用形成循环，无法连接")
-        visit(line_key, 0)
     forks = [
         {
             "parent": parent,
@@ -320,7 +290,6 @@ def task_graph(rows: list[dict[str, Any]], key: str) -> dict[str, Any]:
             "summary": _fork_summary([runs[k] for k in keys]),
         }
         for (parent, step), keys in sorted(children.items())
-        if all(placed[k]["parent"] is not None for k in keys)
     ]
     first = members[0]
     branch = first.get("branch") or {}

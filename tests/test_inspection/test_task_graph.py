@@ -83,22 +83,13 @@ def test_a_branch_leaves_the_commit_before_its_checkpoint_and_follows_its_source
     ]
 
 
-def test_a_step_in_a_source_branchs_restored_prefix_leaves_the_run_that_decided_it() -> None:
-    rows = [_live("live"), _branch("first", "live", 4), _branch("nested", "first", 3, "10")]
-    placed = _placed(task_graph(rows, TASK))
-    # step 2 of "first" was restored from "live", which decided it
-    assert placed["nested"] == (("live", 2), None, 1)
-    rows[2]["branch"]["checkpoint_step"] = 6
-    assert _placed(task_graph(rows, TASK))["nested"] == (("first", 5), None, 2)
-
-
 @pytest.mark.parametrize(
     ("patch", "reason"),
     [
         ({"source_resolution": "missing", "source_key": None}, "找不到源运行"),
         ({"source_resolution": "ambiguous", "source_key": None}, "多份记录"),
-        ({"source_resolution": "outside_root", "source_key": None}, "根目录"),
-        ({"source_key": "orphan"}, "来源引用了运行自身"),
+        # found, but not among the task's readable runs
+        ({"source_key": "gone"}, "找不到源运行"),
     ],
 )
 def test_a_source_that_cannot_be_confirmed_draws_no_edge(patch: dict, reason: str) -> None:
@@ -107,19 +98,6 @@ def test_a_source_that_cannot_be_confirmed_draws_no_edge(patch: dict, reason: st
     assert line["parent"] is None and reason in line["detached"]
     # a line without an edge comes after the connected ones
     assert task_graph(rows, TASK)["lines"][-1]["key"] == "orphan"
-
-
-def test_a_parent_commit_that_is_a_gap_draws_no_edge() -> None:
-    rows = [_live("live", missing_steps=[1]), _branch("child", "live", 2)]
-    line = task_graph(rows, TASK)["lines"][1]
-    assert line["parent"] is None and "第 1 步没有提交" in line["detached"]
-
-
-def test_cyclic_provenance_is_placed_once_without_an_edge() -> None:
-    rows = [_branch("a", "b", 3), _branch("b", "a", 3, "10")]
-    graph = task_graph(rows, TASK)
-    assert sorted(line["key"] for line in graph["lines"]) == ["a", "b"]
-    assert any("循环" in (line["detached"] or "") for line in graph["lines"])
 
 
 def test_labels_bold_what_differs_and_number_runs_that_differ_in_nothing() -> None:

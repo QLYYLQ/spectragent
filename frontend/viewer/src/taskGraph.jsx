@@ -195,7 +195,6 @@ function RowBody({ row, graph, ctx }) {
     case "fork":
     case "ghost": {
       const k = run.branch.checkpoint_step;
-      const walked = row.line.parent && row.line.parent.key !== run.source_key;
       return (
         <div className={`tg-body ${ctx.dimmed(run) ? "dim" : ""}`}>
           <button type="button" className="tg-hit" data-nav aria-pressed={pressed(k, "fork")} onClick={() => open(k, "fork")}
@@ -204,7 +203,6 @@ function RowBody({ row, graph, ctx }) {
             {restorationChips(run.restoration).map((chip) => <Chip key={chip.text} chip={chip} />)}
           </button>
           {row.line.detached && <span className="tg-issue">{row.line.detached}，不画连线</span>}
-          {walked && <span className="tg-note">源是 {graph.runs[run.source_key]?.run_id || run.source_key}；第 {k - 1} 步在它的恢复前缀里，由上面这条运行决定</span>}
           <span className="tg-who-line"><Label run={run} differs={[]} />{strategyText(run) && <span className="tg-who"> · {strategyText(run)}</span>}</span>
           <RunLinks run={run} selected={ctx.selected} onToggle={ctx.onToggle} />
         </div>
