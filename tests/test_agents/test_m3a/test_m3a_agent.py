@@ -45,6 +45,7 @@ from spectragent.core.composer import ConfigComposer
 from spectragent.core.hooks.base import PromptModelOwner
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.llm.call_context import CallAttribution, RunCallContext
+from spectragent.core.llm.exceptions import ModelOutputTruncatedError
 from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartImageParam,
@@ -138,9 +139,12 @@ class _Observation:
 
 @dataclass
 class _Summarizer:
-    """A chat model answering each call with the next reply, keeping each call and its attribution."""
+    """A chat model answering each call with the next reply, keeping each call and its attribution.
 
-    replies: list[str]
+    An exception among the replies is raised by its call, as a provider raises one.
+    """
+
+    replies: list[str | BaseException]
     context: RunCallContext = field(default_factory=RunCallContext)
     calls: list[tuple[list[BaseMessage], CallAttribution]] = field(default_factory=list)
     inference_kind: str = "chat"
@@ -151,7 +155,10 @@ class _Summarizer:
         self, messages: Sequence[BaseMessage], output_format: object = None
     ) -> ChatInvokeCompletion:
         self.calls.append((list(messages), self.context.current))
-        return ChatInvokeCompletion(completion=self.replies.pop(0), usage=None)
+        reply = self.replies.pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        return ChatInvokeCompletion(completion=reply, usage=None)
 
     async def aclose(self, *, timeout: float = 5.0) -> tuple[()]:
         return ()
@@ -286,6 +293,37 @@ async def test_the_summary_is_a_helper_call_with_androidworlds_prompt_and_the_ma
         'Step 1- Action selected: {"action_type": "click", "index": 0}. Wi-Fi page opened.'
         in _text(second)
     )
+
+
+@pytest.mark.parametrize(("generated", "line"), [("Opened Sett", "Opened Sett"), (None, "")])
+async def test_a_summary_cut_off_at_the_ceiling_is_the_text_it_had_generated(
+    generated: str | None, line: str
+) -> None:
+    """AndroidWorld's model wrapper returns a cut-off summary's content like any other, so the
+    history line carries what it had generated and the step goes on: no Loop setting decides it."""
+    cut_off = ModelOutputTruncatedError(
+        model="scripted",
+        stop_reason="length",
+        ceiling_field="max_completion_tokens",
+        ceiling=32768,
+        partial_output=generated,
+    )
+    summarizer = _Summarizer([cut_off])
+    agent = _agent(summarizer)
+    opened = "Reason: r\nAction: {'action_type': 'open_app', 'app_name': 'Settings'}"
+
+    await agent.build_react_prompt(_Observation(), context=_context(0))
+    (message,) = await agent.build_react_prompt(
+        _Observation(
+            history=HistoryObs(items=[_record(0, opened, results=[ActionResult(success=True)])])
+        ),
+        context=_context(1),
+    )
+
+    assert len(summarizer.calls) == 1
+    assert (
+        f'Step 1- Action selected: {{"action_type": "open_app", "app_name": "Settings"}}. {line}\n'
+    ) in _text(message)
 
 
 async def test_a_step_whose_action_failed_is_written_with_its_error_and_not_summarized() -> None:
@@ -517,6 +555,58 @@ async def test_a_run_types_into_an_element_presses_enter_summarizes_and_claims_s
         (1, "agent", "step_summary"),
         (1, "agent", "agent_decision"),
     ]
+
+
+async def test_a_reply_cut_off_at_the_ceiling_spends_its_step_as_androidworld_does(
+    tmp_path: Path,
+) -> None:
+    """With ``cut_off_reply: read_as_is``, a decision whose reasoning spent the whole budget
+    is the empty reply AndroidWorld reads: M3A's line for it, no summary, and the run goes on.
+    The trace still says the reply was cut off."""
+    phone = ScriptedPhone(screen=_png())
+    phone.forest = settings_forest(("Network & internet", (0, 300, 1080, 450)))
+    cut_off = ModelOutputTruncatedError(
+        model="scripted",
+        stop_reason="length",
+        ceiling_field="max_completion_tokens",
+        ceiling=32768,
+        partial_output="",
+    )
+    model = ScriptedModel(
+        cut_off, "Reason: Done.\nAction: {'action_type': 'status', 'goal_status': 'complete'}"
+    )
+    async with phone_server(phone) as adb:
+        capability = AndroidCapability(
+            service_apk=str(fake_service_apk(tmp_path)), settle_max_wait_s=0
+        )
+        configured(capability, adb)
+        env = make_env(AndroidEnvironment, {"android#0": capability})
+        writer = TraceWriter(trace_dir=str(tmp_path / "traces"))
+        run = make_run(
+            agent=M3AAgent(),
+            loop=ReactLoop(**_ANDROIDWORLD_LOOP, cut_off_reply="read_as_is"),
+            env=env,
+            llm=model,
+            memory=SlidingWindowMemory(window_size=1),
+            hooks=[writer],
+        )
+        result = await AgentRuntime.for_agent(run, AGENT_ID).execute(_GOAL, timeout=30)
+
+    assert result.agent_done == "done", result.error
+    _cut, last = model.calls
+    assert f"Step 1- {NOT_IN_FORMAT}" in _text(last[0]), "M3A's own line, and no summary call"
+    assert writer.run_dir is not None
+    trace = RunTrace(writer.run_dir)
+    spent = trace.step(0)
+    assert spent is not None
+    assert (spent.error_phase, spent.error, spent.llm_output) == ("parse", NOT_IN_FORMAT, "")
+    (call,) = trace.llm_messages(0)
+    assert call.status == "failed" and call.failure is not None
+    assert (call.failure.error, call.failure.stop_reason, call.failure.partial_output) == (
+        "ModelOutputTruncatedError",
+        "length",
+        "",
+    )
 
 
 # ── Its prompt tree (``test_prompt_tree.py``'s invariants, per step) ──

@@ -293,8 +293,8 @@ class AnthropicCompatBase(ChatModelBase):
         is absent and this check cannot fire.
 
         What the reply had written goes with the error (``partial_output``,
-        see :func:`_generated_text`): the step aborts here, so the failure
-        record is the only place it survives.
+        see :func:`_generated_text`): when the Loop ends the run on this
+        error, the failure record is the only place it survives.
         """
         if response.stop_reason == "max_tokens":
             raise ModelOutputTruncatedError(

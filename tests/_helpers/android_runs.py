@@ -75,12 +75,15 @@ def prompt_text(messages: Sequence[BaseMessage]) -> str:
 
 
 class ScriptedModel:
-    """Answers each call with the next reply of its script, and keeps the messages of every call."""
+    """Answers each call with the next reply of its script, and keeps the messages of every call.
+
+    An exception in the script is raised by its call, as a provider raises one.
+    """
 
     inference_kind = "chat"
     model = name = "scripted"
 
-    def __init__(self, *replies: str) -> None:
+    def __init__(self, *replies: str | BaseException) -> None:
         self.replies = list(replies)
         self.calls: list[list[BaseMessage]] = []
 
@@ -90,7 +93,10 @@ class ScriptedModel:
         self.calls.append(list(messages))
         if not self.replies:
             raise AssertionError("the script has no reply left")
-        return ChatInvokeCompletion(completion=self.replies.pop(0), usage=None)
+        reply = self.replies.pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        return ChatInvokeCompletion(completion=reply, usage=None)
 
     async def aclose(self, *, timeout: float = 5.0) -> tuple[()]:
         return ()

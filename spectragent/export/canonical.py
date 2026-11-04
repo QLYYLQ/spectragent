@@ -13,6 +13,7 @@ import hashlib
 from collections.abc import Callable
 from typing import Any, Literal
 
+from spectragent.core.llm.exceptions import ModelOutputTruncatedError
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.reconstruction import recorded_chat_decisions
 from spectragent.export.errors import missing_export_slots
@@ -53,16 +54,27 @@ def target_actions(record: StepRecord) -> list[Action]:
     return [*executed_actions(record), *record.skipped()]
 
 
-def is_exportable(record: StepRecord) -> bool:
+def is_exportable(trace: RunTrace, record: StepRecord) -> bool:
     """A step a student can learn from: the run's own decision, healthy, that acted.
 
     ``origin == "policy"`` (a branch's restored prefix and every terminal
     observation are not decisions), no ``error_phase``, and at least one
     executed action. A parse failure carries ``error_phase="parse"``; a
     successfully parsed reply with no action has no parse error. Neither
-    is a sample.
+    is a sample. Nor is a step whose accepted reply was cut off at the
+    completion-token ceiling (its last decision call failed with
+    ``ModelOutputTruncatedError``): a run with ``cut_off_reply: read_as_is``
+    runs such a reply when it reads, but it is half a reply, not an answer
+    to teach.
+
+    Raises:
+        IncompatibleCallKindError: The step's decision is not a Chat call.
     """
-    return record.origin == "policy" and not record.error_phase and bool(executed_actions(record))
+    if record.origin != "policy" or record.error_phase or not executed_actions(record):
+        return False
+    decisions = recorded_chat_decisions(trace, record.step, consumer="training export")
+    last = decisions[-1].failure if decisions else None
+    return last is None or last.error != ModelOutputTruncatedError.__name__
 
 
 def canonicalise(
@@ -105,7 +117,7 @@ def canonicalise(
     through = trace.manifest.complete_through
     entries = {entry.step: entry for entry in trace.manifest.steps if entry.step <= through}
     records = [record for step in sorted(entries) if (record := trace.step(step)) is not None]
-    exportable = [record.step for record in records if is_exportable(record)]
+    exportable = [record.step for record in records if is_exportable(trace, record)]
     exportable_set = frozenset(exportable)
 
     labels_verdicts = _verdicts(verdicts_from if verdicts_from is not None else trace)
@@ -117,7 +129,6 @@ def canonicalise(
     for record in records:
         if record.step not in exportable_set:
             continue
-        recorded_chat_decisions(trace, record.step, consumer="training export")
         executed = executed_actions(record)
         observations, image = _observations(trace, record.step, entries[record.step].fragments)
         history = [step for step in exportable if step < record.step]

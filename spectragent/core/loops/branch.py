@@ -20,7 +20,10 @@ from typing import Annotated, Any, ClassVar, Literal
 from pydantic import Field
 
 from spectragent.core.action_guard import executed_name
-from spectragent.core.llm.exceptions import StructuredOutputValidationError
+from spectragent.core.llm.exceptions import (
+    ModelOutputTruncatedError,
+    StructuredOutputValidationError,
+)
 from spectragent.core.loops._loop_fragments import (
     loop_fragment_builders,
     pinned_step_info,
@@ -595,8 +598,12 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         the agent's own reply model (the trace keeps its JSON form); a
         structured reply the provider refused, as the text the validator saw
         (``raw_output``) — which ``read_reply`` refuses again, in the words
-        the live step used. Anything else a prefix step cannot contain: such
-        a call ended the source run.
+        the live step used; a reply cut off at the completion-token ceiling,
+        as the text it had generated (``partial_output``, empty when none),
+        which the live step read as its reply. A prefix step holds such a call
+        only when the source ran ``cut_off_reply: read_as_is``: under
+        ``end_run`` the call ended the source run. Anything else a prefix step
+        cannot contain: such a call ended the source run.
         """
         if call.status == "completed" and call.completion is not None:
             reply = call.completion.completion
@@ -613,13 +620,14 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                     ],
                 ) from exc
         failure = call.failure
-        if (
-            call.status == "failed"
-            and failure is not None
-            and failure.error == StructuredOutputValidationError.__name__
-            and failure.raw_output is not None
-        ):
-            return failure.raw_output
+        if call.status == "failed" and failure is not None:
+            if (
+                failure.error == StructuredOutputValidationError.__name__
+                and failure.raw_output is not None
+            ):
+                return failure.raw_output
+            if failure.error == ModelOutputTruncatedError.__name__:
+                return failure.partial_output or ""
         what = failure.error if failure is not None else "no completion"
         raise IncompatibleCheckpointError(
             source.name,

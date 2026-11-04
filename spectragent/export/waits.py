@@ -169,7 +169,7 @@ def capped_waits(trace: RunTrace) -> dict[int, StepWaits]:
     entries = {entry.step: entry for entry in trace.manifest.steps if entry.step <= through}
     found: dict[int, StepWaits] = {}
     for record in trace.step_records:
-        if record.step not in entries or not is_exportable(record):
+        if record.step not in entries or not is_exportable(trace, record):
             continue
         capped = capped_capabilities(trace, record.step, entries[record.step].fragments)
         if not capped:

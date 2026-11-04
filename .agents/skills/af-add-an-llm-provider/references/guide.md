@@ -148,8 +148,9 @@ the budget above 1000 and reproduce once. (OpenAI's own path does catch the clea
 same method refuses DeepSeek's server-side stops, §11.) A provider that detects
 truncation passes what the reply had generated as `partial_output` (every shipped
 raise site does, and Anthropic's includes the serialised `tool_use` input), because
-the Loop aborts the step on this error and the trace's failure record is the only
-place that text survives.
+by default ReAct ends the run on this error and the trace's failure record is the only
+place that text survives; with `cut_off_reply: read_as_is` the Loop reads that text as
+the reply. Keep reasoning out of it: a reply that spent its budget reasoning has none.
 
 ## 4. Schema dialects
 

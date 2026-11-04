@@ -11,14 +11,15 @@ import pytest
 
 from spectragent.agents.browser_use import BrowserUseAgent
 from spectragent.agents.skyvern import SkyvernDomAgent
+from spectragent.core.llm.exceptions import ModelOutputTruncatedError
 from spectragent.core.loops.validation import IncompatibleError
 from spectragent.core.trace.reader import RunTrace
-from spectragent.export import canonicalise
+from spectragent.export import canonicalise, is_exportable
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.restoration import BranchProvenance
 from spectragent.schemas.sample import ThoughtRecord
 from tests._helpers.export_traces import ExportStep, screenshot, setup_record, write_run
-from tests._helpers.trace_builder import verdict
+from tests._helpers.trace_builder import completed_call, failed_call, verdict
 
 
 def _click(index: int, **extra: object) -> Action:
@@ -69,6 +70,33 @@ class TestExportableSteps:
         samples = canonicalise(trace, rel_path="recorded/parse-and-noop")
         assert [sample.step for sample in samples] == [2]
         assert samples[0].history_steps == []
+
+    def test_a_step_whose_accepted_reply_was_cut_off_is_not_a_sample(self, tmp_path: Path) -> None:
+        """``cut_off_reply: read_as_is`` ran a cut-off reply that read: half a reply, no answer
+        to teach. A step whose cut-off first ask was re-asked and answered whole stays one."""
+        cut_off = ModelOutputTruncatedError(
+            stop_reason="max_tokens",
+            partial_output='{"action": [{"browser.click": {"index": 1}}]}',
+        )
+        run = write_run(
+            tmp_path,
+            "cut-off",
+            [
+                ExportStep(actions=[_click(1)], llm_calls=[failed_call(0, 0, "step 0", cut_off)]),
+                ExportStep(
+                    actions=[_click(2)],
+                    llm_calls=[
+                        failed_call(1, 0, "step 1", cut_off),
+                        completed_call(1, 1, "step 1, asked again"),
+                    ],
+                ),
+            ],
+        )
+        trace = RunTrace(run)
+        cut, whole = trace.step_records
+        assert not is_exportable(trace, cut)
+        assert is_exportable(trace, whole)
+        assert [sample.step for sample in canonicalise(trace, rel_path="recorded/cut-off")] == [1]
 
     def test_an_orphan_step_file_is_not_a_step(self, tmp_path: Path) -> None:
         run = write_run(tmp_path, "run-b", [ExportStep(actions=[_click(1)])])

@@ -100,6 +100,7 @@ ReAct keeps its own phase vocabulary and knobs:
 | `max_actions_per_step` | Maximum actions executed from one accepted reply |
 | `max_consecutive_parse_errors` | Consecutive unparseable steps before termination; `null` never ends the run on them (the step budget still does) |
 | `parse_retries_per_step` | Additional asks inside the same observation cycle |
+| `cut_off_reply` | A reply cut off at the completion-token ceiling: `end_run` (default) ends the run; `read_as_is` reads its generated text like any reply |
 | `today_override` | Date shown by ReAct's step-info fragment |
 | `terminal_observation` | Whether to observe after a normal terminal result |
 
@@ -110,9 +111,11 @@ that diagnostic for another ask. Before any parsed action runs, ReAct's public
 `Params` (`core/action_guard.py::params_refusal` over `run.action_space`, with
 `name_refusal` for a name the run does not execute) and raises the same `ParseError` on a
 misfit, so a malformed action is rewritten by the model, never executed and never a failed
-`ActionResult` (user ruling 2026-10-23). A truncated provider response follows the existing
-truncation policy; do not reinterpret it as a successful parse or manufacture a partial
-action.
+`ActionResult` (user ruling 2026-10-23). A provider response cut off at the completion-token
+ceiling (`ModelOutputTruncatedError`) follows `cut_off_reply`: by default it ends the run
+naming the ceiling and never reaches the parser; with `read_as_is` its `partial_output`
+(empty when none) is read through `read_reply` like any reply, so parse retries and the
+streak apply. Never manufacture a partial action from it either way.
 
 A structured reply that does not fit the Agent's output model is refused by the
 framework, not the Agent. The provider raises `StructuredOutputValidationError` with the
@@ -350,8 +353,9 @@ consume the policy-step budget, enter the run's policy action history, or inheri
 model usage. Source history reconstruction replays only Agent decision/retry calls, not
 auxiliary model replies. `history_source: source` reconstructs and exactly checks recorded prompts, replaying only
 main decision calls and recorded contributions. It reads each recorded reply through
-`read_reply`, a refused structured reply from its recorded `raw_output`, so a refusal reads
-back in the words the live step used; a source recorded before structured refusals were the
+`read_reply`, a refused structured reply from its recorded `raw_output` and a cut-off reply
+the source read as is from its recorded `partial_output`, so a refusal reads back in the
+words the live step used; a source recorded before structured refusals were the
 framework's (2026-10-26) carries the old pydantic wording and no longer matches.
 `restored` asks the Agent's public
 `build_restored_history` slot to express live restoration observations, actual retargeted
