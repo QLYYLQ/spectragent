@@ -29,7 +29,8 @@ from typing import Any
 import yaml
 from dotenv import load_dotenv
 
-from spectragent.benchmarks.selection import read_benchmark, read_spec, run_root, spec_of
+from spectragent.benchmarks.operations import read_benchmark_with_data, read_spec_with_data
+from spectragent.benchmarks.selection import run_root, spec_of
 from spectragent.core.benchmark_runner import (
     compose_benchmark_alone,
     positive_seconds,
@@ -190,6 +191,7 @@ async def _run_in_experiment(
     start: Mapping[str, str] | None = None,
     benchmark: str | None = None,
     subset: str | None = None,
+    fetch: bool = False,
     task_id: str | None = None,
     verify_timeout: float = VERIFY_TIMEOUT_S,
     progress: Any = None,
@@ -198,7 +200,7 @@ async def _run_in_experiment(
     canonical = config_path.expanduser().resolve()
     source_bytes = canonical.read_bytes()
     configuration = yaml.safe_load(source_bytes)
-    blocks = [read_benchmark(benchmark, subset=subset)] if benchmark else []
+    blocks = [read_benchmark_with_data(benchmark, subset=subset, fetch=fetch)] if benchmark else []
     raw = run_root(configuration, *blocks)
     context = start_context(start or {}, raw)
     config_source = ConfigSource.from_path(canonical, data=source_bytes)
@@ -220,7 +222,7 @@ async def _run_in_experiment(
             # beside the task source as ``bench`` composes it (§4.10.1).
             spec = parts.benchmark
             if spec is not None:
-                raw = run_root(configuration, *blocks, read_spec(spec))
+                raw = run_root(configuration, *blocks, read_spec_with_data(spec, fetch=fetch))
         selected = _Task(
             text=definition.task_text,
             env=parts.env,
@@ -372,6 +374,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="The subset of --benchmark the task is in, written into its task loader",
     )
     parser.add_argument(
+        "--fetch",
+        action="store_true",
+        help=(
+            "Fetch the benchmark's pinned data first when its data directory does not hold it "
+            "(as spectragent benchmark fetch does); without it, missing data is refused"
+        ),
+    )
+    parser.add_argument(
         "--timeout", type=positive_seconds, default=300.0, help="Run timeout in seconds"
     )
     parser.add_argument(
@@ -408,6 +418,8 @@ def main(
         parser.error("--benchmark and --task-id go together: they select one task of a benchmark")
     if args.subset is not None and args.task_id is None:
         parser.error("--subset selects a benchmark's tasks: it goes with --benchmark and --task-id")
+    if args.fetch and args.benchmark is None:
+        parser.error("--fetch fetches a benchmark's data: it goes with --benchmark and --task-id")
     if args.task_id is not None:
         given = [*(["--task"] if args.task else []), *start]
         if given:
@@ -430,6 +442,7 @@ def main(
             start=start,
             benchmark=args.benchmark,
             subset=args.subset,
+            fetch=args.fetch,
             task_id=args.task_id,
             timeout=args.timeout,
             verify_timeout=args.verify_timeout,

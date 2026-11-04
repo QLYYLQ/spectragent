@@ -12,7 +12,8 @@ from typing import Any
 import yaml
 
 from spectragent import GENERATED_DIR
-from spectragent.benchmarks.selection import read_benchmark, read_spec, run_root
+from spectragent.benchmarks.operations import read_spec_with_data, require_data
+from spectragent.benchmarks.selection import read_benchmark, run_root
 from spectragent.cli.configuration_errors import inspection_stage
 from spectragent.cli.configuration_provenance import explain_provenance
 from spectragent.cli.fingerprints import source_fingerprints
@@ -61,6 +62,9 @@ def explain_config(
             raise ValueError("The configuration must be a YAML mapping")
         blocks = [read_benchmark(benchmark, subset=subset)] if benchmark is not None else []
     with inspection_stage("validation"):
+        if benchmark is not None:
+            # Before the schema is built for the run: its task loader reads the data.
+            require_data(benchmark, blocks[0])
         # A benchmark section in the run configuration, a name with no
         # package, an agent with no capability or a start flag of a
         # capability it does not name, is refused before the schema is built;
@@ -84,7 +88,7 @@ def explain_config(
             task = loader.get_task_context(task_id)
             context, loop_inputs = task.env, task.loop
             if task.branch is not None and task.benchmark is not None:
-                raw = run_root(configuration, *blocks, read_spec(task.benchmark))
+                raw = run_root(configuration, *blocks, read_spec_with_data(task.benchmark))
     composer, validated, run = _composed(raw)
     agents = run.ids("agent")
     negotiation = None

@@ -148,6 +148,8 @@ class _Setup:
 @dataclass
 class _Benchmark:
     setup: _Setup | None = None
+    #: Its task loader, as far as the sweep and the runtime read it: its data has no recorded version.
+    task_loader: _Loader = field(default_factory=lambda: _Loader())
 
     def live_verifiers(self) -> list[Any]:
         return []
@@ -220,6 +222,7 @@ class _Task:
 class _Loader:
     benchmark_name = "reuse_bench"
     subset = ""
+    data_version = None
 
     def __init__(self, count: int = 3, refused: frozenset[str] = frozenset()) -> None:
         self._ids = [f"t-{i}" for i in range(1, count + 1)]

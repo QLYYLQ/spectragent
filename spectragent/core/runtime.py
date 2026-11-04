@@ -34,6 +34,7 @@ from spectragent.core.aop.weaver import Weaver
 from spectragent.core.archive.protocols import ArchiveConsumer
 from spectragent.core.capabilities.base import PreparedSetupContext
 from spectragent.core.composer import ComposedRun, ComposeError
+from spectragent.core.data_loader.task.base import data_version_of
 from spectragent.core.hooks.base import (
     PromptModelOwner,
     RuntimeHook,
@@ -78,6 +79,7 @@ if TYPE_CHECKING:
     from spectragent.core.environments.base import Environment
     from spectragent.core.llm.base import BaseChatModel
     from spectragent.schemas.benchmark_spec import BenchmarkSpec
+    from spectragent.schemas.data_version import DataVersion
     from spectragent.schemas.restoration import BranchProvenance
     from spectragent.verifiers.base import LiveVerifier
 
@@ -781,6 +783,16 @@ class AgentRuntime:
             verifier for benchmark in self._benchmarks() for verifier in benchmark.live_verifiers()
         ]
 
+    def _data_version(self) -> DataVersion | None:
+        """The version of the data the run's benchmark reads; ``None`` with no benchmark or no recorded version.
+
+        A branch task's run holds two blocks (:meth:`_benchmarks`): its task
+        source reads recorded runs and records no version, so the version is
+        that of the benchmark it inherited, whose data its setup, its
+        verifiers and its references read (``data_version_of``).
+        """
+        return data_version_of(benchmark.task_loader for benchmark in self._benchmarks())
+
     def seed_messages(self, task: str) -> list[Any]:
         """The run's seed messages for *task*, after :meth:`prepare` (arch §4.2).
 
@@ -1017,6 +1029,7 @@ class AgentRuntime:
                 task_id=task_id,
                 benchmark=benchmark,
                 subset=subset,
+                data_version=self._data_version(),
                 run_id=run_id,
                 config=config or {},
                 identity=self._identity,

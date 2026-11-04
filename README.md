@@ -98,7 +98,7 @@ uv run spectragent runs list
 uv run spectragent view --open
 ```
 
-`run`, `eval` and `replay-review` also read `.env` from the working directory; `bench` and `flywheel` read only the shell environment (`set -a; . ./.env; set +a`). Benchmark data is not shipped: set `data_dir:` on a task loader, or point `SPECTRAGENT_BENCHMARK_DATA` at a root laid out as `<env_type>/<benchmark>`.
+`run`, `eval` and `replay-review` also read `.env` from the working directory; `bench` and `flywheel` read only the shell environment (`set -a; . ./.env; set +a`). Benchmark data is not shipped: `spectragent benchmark fetch <alias>` downloads a benchmark's pinned data into the shared cache (`$SPECTRAGENT_BENCHMARK_DATA`, else `~/.cache/spectragent/benchmarks`), and `spectragent benchmark setup <alias>` installs what it needs beside it (AndroidWorld); a run refuses missing data, or fetches it with `--fetch`. See [Benchmark data](configs/README.md#benchmark-data).
 
 Shipped entry points: `configs/browser_use_local.yaml`, `configs/skyvern_agent_local.yaml`, `configs/ui_tars_local.yaml`, `configs/browser_use_skyvern.yaml` (Skyvern cloud browser) and `configs/browser_use_shared.yaml` (one shared Chrome, a fresh context per task). Switching backends changes only `environment[0].capabilities[0].backend`. The [browser agent runbook](docs/browser_agent_runbook.md) (Chinese) covers logins, shared Chrome and troubleshooting.
 

@@ -24,7 +24,7 @@ _BARE_HOST = re.compile(
 def complete_start_page(start_url: str) -> str:
     """*start_url* as one ``https://`` URL when LexBench wrote it as a bare host.
 
-    Every LexBench split writes its start pages without a scheme
+    LexBench-Browser writes its start pages without a scheme
     (``www.bilibili.com``, ``s.weibo.com/top/summary``), and a URL without one
     is not something the browser opens. Only a bare host (``_BARE_HOST``),
     ASCII throughout, is completed; anything else is returned unchanged — a
@@ -40,7 +40,7 @@ def complete_start_page(start_url: str) -> str:
 
 @dataclass
 class LexBenchBrowserTaskLoader(TaskLoaderBase):
-    """Loads LexBench-Browser benchmark tasks.
+    """Loads LexBench-Browser benchmark tasks: the public dataset's, as its fetch writes them.
 
     Its start pages are completed here (:func:`complete_start_page`), in the
     loader rather than in the browser, so the run records a complete URL: the
@@ -53,26 +53,23 @@ class LexBenchBrowserTaskLoader(TaskLoaderBase):
     __registry_key__ = "lexbench_browser"
 
     subset: Annotated[
-        Literal[
+        Literal["All", "global", "lexmount", "sample50"],
+        Field(
             "All",
-            "L1",
-            "L2",
-            "L3-api",
-            "L3-security",
-            "omw",
-            "omw-20pct",
-            "omw-80pct",
-            "private",
-        ],
-        Field("All", description="LexBench data subset"),
+            description=(
+                "A subset of the public LexBench-Browser dataset: All (210 tasks), global and "
+                "lexmount (its en and zh website regions), sample50 (50 of All)."
+            ),
+        ),
     ] = "All"
 
     def normalize_raw(self, raw: dict[str, Any]) -> TaskDefinition:
-        """Accept both the normalized and the upstream record shape; complete the start page.
+        """Accept both the dataset's own record shape and the normalized one; complete the start page.
 
-        The ``private`` split ships upstream-shaped records (integer
-        ``id``, ``query``, ``target_website``, flat login flags). Either
-        shape's start page goes through :func:`complete_start_page`.
+        The public dataset's records key on an integer ``id`` and write
+        ``query``, ``target_website`` and flat login flags
+        (``_lexbench_legacy.py``). Either shape's start page goes through
+        :func:`complete_start_page`.
         """
         # Imported here, not at the top: every run imports this loader with the
         # framework, and a run that names no browser imports no browser module.

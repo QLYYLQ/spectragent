@@ -17,9 +17,11 @@ trace after the sweep. The ``shop`` benchmark has only an offline verifier.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -39,6 +41,7 @@ from spectragent.core.data_loader.task.step_selector import ExplicitSteps
 from spectragent.core.loops import BranchLoop
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.benchmark_spec import BenchmarkSpec
+from spectragent.schemas.data_version import DataVersion
 from spectragent.schemas.verdict import Judgment
 from spectragent.verifiers._registrar import VerifierBase
 from tests._helpers.branch_fakes import (
@@ -164,8 +167,15 @@ class _Shop(BenchmarkBase):
     __primary_verifier__ = "shop_trace"
 
 
+class _NoPinnedData:
+    """The task loader of a benchmark built here: its data has no recorded version."""
+
+    data_version = None
+
+
 def _world() -> _World:
     benchmark = _World()
+    benchmark.task_loader = _NoPinnedData()  # type: ignore[assignment]
     benchmark.setup = _WorldSetup()
     benchmark.verifiers = [_LiveJudge(), _WorldTraceJudge()]
     return benchmark
@@ -173,6 +183,7 @@ def _world() -> _World:
 
 def _shop() -> _Shop:
     benchmark = _Shop()
+    benchmark.task_loader = _NoPinnedData()  # type: ignore[assignment]
     benchmark.verifiers = [_ShopTraceJudge()]
     return benchmark
 
@@ -414,3 +425,63 @@ class TestAMixedSweep:
             outcome.error
         )
         assert (await runner.run_task("c-plain/s1/b0")).ok
+
+
+class TestTheSourceBenchmarksDataChangingDuringTheSweep:
+    """A branch task's stack reads its source's benchmark again: its data must be what the sweep read.
+
+    The sweep composes each inherited benchmark once alone (``inherited_benchmark``)
+    and records the version its task loader read (``TaskBenchmark.data_version``);
+    a stack of that benchmark reading another (another worktree fetched
+    another pin into the shared copy) is not run (``docs/architecture_design.md``
+    §4.10.1 "d 段落地了什么").
+    """
+
+    _READ = DataVersion(
+        source="git", repository="https://example.test/world.git", revision="a" * 40
+    )
+    _NOW = DataVersion(source="git", repository="https://example.test/world.git", revision="b" * 40)
+
+    def _sweep(self, tmp_path: Path, versions: list[DataVersion]) -> BenchmarkRunner:
+        """Each next stack of the world benchmark reads the next of *versions*; the sweep read :attr:`_READ`.
+
+        The benchmark composed alone to judge (``task_benchmark``) reads :attr:`_READ` first.
+        """
+        pending = [self._READ, *versions]
+
+        def world() -> _World:
+            benchmark = _world()
+            benchmark.task_loader = SimpleNamespace(data_version=pending.pop(0))  # type: ignore[assignment]
+            return benchmark
+
+        sweep = _Sweep(tmp_path, {"world": world})
+        return BenchmarkRunner(
+            loader=sweep.loader,
+            compose=lambda: sweep._stack(None),
+            timeout=30,
+            inherited=lambda spec: dataclasses.replace(
+                sweep.task_benchmark(spec), data_version=self._READ
+            ),
+        )
+
+    async def test_the_pre_flight_refuses_it(self, tmp_path: Path) -> None:
+        await _source(tmp_path, "src-world", _world(), _spec(tmp_path, "world"))
+        with pytest.raises(PreflightError, match="the benchmark's data changed during the sweep"):
+            await self._sweep(tmp_path, [self._NOW]).run()
+
+    async def test_a_later_task_of_that_benchmark_is_not_run(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path, "world")
+        await _source(tmp_path, "a-world", _world(), spec)
+        await _source(tmp_path, "b-world", _world(), spec)
+
+        summary = await self._sweep(tmp_path, [self._READ, self._NOW]).run()
+
+        first, second = summary.outcomes
+        assert first.ok and first.trace_dir is not None
+        assert RunTrace(first.trace_dir).config.data_version == self._READ
+        assert second.trace_dir is None and second.inherited == spec
+        assert second.error == (
+            f"the benchmark's data changed during the sweep: its tasks were read from "
+            f"{self._READ.describe()}, and this task's run would read {self._NOW.describe()}; "
+            f"start the sweep again once the data is fetched"
+        )

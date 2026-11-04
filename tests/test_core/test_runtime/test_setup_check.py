@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -394,6 +395,7 @@ class _Benchmark:
 
     setup: _Setup | None
     verifiers: list[_Verifier] = field(default_factory=list)
+    task_loader: SimpleNamespace = field(default_factory=lambda: SimpleNamespace(data_version=None))
 
     def live_verifiers(self) -> list[_Verifier]:
         return list(self.verifiers)

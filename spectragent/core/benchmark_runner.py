@@ -85,10 +85,12 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from spectragent.benchmarks import Benchmark
-from spectragent.benchmarks.selection import read_benchmark, read_spec, run_root, spec_of
+from spectragent.benchmarks.operations import read_benchmark_with_data, read_spec_with_data
+from spectragent.benchmarks.selection import run_root, spec_of
 from spectragent.core.benchmark_session import SessionLedger, TaskProgress
 from spectragent.core.composer import ComposedRun, ConfigComposer
 from spectragent.core.data_loader.eval.base import BaseEvalLoader
+from spectragent.core.data_loader.task.base import data_version_of
 from spectragent.core.environment_reuse import EnvironmentReuse
 from spectragent.core.experiment import ExperimentScope
 from spectragent.core.llm.exceptions import ModelOutputTruncatedError
@@ -107,6 +109,7 @@ from spectragent.schemas._types import (
 )
 from spectragent.schemas.benchmark_spec import BenchmarkSpec
 from spectragent.schemas.config_source import ConfigSource
+from spectragent.schemas.data_version import DataVersion
 from spectragent.schemas.verdict import Verdict
 from spectragent.verifiers.base import OfflineVerifier
 from spectragent.verifiers.report import VerifierTally, tallies
@@ -703,6 +706,11 @@ class TaskBenchmark:
     reference_loader: BaseEvalLoader | None = None
     #: Which verdict is its tasks' brief result and how it counts; ``None``: none.
     primary_rule: Benchmark | None = None
+    #: The version of the data it read when the sweep read it (its task source,
+    #: or for a branch task's benchmark, that benchmark composed alone): each of
+    #: its tasks' stacks must read the same (:func:`_data_changed`). ``None``: no
+    #: recorded version.
+    data_version: DataVersion | None = None
 
 
 class BenchmarkRunner:
@@ -799,6 +807,7 @@ class BenchmarkRunner:
             verifiers=verifiers,
             reference_loader=reference_loader,
             primary_rule=primary_rule,
+            data_version=loader.data_version,
         )
         # Each benchmark the sweep's tasks belong to, by the record a branch
         # task names (``None``: the selected one), with its judging pass. Built
@@ -1090,7 +1099,11 @@ class BenchmarkRunner:
         """
         try:
             context = self._loader.get_task_context(task_id)
-            run = self._benchmark_of(context.benchmark).compose()
+            benchmark = self._benchmark_of(context.benchmark)
+            run = benchmark.compose()
+            changed = _data_changed(run, benchmark)
+            if changed is not None:
+                raise ValueError(changed)
             if self._experiment_scope is not None:
                 self._experiment_scope.bind(run)
             self._attach_progress(run)
@@ -1220,7 +1233,9 @@ class BenchmarkRunner:
 
         inherited = context.benchmark
         try:
-            run = run if run is not None else self._benchmark_of(inherited).compose()
+            benchmark = self._benchmark_of(inherited)
+            run = run if run is not None else benchmark.compose()
+            changed = _data_changed(run, benchmark)
             scope.bind(run)
             self._attach_progress(run)
             agent_id = self._agent_id or run.ids("agent")[0]
@@ -1230,6 +1245,14 @@ class BenchmarkRunner:
             return TaskOutcome(
                 task_id=task_id,
                 error=f"compose failed: {type(exc).__name__}: {exc}",
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                inherited=inherited,
+            )
+        if changed is not None:
+            logger.error("BenchmarkRunner: task %s not run: %s", task_id, changed)
+            return TaskOutcome(
+                task_id=task_id,
+                error=changed,
                 elapsed_ms=int((time.monotonic() - started) * 1000),
                 inherited=inherited,
             )
@@ -1393,6 +1416,33 @@ def _reference_loader(
     return loader
 
 
+def _data_changed(run: ComposedRun, benchmark: TaskBenchmark) -> str | None:
+    """Why *run* would not read the data its *benchmark* was read with; ``None`` when it would.
+
+    A sweep reads its tasks once, and composes each task's stack afresh, whose
+    benchmark blocks' task loaders read the data directories again; a branch
+    task's stack reads its source's benchmark again too. A fetch between the
+    two (another worktree fetching another pin into the shared copy, or
+    fetching the same one, which removes its version record while it writes)
+    would record a version, and for AndroidWorld use an ``open_app`` table,
+    its task did not come with. The run's version is the one it records
+    (:func:`~spectragent.core.data_loader.task.base.data_version_of`).
+    """
+    read = benchmark.data_version
+    now = data_version_of(b.task_loader for b in run.instances("benchmark"))
+    if read == now:
+        return None
+
+    def named(version: DataVersion | None) -> str:
+        return "no recorded version" if version is None else version.describe()
+
+    return (
+        f"the benchmark's data changed during the sweep: its tasks were read from {named(read)}, "
+        f"and this task's run would read {named(now)}; start the sweep again once the data is "
+        f"fetched"
+    )
+
+
 def compose_benchmark_alone(block: dict[str, Any]) -> Benchmark:
     """The benchmark *block* builds as a run root of its own: its task source, verifiers and rules.
 
@@ -1411,6 +1461,7 @@ def inherited_benchmark(
     spec: BenchmarkSpec,
     *,
     evaluate: bool = True,
+    fetch: bool = False,
 ) -> TaskBenchmark:
     """The benchmark a branch task inherits, by its source run's *spec*, as a sweep composes and judges it.
 
@@ -1422,16 +1473,18 @@ def inherited_benchmark(
     (``docs/architecture_design.md`` §4.10.1 "分叉 sweep 是一种任务来源").
     With *evaluate* (``spectragent bench`` without ``--no-eval``), its offline
     verifiers judge the branch's trace after the sweep, against its reference
-    rows when they need them.
+    rows when they need them. Its pinned data is checked first, and fetched
+    with *fetch* (``--fetch``), as the selected benchmark's is.
 
     Raises:
         BenchmarkSelectionError: The selection no longer reads, names another
             benchmark, or its block changed since the source ran (``read_spec``).
+        BenchmarkDataError: Its pinned data is not there and *fetch* is false.
         ValueError: A verifier it lists needs reference rows it does not have.
         Exception: What composing its block raises (``ComposeError``, a task
             loader's data error); composing the whole root is the pre-flight's.
     """
-    block = read_spec(spec)
+    block = read_spec_with_data(spec, fetch=fetch)
     root = run_root(configuration, task_source, block)
     composer = ConfigComposer.for_config(root)
     benchmark = compose_benchmark_alone(block)
@@ -1441,6 +1494,7 @@ def inherited_benchmark(
         verifiers=verifiers,
         reference_loader=_reference_loader(benchmark, verifiers, spec.selection),
         primary_rule=benchmark,
+        data_version=benchmark.task_loader.data_version,
     )
 
 
@@ -1521,6 +1575,15 @@ def main(
             "the run is composed, so every run's configuration and identity record it."
         ),
     )
+    parser.add_argument(
+        "--fetch",
+        action="store_true",
+        help=(
+            "Fetch the benchmark's pinned data first when its data directory does not hold it "
+            "(as spectragent benchmark fetch does); without it, missing data is refused (exit "
+            "code 2)"
+        ),
+    )
     parser.add_argument("--task-id", action="append", dest="task_ids", help="Repeatable.")
     parser.add_argument("--limit", type=int, help="Run at most N tasks.")
     parser.add_argument("--timeout", type=positive_seconds, default=300.0, help="Per-task seconds.")
@@ -1588,7 +1651,7 @@ def main(
     canonical = args.config.expanduser().resolve()
     source_bytes = canonical.read_bytes()
     configuration = yaml.safe_load(source_bytes)
-    task_source = read_benchmark(args.benchmark, subset=args.subset)
+    task_source = read_benchmark_with_data(args.benchmark, subset=args.subset, fetch=args.fetch)
     raw = run_root(configuration, task_source)
     config_source = (
         ConfigSource(path=str(args.config_source), sha256=args.config_source_sha256)
@@ -1611,7 +1674,7 @@ def main(
     def inherited(spec: BenchmarkSpec) -> TaskBenchmark:
         if spec not in built:
             built[spec] = inherited_benchmark(
-                configuration, task_source, spec, evaluate=not args.no_eval
+                configuration, task_source, spec, evaluate=not args.no_eval, fetch=args.fetch
             )
         return built[spec]
 

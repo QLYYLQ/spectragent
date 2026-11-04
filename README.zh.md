@@ -98,7 +98,7 @@ uv run spectragent runs list
 uv run spectragent view --open
 ```
 
-`run`、`eval` 和 `replay-review` 还会读取工作目录下的 `.env`；`bench` 和 `flywheel` 只读 shell 环境（`set -a; . ./.env; set +a`）。Benchmark 数据不随仓库发布：在 task loader 上设 `data_dir:`，或让 `SPECTRAGENT_BENCHMARK_DATA` 指向按 `<env_type>/<benchmark>` 排布的根目录。
+`run`、`eval` 和 `replay-review` 还会读取工作目录下的 `.env`；`bench` 和 `flywheel` 只读 shell 环境（`set -a; . ./.env; set +a`）。Benchmark 数据不随仓库发布：`spectragent benchmark fetch <alias>` 把基准钉住的数据下载到共用缓存（`$SPECTRAGENT_BENCHMARK_DATA`，没设时是 `~/.cache/spectragent/benchmarks`），`spectragent benchmark setup <alias>` 装它在数据之外需要的东西（AndroidWorld）；缺了数据，run 会拒绝，带 `--fetch` 时先下载。见 [Benchmark data](configs/README.md#benchmark-data)。
 
 发布的入口配置：`configs/browser_use_local.yaml`、`configs/skyvern_agent_local.yaml`、`configs/ui_tars_local.yaml`、`configs/browser_use_skyvern.yaml`（Skyvern 云浏览器）和 `configs/browser_use_shared.yaml`（共享一个 Chrome，每个任务一个新 context）。切换后端只改 `environment[0].capabilities[0].backend`。登录态、共享 Chrome 与排错见 [浏览器 agent 运行手册](docs/browser_agent_runbook.md)。
 

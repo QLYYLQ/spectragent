@@ -1,11 +1,13 @@
 # BrowseComp: questions answered by browsing, with encrypted reference answers.
 # Select it with --benchmark browsecomp (docs/architecture_design.md §4.10.1).
+# Its data is OpenAI's file, pinned by its SHA-256: fetch it into the shared cache
+# with spectragent benchmark fetch browsecomp (or run and bench with --fetch).
 benchmark:
   - benchmark_id: browsecomp
     task_loader:
       benchmark_name: browsecomp
       subset: All
-      data_dir: null             # null: $SPECTRAGENT_BENCHMARK_DATA/browser/browsecomp
+      data_dir: null             # null: the cache copy, <data root>/browser/browsecomp
     # eval_loader left out: the registered browsecomp eval loader for the task loader's subset.
     # verifiers: who judges the runs. None is listed: an LLM judge's model must be
     # one you verified first (docs/browser_agent_runbook.md, "独立评测已录下的任务").
