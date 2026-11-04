@@ -188,6 +188,20 @@ async def _mode(prepared: Prepared, package: str) -> str:
     return (await prepared.adb.shell(prepared.serial, command)).stdout.decode()
 
 
+async def _allowed_within(prepared: Prepared, package: str, within_s: float) -> str:
+    """:func:`_mode` once it says allow, or as it reads when *within_s* is over.
+
+    Settings sets the op when it handles the tap on its switch, which can come
+    after the tap returns: on a fresh boot under a load of about 20, a read
+    80 ms after the tap said default and the next, at 130 ms, allow (2026-11-04).
+    """
+    deadline = time.monotonic() + within_s
+    mode = await _mode(prepared, package)
+    while "MANAGE_EXTERNAL_STORAGE: allow" not in mode and time.monotonic() < deadline:
+        mode = await _mode(prepared, package)
+    return mode
+
+
 async def _open(prepared: Prepared, name: str) -> None:
     """Open the app *name* names in AndroidWorld's table, as ``open_app`` opens it."""
     refused = await open_app(prepared.capability, prepared.apps, name)
@@ -235,7 +249,7 @@ async def test_vlc_asks_for_storage_and_its_library_works_once_granted_through_i
     await _click(prepared, VLC_CONFIRM)
     await _screen_until(prepared, VLC, lambda screen: SYSTEM_SWITCH in screen.labels, within_s=15)
     await _click(prepared, SYSTEM_SWITCH)
-    granted = await _mode(prepared, VLC)
+    granted = await _allowed_within(prepared, VLC, within_s=10)
     assert "MANAGE_EXTERNAL_STORAGE: allow" in granted, granted
     back = await prepared.capability.execute_action(
         Action(name="android.press_key", params={"key": "back"})
