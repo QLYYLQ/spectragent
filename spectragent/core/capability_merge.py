@@ -79,23 +79,30 @@ class Contribution:
 
 @dataclass(frozen=True)
 class MergeProblem:
-    """One problem of the merge, at the path its author wrote."""
+    """One problem of the merge, at the path its author wrote.
+
+    ``code`` says which kind, the issue a refusal reports:
+
+    - ``capability_contribution_invalid``: a part breaks the capability's
+      schema, or sets one list entry's options twice;
+    - ``capability_without_block``: a part of a capability the run
+      configuration has no block of;
+    - ``capability_setting_conflict``: two sides write one field differently;
+    - ``capability_entry_not_listed``: a part sets options on a list entry the
+      run configuration's list leaves out;
+    - ``capability_list_in_top_level_section``: a part sets options on a list
+      the run configuration writes in a top-level section, not in the block.
+    """
 
     path: str
     message: str
+    code: str
 
 
 class CapabilityMergeError(ValueError):
-    """The parts of a capability's configuration cannot be merged; every problem named.
+    """The parts of a capability's configuration cannot be merged; every problem named."""
 
-    ``code`` says which kind: ``capability_contribution_invalid`` (a part
-    breaks the capability's schema), ``capability_without_block`` (a part for
-    a capability the run configuration has no block of) or
-    ``capability_setting_conflict`` (two sides write one field differently).
-    """
-
-    def __init__(self, code: str, problems: Sequence[MergeProblem]) -> None:
-        self.code = code
+    def __init__(self, problems: Sequence[MergeProblem]) -> None:
         self.problems = tuple(problems)
         super().__init__(
             "\n".join(f"{problem.path}: {problem.message}" for problem in self.problems)
@@ -152,14 +159,14 @@ class CapabilityMerge:
         if not isinstance(capability_id, str) or capability_id not in components:
             known = ", ".join(sorted(components)) or "none"
             raise CapabilityMergeError(
-                "capability_contribution_invalid",
                 [
                     MergeProblem(
                         f"{contribution.path}.capability_id",
                         f"{contribution.source} writes a part of the {capability_id!r} "
                         f"capability, which this run has no schema for (capabilities: {known})",
+                        "capability_contribution_invalid",
                     )
-                ],
+                ]
             )
         model = components[capability_id].config_model
         try:
@@ -169,12 +176,13 @@ class CapabilityMerge:
                 MergeProblem(
                     _joined(contribution.path, error["loc"], contribution.block),
                     f"{contribution.source} writes it: {error['msg']}",
+                    "capability_contribution_invalid",
                 )
                 for error in exc.errors()
                 if error["type"] != "missing"
             ]
             if problems:
-                raise CapabilityMergeError("capability_contribution_invalid", problems) from None
+                raise CapabilityMergeError(problems) from None
 
     def merge(
         self, sections: Mapping[str, object], contributions: Sequence[Contribution]
@@ -187,8 +195,8 @@ class CapabilityMerge:
 
         Raises:
             CapabilityMergeError: ``capability_without_block`` when a part's
-                capability has no block here; ``capability_setting_conflict``
-                naming every field two sides write differently.
+                capability has no block here; otherwise every problem of the
+                merge, each with its kind (:class:`MergeProblem`).
         """
         merged = copy.deepcopy(dict(sections))
         pooled = frozenset(
@@ -203,14 +211,7 @@ class CapabilityMerge:
                 block for block in blocks if block.fields.get("capability_id") == capability_id
             ]
             if not targets:
-                missing.append(
-                    MergeProblem(
-                        contribution.path,
-                        f"{contribution.source} writes a part of the {capability_id!r} capability, "
-                        f"and the run configuration has no {capability_id!r} capability block to "
-                        f"merge it into",
-                    )
-                )
+                missing.append(_without_block(contribution, capability_id))
                 continue
             assert isinstance(capability_id, str)
             definition = self._catalog.components[CAPABILITY_SECTION][capability_id]
@@ -226,9 +227,9 @@ class CapabilityMerge:
                     here="",
                 )
         if missing:
-            raise CapabilityMergeError("capability_without_block", missing)
+            raise CapabilityMergeError(missing)
         if problems:
-            raise CapabilityMergeError("capability_setting_conflict", problems)
+            raise CapabilityMergeError(problems)
         return merged
 
     # -- one block --------------------------------------------------------
@@ -365,6 +366,7 @@ class CapabilityMerge:
                         f"part sets options only on entries written in the capability block: "
                         f"write the {name} in the capability block, not in the top-level "
                         f"{layer!r} section",
+                        "capability_list_in_top_level_section",
                     )
                 ]
             base = [_entry(discriminator, key) for key in entry.spec.allowed_keys or ()]
@@ -381,7 +383,12 @@ class CapabilityMerge:
             where = f"{at}[{key}]"
             if key in seen:
                 problems.append(
-                    MergeProblem(f"{target.path}.{where}", f"{side} sets its options twice")
+                    MergeProblem(
+                        f"{target.path}.{where}",
+                        f"{side} sets options on {key!r} twice; a part sets each entry's "
+                        f"options once",
+                        "capability_contribution_invalid",
+                    )
                 )
                 continue
             seen.add(key)
@@ -394,6 +401,7 @@ class CapabilityMerge:
                         f"({target.path}.{at}) leave it out; a part sets options on the entries "
                         f"there and never adds or removes one: list {key!r} in the run "
                         f"configuration's {name}, or drop its options",
+                        "capability_entry_not_listed",
                     )
                 )
                 continue
@@ -455,7 +463,17 @@ class CapabilityMerge:
             f"{target.path}.{at}",
             f"{written}; a run takes each setting from one side only: leave it out of one of "
             f"them, or write the same value in both",
+            "capability_setting_conflict",
         )
+
+
+def _without_block(contribution: Contribution, capability_id: object) -> MergeProblem:
+    return MergeProblem(
+        contribution.path,
+        f"{contribution.source} writes a part of the {capability_id!r} capability, and the run "
+        f"configuration has no {capability_id!r} capability block to merge it into",
+        "capability_without_block",
+    )
 
 
 def _first_writer(target: _Block, at: str) -> _Side:

@@ -270,10 +270,34 @@ def test_a_list_left_without_the_entry_the_benchmark_sets_is_refused(tmp_path: P
 
     refused = _refused(raw)
 
-    assert refused.issue is not None and refused.issue.code == "capability_setting_conflict"
+    assert refused.issue is not None and refused.issue.code == "capability_entry_not_listed"
     assert refused.issue.path == "environment[0].capabilities[0].actions[android.open_app]"
     assert "sets options on 'android.open_app', and the run configuration's actions" in str(refused)
     assert "never adds or removes one" in str(refused)
+    assert refused.issue.remedy == (
+        "Add the entry to the run configuration's list, or remove its options from the "
+        "benchmark's part."
+    )
+
+
+def test_a_part_that_sets_one_entrys_options_twice_is_refused_as_invalid(tmp_path: Path) -> None:
+    listed: list[JsonValue] = [{"action_id": "android.open_app"}, {"action_id": "android.scroll"}]
+    twice: list[JsonValue] = [
+        {"action_id": "android.scroll", "duration_ms": 100},
+        {"action_id": "android.scroll", "duration_ms": 200},
+    ]
+    raw = _run(
+        _android(actions=listed), _table(tmp_path), {"capability_id": "android", "actions": twice}
+    )
+
+    refused = _refused(raw)
+
+    assert refused.issue is not None and refused.issue.code == "capability_contribution_invalid"
+    assert str(refused) == (
+        "environment[0].capabilities[0].actions[android.scroll]: the benchmark androidworld "
+        "(benchmark[0].capability[0]) sets options on 'android.scroll' twice; a part sets each "
+        "entry's options once."
+    )
 
 
 def test_a_part_that_breaks_the_schema_is_refused_where_it_is_written(tmp_path: Path) -> None:
@@ -403,10 +427,14 @@ def test_a_list_the_run_writes_in_a_top_level_section_is_refused_against_a_part(
 
     refused = _refused({**_run(_android(), _table(tmp_path)), "action": pool})
 
-    assert refused.issue is not None and refused.issue.code == "capability_setting_conflict"
+    assert refused.issue is not None
+    assert refused.issue.code == "capability_list_in_top_level_section"
     assert refused.issue.path == "environment[0].capabilities[0].actions"
     assert "takes the run configuration's top-level 'action' section" in str(refused)
     assert "write the actions in the capability block" in str(refused)
+    assert refused.issue.remedy == (
+        "Move the entries of the top-level section into the list in the capability block."
+    )
 
 
 def _browser_run(part_matcher: JsonValue) -> dict[str, JsonValue]:

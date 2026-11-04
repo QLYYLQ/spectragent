@@ -468,8 +468,10 @@ class ConfigComposer:
         Raises:
             ValidationError: A benchmark block is invalid.
             ComposeError: A part breaks its capability's schema, names a
-                capability the run has no block of, or writes a field the run
-                configuration or another part writes differently.
+                capability the run has no block of, writes a field the run
+                configuration or another part writes differently, or sets
+                options on a list entry the run's capability block does not
+                hold.
         """
         benchmarks = sections.get(BENCHMARK_LAYER)
         if not (
@@ -503,10 +505,11 @@ class ConfigComposer:
                 merge.check(contribution)
             return merge.merge(sections, contributions)
         except CapabilityMergeError as exc:
-            remedy = _MERGE_REMEDIES[exc.code]
             raise _refusal(
                 [
-                    _Problem(problem.path, problem.message, exc.code, remedy)
+                    _Problem(
+                        problem.path, problem.message, problem.code, _MERGE_REMEDIES[problem.code]
+                    )
                     for problem in exc.problems
                 ]
             ) from None
@@ -1216,9 +1219,16 @@ def _refusal(problems: list[_Problem]) -> ComposeError:
     return ComposeError(message, issue=CompositionIssue(first.code, first.path, summary, remedy))
 
 
-#: How to put right each kind of merge problem (``CapabilityMergeError.code``).
+#: How to put right each kind of merge problem (``MergeProblem.code``).
 _MERGE_REMEDIES = {
     "capability_setting_conflict": "Leave the setting out of one side, or write the same value on both",
+    "capability_entry_not_listed": (
+        "Add the entry to the run configuration's list, or remove its options from the "
+        "benchmark's part"
+    ),
+    "capability_list_in_top_level_section": (
+        "Move the entries of the top-level section into the list in the capability block"
+    ),
     "capability_without_block": (
         "Add a block of that capability to the run configuration's environment, or select a "
         "benchmark for the capabilities the run has"
