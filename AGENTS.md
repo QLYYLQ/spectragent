@@ -272,8 +272,8 @@ Agents often work in parallel worktrees of this one repository (`../af-worktrees
 
 About 320 tests launch a real headless Chrome, usually a fresh one per test. All of them carry the `requires_chrome` marker. On 2026-10-23 several agents each ran the whole suite while live runs were going. Load reached 95–195 and real-Chrome tests failed on timeouts, yet every one of them passed when run alone.
 
-- **While working on a change (subagents, parallel worktrees):** run `uv run pytest -q -m "not requires_chrome"`, plus only the real-Chrome test files your change touches.
-- **The full suite, real Chrome included:** runs once, when changes are merged, on a quiet machine. Check `uptime` first.
+- **While working on a change (subagents, parallel worktrees):** run the tests of what your change touches and of the code that calls it, plus `tests/test_docs`, `tests/test_generated`, ruff and pyright; add only the real-Chrome and Android live test files your change touches. The whole suite is not run per change or per merge (user ruling 2026-11-04).
+- **The full suite, real Chrome included, and the Android live modules:** run once before main is pushed, on a quiet machine. Check `uptime` first.
 - **A real-Chrome failure while the machine is loaded:** rerun it alone before calling it load. If it also fails on the base commit, say so; do not mute it.
 - **Tests signal only processes they started.** On 2026-10-23 fakes with made-up PIDs reached real `os.killpg` calls and SIGKILLed unrelated process groups. A session-wide guard in `tests/conftest.py` now refuses and fails any `os.kill` / `os.killpg` aimed elsewhere. A fake standing for a real process replaces the function that sends the signal; never weaken the guard to let a fake through.
 
