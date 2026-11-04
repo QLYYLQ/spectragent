@@ -644,8 +644,9 @@ optional `ReusableEnvironment` Protocol (`core/capabilities/base.py`: `environme
 reading configuration only, and `bind_handover(handover)`, acquiring nothing); `CapabilityBase`
 gives no default. Only `spectragent bench --reuse-environment` (off by default) keeps an
 environment for the next task, and only when the identities are equal, the benchmark's setup
-component this capability hosts declares `__resets_between_tasks__`, and the task ended cleanly:
-teardown then hands the environment over instead of releasing it, setup takes what the handover
+component this capability hosts declares `__resets_between_tasks__`, and the task's setup and
+every step that ended it (the setup component's reset included) succeeded; a failure on the
+agent's side (model unavailable, timeout) still keeps it. Teardown then hands the environment over instead of releasing it, setup takes what the handover
 holds. The trace records `earlier_tasks_on_environment`. A browser context, new for every task,
 carries nothing over and is not this (`core/environment_reuse.py`; design doc §4.10.1
 "环境跨任务复用").
