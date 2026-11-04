@@ -484,10 +484,6 @@ class ScriptedPhone:
             return ShellResult(stdout=f"{FINGERPRINT}\n".encode())
         if command == "settings get secure default_input_method":
             return ShellResult(stdout=f"{INPUT_METHOD}\n".encode())
-        if words[:2] == ["pm", "path"]:
-            if words[2] in self.launchable:
-                return ShellResult(stdout=f"package:/system/app/{words[2]}.apk\n".encode())
-            return ShellResult(exit_code=1)
         if command == "pm list packages":
             listed = "".join(f"package:{package}\n" for package in self.launchable)
             return ShellResult(stdout=listed.encode())

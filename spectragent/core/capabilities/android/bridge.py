@@ -205,8 +205,6 @@ class ForegroundApps(Protocol):
 class AppLauncher(Protocol):
     """Starting an app by its package."""
 
-    async def is_installed(self, package: str) -> bool: ...
-
     async def installed_packages(self) -> frozenset[str]:
         """Every package installed on the device."""
         ...
@@ -316,16 +314,6 @@ class AdbQueries:
         windows = (await self._check("dumpsys window")).decode(errors="replace")
         methods = (await self._check("dumpsys input_method")).decode(errors="replace")
         return parse_text_focus(windows, methods)
-
-    async def is_installed(self, package: str) -> bool:
-        result = await self._run(f"pm path {_package(package)}")
-        if result.exit_code == 0 and result.stdout.startswith(b"package:"):
-            return True
-        if result.exit_code == 1:
-            return False
-        raise BridgeError(
-            f"pm path {package} failed (exit {result.exit_code}): {_first_line(result)}"
-        )
 
     async def installed_packages(self) -> frozenset[str]:
         listed = (await self._check("pm list packages")).decode(errors="replace")
