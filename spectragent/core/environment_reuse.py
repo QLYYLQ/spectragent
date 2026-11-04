@@ -2,9 +2,10 @@
 
 ``docs/architecture_design.md`` §4.10.1 "环境跨任务复用". Some capabilities bring
 up something that carries one task's state into the next: a device, later a
-container. By default every task gets a new one. A sweep sets a task up on the
-one the task before it used only when both hold (the user's ruling of
-2026-11-03):
+container. By default every task gets a new one. Reuse is asked for on the
+sweep (``spectragent bench --reuse-environment``; the user's ruling of
+2026-11-04), and even then a sweep sets a task up on the one the task before it
+used only when both hold (the user's ruling of 2026-11-03):
 
 - **the same environment identity**: each such capability says what its setup
   brings up (``ReusableEnvironment.environment_identity``: Android's is the
@@ -17,7 +18,10 @@ one the task before it used only when both hold (the user's ruling of
 A task's environment is kept for the next only when its setup completed and
 everything that ended the task, the setup component's reset included,
 succeeded; the capability decides that at teardown, and otherwise releases it
-as it always did. The browser's ``lifetime: experiment`` is not this: a fresh,
+as it always did. A failure on the agent's side (a model unavailable, the run's
+timeout) does not touch the environment, so it is kept (the user's ruling of
+2026-11-04). A sweep that asks for reuse when its environment keeps nothing, or
+its setup declares no reset, runs fresh and says why once. The browser's ``lifetime: experiment`` is not this: a fresh,
 isolated context per task carries no task state over, so it stays a setting of
 the browser's own (§4.9.x).
 
@@ -92,6 +96,7 @@ class EnvironmentReuse:
         self._handover: EnvironmentHandover | None = None
         #: How many tasks the environment of the task under way served before it.
         self._served_before = 0
+        self._first_task = True
 
     async def before_task(self, env: Environment | None, setups: Sequence[BenchmarkSetup]) -> int:
         """Decide whether the next task runs on the kept environment, and bind the handover into *env*.
@@ -111,15 +116,23 @@ class EnvironmentReuse:
             raise RuntimeError("the previous task's environment was not taken back (after_task)")
         identities = env.environment_identities(setups) if env is not None else {}
         resets = bool(identities) and _all_reset(identities, setups)
+        never = (
+            "no capability of its environment carries task state between tasks"
+            if not identities
+            else "its benchmark setup declares no reset between tasks (resets_between_tasks)"
+            if not resets
+            else None
+        )
+        if self._first_task:
+            self._first_task = False
+            if never is not None:
+                logger.warning(
+                    "Environment reuse was asked for, and each task gets a new environment: %s",
+                    never,
+                )
         if self._kept:
-            why = (
-                "its environment keeps nothing between tasks"
-                if not identities
-                else "its benchmark setup declares no reset between tasks"
-                if not resets
-                else "its environment identity differs"
-                if identities != self._identities
-                else None
+            why = never or (
+                "its environment identity differs" if identities != self._identities else None
             )
             if why is not None:
                 logger.info("Environment reuse: a new environment for the next task: %s", why)

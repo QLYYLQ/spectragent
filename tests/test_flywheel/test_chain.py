@@ -215,6 +215,14 @@ class TestThePaths:
         assert first[first.index("--verify-timeout") + 1] == "90"
         assert all("--verify-timeout" not in call for call in others)
 
+    def test_a_stage_may_ask_for_its_environment_to_be_reused(self, tmp_path: Path) -> None:
+        record = {"config": _write(tmp_path / "record.yaml", RUN_YAML), "reuse_environment": True}
+        bench = Recorder(commit_one_run)
+        run_chain(_spec(tmp_path, record=record), bench=bench, export=Recorder(publish_dataset))
+        first, *others = bench.calls
+        assert "--reuse-environment" in first
+        assert all("--reuse-environment" not in call for call in others)
+
     def test_original_source_version_survives_generated_paths_and_later_file_edits(self, tmp_path):
         spec = _spec(tmp_path)
         original = {

@@ -18,8 +18,9 @@ The runner owns exactly four things:
 2. **Iteration** — which tasks, in which order, with which subset.
 3. **Isolation** — a fresh :class:`ComposedRun` per task by default, so
    task N's browser, memory and hook state cannot leak into task N+1. The
-   one exception is an environment that carries task state (an Android
-   device): a sweep sets task N+1 up on task N's when its identity is the
+   one exception, only when the sweep asks for it (``reuse_environment``,
+   ``--reuse-environment``), is an environment that carries task state (an
+   Android device): task N+1 is set up on task N's when its identity is the
    same and the benchmark's setup component declares that it resets the
    state between tasks, and each trace records how many tasks the
    environment served before it (``core/environment_reuse.py``,
@@ -750,6 +751,9 @@ class BenchmarkRunner:
             could not be. *compose*, *verifiers*, *reference_loader* and
             *primary_rule* are the selected benchmark's, and serve every
             other task (a branch of a run that belonged to no benchmark too).
+        reuse_environment: Whether a task may run on the environment the task
+            before it kept (module docstring); ``False`` (the default): every
+            task gets a new one.
     """
 
     def __init__(
@@ -771,6 +775,7 @@ class BenchmarkRunner:
         config_source: ConfigSource | None = None,
         benchmark_spec: BenchmarkSpec | None = None,
         inherited: Callable[[BenchmarkSpec], TaskBenchmark] | None = None,
+        reuse_environment: bool = False,
     ) -> None:
         if token_limit != UNLIMITED and (
             isinstance(token_limit, bool) or not isinstance(token_limit, int) or token_limit < 1
@@ -808,6 +813,7 @@ class BenchmarkRunner:
         self._session = session
         self._config_source = config_source
         self._experiment_scope: ExperimentScope | None = None
+        self._reuse_environment = reuse_environment
         self._environment_reuse: EnvironmentReuse | None = None
 
     @property
@@ -862,12 +868,13 @@ class BenchmarkRunner:
                 # The environment a task keeps for the next is the sweep's.
                 # The sweep closes it after its last task; the scope closes
                 # it only when the sweep is cut short (an error, Ctrl-C).
-                self._environment_reuse = scope.resource(
-                    ("benchmark_runner", "environment_reuse"),
-                    configuration=None,
-                    create=EnvironmentReuse,
-                    close=EnvironmentReuse.close,
-                )
+                if self._reuse_environment:
+                    self._environment_reuse = scope.resource(
+                        ("benchmark_runner", "environment_reuse"),
+                        configuration=None,
+                        create=EnvironmentReuse,
+                        close=EnvironmentReuse.close,
+                    )
                 try:
                     summary = await self._run_selected(selected)
                 finally:
@@ -1154,8 +1161,10 @@ class BenchmarkRunner:
     async def run_task(self, task_id: str, *, run: ComposedRun | None = None) -> TaskOutcome:
         """Run one task, borrowing the sweep scope or owning a one-task scope.
 
-        Within a sweep the task may run on the environment the task before it
-        kept (``core/environment_reuse.py``); on its own it gets a new one.
+        Within a sweep that asks for reuse (``reuse_environment``) the task may
+        run on the environment the task before it kept
+        (``core/environment_reuse.py``); otherwise, and on its own, it gets a
+        new one.
         """
         if self._experiment_scope is not None:
             return await self._run_task(
@@ -1191,11 +1200,11 @@ class BenchmarkRunner:
                 for it (the first task of its benchmark); composed fresh, as its
                 benchmark's, when omitted.
             scope: The experiment scope the stack is bound to.
-            reuse: The sweep's environment kept between tasks; ``None``
-                outside a sweep. Before the run it decides whether this task
-                runs on the kept environment, and the trace records how many
-                tasks that served; after the run it takes back what the
-                teardown kept.
+            reuse: The sweep's environment kept between tasks; ``None`` when
+                the sweep asks for no reuse, and outside a sweep. Before the
+                run it decides whether this task runs on the kept environment,
+                and the trace records how many tasks that served; after the
+                run it takes back what the teardown kept.
         """
         started = time.monotonic()
         try:
@@ -1543,6 +1552,17 @@ def main(
         ),
     )
     parser.add_argument(
+        "--reuse-environment",
+        action="store_true",
+        help=(
+            "Run a task on the environment the task before it used, instead of a new one, where "
+            "that environment carries task state (an Android device), its identity is the same "
+            "and the benchmark's setup declares that it resets the state between tasks; each "
+            "trace records how many tasks its environment served before it. Without it every "
+            "task gets a new environment; a sweep that cannot reuse runs fresh and says why."
+        ),
+    )
+    parser.add_argument(
         "--token-limit",
         type=_token_limit_argument,
         default=UNLIMITED,
@@ -1646,6 +1666,7 @@ def main(
         config_source=config_source,
         benchmark_spec=spec_of(args.benchmark, task_source, subset=args.subset),
         inherited=inherited,
+        reuse_environment=args.reuse_environment,
     )
 
     try:

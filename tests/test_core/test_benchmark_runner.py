@@ -1591,6 +1591,35 @@ def test_the_verify_timeout_flag_reaches_the_runner(tmp_path, monkeypatch):
     assert given == [VERIFY_TIMEOUT_S, 12.5]
 
 
+def test_reuse_of_the_environment_is_asked_for_with_a_flag(tmp_path, monkeypatch):
+    """Off by default: every task gets a new environment (the user's ruling of 2026-11-04)."""
+    from spectragent.core.benchmark_runner import main
+    from tests._helpers.branch_sources import write_source
+
+    given: list[bool] = []
+    construct = BenchmarkRunner.__init__
+
+    def spy(self, **kwargs):
+        given.append(kwargs["reuse_environment"])
+        construct(self, **kwargs)
+
+    async def no_sweep(self, *, task_ids=None, limit=None):
+        return BenchmarkRunSummary(benchmark="b", subset="")
+
+    monkeypatch.setattr(BenchmarkRunner, "__init__", spy)
+    monkeypatch.setattr(BenchmarkRunner, "run", no_sweep)
+    write_source(tmp_path / "recorded", "run-a", steps=2)
+    argv = [
+        "--session-dir",
+        str(tmp_path / ".sessions"),
+        *_branch_sweep(tmp_path),
+        "--no-eval",
+    ]
+    assert main(argv) == 0
+    assert main([*argv, "--reuse-environment"]) == 0
+    assert given == [False, True]
+
+
 def test_the_subset_flag_selects_the_tasks_and_is_recorded(tmp_path, monkeypatch, capsys):
     """``--subset`` is written into the benchmark's task loader before the run is composed.
 

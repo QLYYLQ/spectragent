@@ -21,6 +21,11 @@
 # setup prepared, below, and the open_app name table, read from beside the task
 # lists. The run configuration writes neither; a field both write differently is
 # refused.
+#
+# Each task boots its own emulator. With spectragent bench --reuse-environment the
+# tasks of a sweep share one: the setup resets the device between tasks, as
+# AndroidWorld's own runner does, and keeps its service running
+# (docs/architecture_design.md §4.10.1).
 benchmark:
   - benchmark_id: androidworld
     task_loader:

@@ -244,8 +244,10 @@ def _runner(
     unclean: frozenset[int] = frozenset(),
     hangs: frozenset[int] = frozenset(),
     loader: _Loader | None = None,
+    reuse: bool = True,
 ) -> BenchmarkRunner:
-    """A sweep composing a fresh stack per task, as ``spectragent bench`` does.
+    """A sweep composing a fresh stack per task, as ``spectragent bench`` does, asking for reuse
+    unless *reuse* is false (``--reuse-environment``).
 
     Task *n* (from 1) gets ``images[n - 1]`` as its environment identity, its
     capability's teardown fails when *n* is in *unclean*, and its model never
@@ -268,7 +270,7 @@ def _runner(
             benchmark=_Benchmark(setup=setup),
         )
 
-    return BenchmarkRunner(loader=loader or _Loader(), compose=compose)
+    return BenchmarkRunner(loader=loader or _Loader(), compose=compose, reuse_environment=reuse)
 
 
 def _earlier_tasks(summary: BenchmarkRunSummary) -> list[int]:
@@ -343,22 +345,44 @@ async def test_a_fresh_environment_writes_no_count_into_the_trace(tmp_path: Path
     assert "earlier_tasks_on_environment" not in written
 
 
-async def test_every_task_gets_a_new_device_by_default(tmp_path: Path) -> None:
-    """No setup component, or one that declares no reset: the default, a new device per task."""
-    for setup in (None, _Setup(resets_between_tasks=False)):
-        sweep = _Sweep()
-        summary = await _runner(tmp_path, sweep, setup=setup).run()
+@pytest.mark.parametrize(
+    ("reuse", "setup", "why"),
+    [
+        (False, _Setup(), None),
+        (True, None, "its benchmark setup declares no reset between tasks"),
+        (True, _Setup(resets_between_tasks=False), "its benchmark setup declares no reset"),
+    ],
+    ids=["not asked for", "asked, no setup", "asked, a setup that resets nothing"],
+)
+async def test_every_task_gets_a_new_device_unless_reuse_is_asked_for_and_can_be_had(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    reuse: bool,
+    setup: _Setup | None,
+    why: str | None,
+) -> None:
+    """The default is a new device per task (the user's ruling of 2026-11-04). A sweep that asks for
+    reuse it cannot have runs fresh and says why, once."""
+    sweep = _Sweep()
+    summary = await _runner(tmp_path, sweep, setup=setup, reuse=reuse).run()
 
-        assert sweep.ran_on == [1, 2, 3]
-        assert sweep.log == [
-            "device 1 booted",
-            "device 1 closed",
-            "device 2 booted",
-            "device 2 closed",
-            "device 3 booted",
-            "device 3 closed",
-        ]
-        assert _earlier_tasks(summary) == [0, 0, 0]
+    assert sweep.ran_on == [1, 2, 3]
+    assert sweep.log == [
+        "device 1 booted",
+        "device 1 closed",
+        "device 2 booted",
+        "device 2 closed",
+        "device 3 booted",
+        "device 3 closed",
+    ]
+    assert _earlier_tasks(summary) == [0, 0, 0]
+    said = [
+        record.getMessage() for record in caplog.records if "was asked for" in record.getMessage()
+    ]
+    if why is None:
+        assert said == []
+    else:
+        assert len(said) == 1 and why in said[0]
 
 
 async def test_another_identity_gets_a_new_device_and_the_kept_one_is_closed_first(
