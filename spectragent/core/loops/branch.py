@@ -269,6 +269,14 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                     problems.append(f"step {t} is a {record.origin!r} step, not a policy step")
                 if record.error_phase == "observe":
                     problems.append(f"step {t} recorded no observation (its observe failed)")
+                if self.history_source == "source" and record.error_phase == "prompt":
+                    # The policy step decides on the source's prompt of step t,
+                    # which an Agent's helpers (M3A's summary) wrote into; it
+                    # was never finished, so there is nothing to decide on.
+                    problems.append(
+                        f"step {t}'s prompt was never built in the source ({record.error}); "
+                        "history_source: source decides on the source's prompt of that step"
+                    )
         config = source.config
         # The prefix's records read back only when every step up to t is
         # committed and complete; otherwise the problems above already say so.

@@ -276,6 +276,19 @@ class _HelperRepliesSeen(BranchFakeAgent):
         return await super().build_react_prompt(obs, context=context)
 
 
+class _PromptFailsAt(BranchFakeAgent):
+    """The fake agent, failing to build one step's prompt, as a failed helper call fails M3A's."""
+
+    def __init__(self, step: int) -> None:
+        super().__init__()
+        self.failing = step
+
+    async def build_react_prompt(self, obs: Any, *, context: ReactPromptContext) -> list[Any]:
+        if context.phase == "policy" and context.step == self.failing:
+            raise RuntimeError("summary model down")
+        return await super().build_react_prompt(obs, context=context)
+
+
 class TestHistorySource:
     def test_source_is_the_default(self) -> None:
         assert BranchLoop().history_source == "source"
@@ -755,6 +768,28 @@ class TestCheckpointCompatibility:
         assert "task variant 'warranty'" in message
         assert "task_variants" in message
         assert "history_source: source" in message and "history_source: restored" in message
+
+    async def test_a_checkpoint_whose_source_prompt_failed_is_refused_before_setup(
+        self, tmp_path: Path
+    ) -> None:
+        """A source that ended on a failed prompt (M3A's summary call failing) offers that step as
+        its last; under source history it is refused before anything is set up or replayed."""
+        failed = await record_source(
+            tmp_path,
+            ["click 100", "click 101"],
+            agent=_PromptFailsAt(2),
+            run_id="failed",
+            raise_on_error=False,
+        )
+        record = RunTrace(failed).step(2)
+        assert record is not None and record.error_phase == "prompt"
+        cap = make_cap()
+        with pytest.raises(IncompatibleCheckpointError) as caught:
+            await run_branch(tmp_path, failed, 2, ["click 102"], cap=cap, run_id="refused")
+        assert cap.setups == 0
+        assert "step 2's prompt was never built in the source (summary model down)" in str(
+            caught.value
+        )
 
     async def test_a_source_whose_task_text_setup_completed_is_refused_before_setup(
         self, tmp_path: Path, source: Path
