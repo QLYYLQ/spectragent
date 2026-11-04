@@ -30,14 +30,19 @@ class ChatGroq(OpenAICompatBase):
     def provider(self) -> str:
         return "groq"
 
-    def _settings(self) -> dict[str, Any]:
+    def _settings(self) -> dict[str, float | int | str]:
         """The request settings this route sends, each only when the configuration sets it.
 
         The Groq SDK sends an argument given as ``None`` as JSON ``null``, so an
         unset value is left out of the call, never passed as ``None``.
+        ``frequency_penalty`` is part of Groq's request (``Optional[float]`` in
+        the groq SDK's ``completion_create_params``); its API reference says no
+        Groq model applies it yet, and a written value is sent all the same, so
+        the request carries what the configuration records.
         """
-        settings = {
+        settings: dict[str, float | int | str | None] = {
             "temperature": self.temperature,
+            "frequency_penalty": self.frequency_penalty,
             "top_p": self.top_p,
             "seed": self.seed,
             "service_tier": self.service_tier,

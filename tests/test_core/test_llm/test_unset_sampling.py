@@ -99,17 +99,26 @@ async def test_an_unset_value_is_absent_from_the_request_body(provider) -> None:
     assert None not in body.values(), "an unset setting is left out, never sent as null"
 
 
-async def test_a_written_value_is_sent_as_written() -> None:
+@pytest.mark.parametrize(
+    "provider",
+    [
+        lambda wire, **written: ChatOpenAI(
+            model="gpt-4o",
+            api_key="stub",
+            base_url="https://gateway.test/v1",
+            http_client=wire.client(),
+            **written,
+        ),
+        lambda wire, **written: ChatGroq(
+            model="llama-3.3-70b-versatile", api_key="stub", http_client=wire.client(), **written
+        ),
+    ],
+    ids=["openai", "groq"],
+)
+async def test_a_written_value_is_sent_as_written(provider) -> None:
+    """What the configuration records is what the request carries."""
     wire = _Wire()
-    chat = ChatOpenAI(
-        model="gpt-4o",
-        api_key="stub",
-        base_url="https://gateway.test/v1",
-        temperature=0.0,
-        frequency_penalty=0.3,
-        http_client=wire.client(),
-    )
-    await chat.ainvoke(_PROMPT)
+    await provider(wire, temperature=0.0, frequency_penalty=0.3).ainvoke(_PROMPT)
     assert (wire.body["temperature"], wire.body["frequency_penalty"]) == (0.0, 0.3)
 
 
