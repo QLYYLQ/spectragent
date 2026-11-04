@@ -152,22 +152,28 @@ class CapabilityMerge:
 
         Raises:
             CapabilityMergeError: ``capability_contribution_invalid``, each
-                problem at the path the part writes it.
+                problem at the path the part writes it;
+                ``capability_without_block`` for a part of a capability this
+                run has no schema of, so no block of either.
         """
         capability_id = contribution.block.get("capability_id")
         components = self._catalog.components.get(CAPABILITY_SECTION, {})
-        if not isinstance(capability_id, str) or capability_id not in components:
+        if not isinstance(capability_id, str):
             known = ", ".join(sorted(components)) or "none"
             raise CapabilityMergeError(
                 [
                     MergeProblem(
                         f"{contribution.path}.capability_id",
-                        f"{contribution.source} writes a part of the {capability_id!r} "
-                        f"capability, which this run has no schema for (capabilities: {known})",
+                        f"{contribution.source} writes a part of a capability's configuration "
+                        f"and names no capability_id (this run's capabilities: {known})",
                         "capability_contribution_invalid",
                     )
                 ]
             )
+        if capability_id not in components:
+            # Each capability block of the run names its package, so the run
+            # has none of this one: a part computed in code, for another kind of run.
+            raise CapabilityMergeError([_without_block(contribution, capability_id)])
         model = components[capability_id].config_model
         try:
             model.model_validate(contribution.block)

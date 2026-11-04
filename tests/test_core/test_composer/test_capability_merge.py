@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,12 @@ from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FILE, OPEN_APP
 from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
 from spectragent.benchmarks.androidworld.tasks import instance_seed
 from spectragent.core.capabilities.android.capability import AndroidCapability
+from spectragent.core.capability_merge import (
+    CAPABILITY_SECTION,
+    CapabilityMerge,
+    CapabilityMergeError,
+    Contribution,
+)
 from spectragent.core.composer import ComposeError, ConfigComposer
 from spectragent.core.data_loader._common import BenchmarkDataError
 from spectragent.core.trace.models import TraceConfig
@@ -314,6 +321,49 @@ def test_a_part_that_breaks_the_schema_is_refused_where_it_is_written(tmp_path: 
         "benchmark[0].capability[0].settle_quiet_ms",
         "benchmark[0].capability[0].speed",
     }
+
+
+def test_a_part_that_names_no_capability_is_refused_as_invalid(tmp_path: Path) -> None:
+    refused = _refused(_run(_android(), _table(tmp_path), {"backend": {"avd": "AW"}}))
+
+    assert refused.issue is not None and refused.issue.code == "capability_contribution_invalid"
+    assert refused.issue.path == "benchmark[0].capability[0].capability_id"
+    assert "writes a part of a capability's configuration and names no capability_id" in str(
+        refused
+    )
+
+
+def test_a_part_of_a_capability_the_run_has_no_schema_of_has_no_block_either() -> None:
+    """Every capability block names its package, so a run without the package has no block of it.
+
+    Asked of a catalog without the Android capability, as a browser run's is in a process that
+    imported nothing else: the refusal does not depend on what an earlier import left behind.
+    """
+    raw: dict[str, JsonValue] = {
+        "capability": [{"capability_id": "browser", "backend": {"provider_id": "local_chrome"}}]
+    }
+    composer = ConfigComposer.for_config(raw)
+    catalog = composer.catalog
+    capabilities = {
+        key: definition
+        for key, definition in catalog.components[CAPABILITY_SECTION].items()
+        if key != "android"
+    }
+    browser_only = replace(
+        catalog, components={**catalog.components, CAPABILITY_SECTION: capabilities}
+    )
+    part = Contribution(
+        {"capability_id": "android", "actions": []},
+        "the benchmark androidworld, computed in code",
+        "benchmark[0]",
+    )
+
+    with pytest.raises(CapabilityMergeError) as refused:
+        CapabilityMerge(browser_only, composer.registrars).check(part)
+
+    (problem,) = refused.value.problems
+    assert (problem.code, problem.path) == ("capability_without_block", "benchmark[0]")
+    assert "has no 'android' capability block to merge it into" in problem.message
 
 
 def test_a_part_for_a_capability_the_run_has_no_block_of_is_refused(tmp_path: Path) -> None:
