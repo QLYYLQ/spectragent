@@ -13,6 +13,8 @@ test imports is still covered.
 from __future__ import annotations
 
 import ast
+import importlib
+import sys
 from pathlib import Path
 
 import pytest
@@ -271,3 +273,31 @@ def test_the_branch_archives_read_without_importing_agree_with_the_declarations(
     imported = {item.capability_id: item.branch_archives for item in capability_declarations()}
     assert declared_branch_archives() == imported
     assert imported["browser"] == ("browser.network",) and imported["android"] == ()
+
+
+@pytest.mark.parametrize(
+    ("source", "found"),
+    [
+        ("TASK_SETUP = None\n", "None"),
+        ("BRANCH_ARCHIVES = tuple(['probe.archive'])\n", "None"),
+        ("BRANCH_ARCHIVES = ('probe.archive', 3)\n", "('probe.archive', 3)"),
+    ],
+    ids=["missing", "not_a_literal", "not_strings"],
+)
+def test_branch_archives_read_from_source_must_be_a_literal_tuple_of_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str, found: str
+) -> None:
+    """Read without importing, the declaration can only be a literal: anything else is refused."""
+    package = tmp_path / "probe"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "declarations.py").write_text(source)
+    capabilities = importlib.import_module("spectragent.core.capabilities")
+    monkeypatch.setattr(capabilities, "__path__", [*capabilities.__path__, str(tmp_path)])
+
+    with pytest.raises(
+        ValueError, match="probe.declarations must assign BRANCH_ARCHIVES"
+    ) as caught:
+        declared_branch_archives()
+    assert str(caught.value).endswith(f"found {found}")
+    assert "spectragent.core.capabilities.probe" not in sys.modules, "read, never imported"
