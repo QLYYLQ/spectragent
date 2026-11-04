@@ -84,6 +84,10 @@ _IME_INPUT_TARGET = re.compile(
 _SERVED_CONNECTION = re.compile(
     r"^ +mServedInputConnection(?:Wrapper)?=(?P<connection>\S+)", re.MULTILINE
 )
+#: ``StartInput #5:``, one record of the input method's history of starting input
+#: (``mStartInputHistory``), oldest first: the number goes up by one each time the input
+#: method starts or restarts input for the view with focus (measured on API 33).
+_START_INPUT = re.compile(r"^ +StartInput #(?P<number>\d+):$", re.MULTILINE)
 _FRAMES = re.compile(r"Total frames rendered: (?P<frames>\d+)")
 _SIZE = re.compile(r"(?P<kind>Physical|Override) size: (?P<width>\d+)x(?P<height>\d+)")
 
@@ -120,10 +124,14 @@ class TextFocus:
             method serves the window, and the view with focus in it holds an
             input connection. ``False`` when no window has focus; ``None``
             when the device did not say.
+        input_started: The number of the input method's latest start of
+            input (``StartInput #N``), which changes when it starts input for
+            another field; ``None`` when its report lists none.
     """
 
     window: str | None
     text_field: bool | None
+    input_started: int | None = None
 
 
 @runtime_checkable
@@ -406,20 +414,30 @@ def parse_text_focus(windows: str, methods: str) -> TextFocus:
     window manager's names no window the input method serves while there is a
     connection. No connection is an answer without the window: no field of the
     input method's client takes the text.
+
+    ``input_started`` is the last ``StartInput #N`` of the input method's own
+    part of its report, which comes before its client's and is there when the
+    client does not answer.
     """
+    records = _START_INPUT.findall(methods)
+    started = int(records[-1]) if records else None
     focus = _CURRENT_FOCUS.search(windows)
     if focus is None:
-        return TextFocus(window=None, text_field=False)
+        return TextFocus(window=None, text_field=False, input_started=started)
     window = focus["title"]
     served = _SERVED_CONNECTION.search(methods)
     if served is None:
-        return TextFocus(window=window, text_field=None)
+        return TextFocus(window=window, text_field=None, input_started=started)
     if served["connection"] == "null":
-        return TextFocus(window=window, text_field=False)
+        return TextFocus(window=window, text_field=False, input_started=started)
     target = _IME_INPUT_TARGET.search(windows)
     if target is None:
-        return TextFocus(window=window, text_field=None)
-    return TextFocus(window=window, text_field=target["window"] == focus["window"])
+        return TextFocus(window=window, text_field=None, input_started=started)
+    return TextFocus(
+        window=window,
+        text_field=target["window"] == focus["window"],
+        input_started=started,
+    )
 
 
 def _package(package: str) -> str:
