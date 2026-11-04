@@ -268,5 +268,7 @@ def test_the_task_graph_endpoint_keeps_a_filtered_source_as_context(root: Path) 
         ("branch", False),
     ]
     assert graph["lines"][1]["parent"] == {"key": "live", "step": 0}
-    assert client.get("/api/task-graph", params={"task": '["x", "", "1"]'}).status_code == 404
+    # a task with no readable run is left out; the others are still placed
+    gone = client.get("/api/task-graph", params={"task": ['["x", "", "1"]', TASK]})
+    assert [graph["task"]["key"] for graph in gone.json()] == [TASK]
     assert client.get("/api/task-graph").status_code == 422

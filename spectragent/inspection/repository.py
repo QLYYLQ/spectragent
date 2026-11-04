@@ -477,7 +477,9 @@ class _FileRepository:
         """Each of *tasks* (task keys) placed as a graph, from one scan (``graph.task_graph``).
 
         A branch's source that the configuration filters leave out is kept as
-        context, with its own sources, so the branch still leaves a commit.
+        context, with its own sources, so the branch still leaves a commit. A
+        task with no readable run left under the root is left out of the
+        answer, so one run removed since the list was read fails no other task.
         """
         rows = self._rows(outside_filters=True)
         by_key = {row["key"]: row for row in rows}
@@ -490,10 +492,8 @@ class _FileRepository:
                 sources[source["key"]] = source
                 pending.append(source)
         rows = shown + list(sources.values())
-        try:
-            return [task_graph(rows, task) for task in tasks]
-        except LookupError as exc:
-            raise FileNotFoundError(str(exc)) from exc
+        known = {row.get("task_key") for row in rows if not row.get("read_error")}
+        return [task_graph(rows, task) for task in tasks if task in known]
 
     def run(self, key: str) -> dict[str, Any]:
         trace = self._trace(key)

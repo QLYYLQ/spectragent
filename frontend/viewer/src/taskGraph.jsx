@@ -391,7 +391,9 @@ export function TaskGraphs({ visible, revision, selected, onToggle, route, rende
   const [limit, setLimit] = useState(TASKS_PER_PAGE);
   const page = groups.slice(0, limit);
   const isFolded = (key) => overrides[key] ?? folded;
-  const wanted = page.filter((group) => !isFolded(group.key)).map((group) => group.key);
+  // An unreadable run is a task of its own with nothing to place: its error is shown instead.
+  const unreadable = (group) => group.runs.every((row) => row.read_error);
+  const wanted = page.filter((group) => !isFolded(group.key) && !unreadable(group)).map((group) => group.key);
   const [graphs, setGraphs] = useState({ revision, data: {}, errors: {} });
   const signature = JSON.stringify(wanted);
   useEffect(() => {
@@ -400,11 +402,15 @@ export function TaskGraphs({ visible, revision, selected, onToggle, route, rende
     const controller = new AbortController();
     const params = new URLSearchParams(keys.map((key) => ["task", key]));
     readJSON(`/api/task-graph?${params}`, controller.signal)
-      .then((list) => setGraphs((old) => ({
-        revision,
-        data: { ...(old.revision === revision ? old.data : {}), ...Object.fromEntries(list.map((graph) => [graph.task.key, graph])) },
-        errors: {},
-      })))
+      .then((list) => {
+        const found = Object.fromEntries(list.map((graph) => [graph.task.key, graph]));
+        const gone = keys.filter((key) => !found[key]);
+        setGraphs((old) => ({
+          revision,
+          data: { ...(old.revision === revision ? old.data : {}), ...found },
+          errors: Object.fromEntries(gone.map((key) => [key, "这个任务的运行已不在根目录内，刷新后再看"])),
+        }));
+      })
       .catch((error) => {
         if (error.name !== "AbortError")
           setGraphs((old) => ({ ...old, revision, errors: Object.fromEntries(keys.map((key) => [key, error.message])) }));
@@ -459,7 +465,7 @@ export function TaskGraphs({ visible, revision, selected, onToggle, route, rende
             key={group.key}
             group={group}
             graph={graphs.data[group.key]}
-            error={graphs.errors[group.key]}
+            error={unreadable(group) ? `记录无法读取：${group.runs.map((row) => row.read_error).join("；")}` : graphs.errors[group.key]}
             folded={isFolded(group.key)}
             onFold={() => setOverrides((old) => ({ ...old, [group.key]: !isFolded(group.key) }))}
             revision={revision}
