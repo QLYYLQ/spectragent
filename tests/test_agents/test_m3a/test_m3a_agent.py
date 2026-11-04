@@ -58,7 +58,7 @@ from spectragent.core.loops import BranchLoop, ReactLoop
 from spectragent.core.loops.validation import IncompatibleCheckpointError
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
-from spectragent.core.trace.reconstruction import recorded_form
+from spectragent.core.trace.reconstruction import recorded_chat_decisions, recorded_form
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation.fragments import HistoryObs, TaskObs
 from spectragent.schemas.prompt import PromptContribution, ReactPromptContext
@@ -721,8 +721,8 @@ async def test_a_branch_of_an_m3a_run_rebuilds_its_history_from_the_summaries_it
     assert branch.agent_done == "done", branch.error
     (decision,) = teacher.calls  # the decision alone: no summary call
     assert "Opened Network & internet." in _text(decision[0])
-    recorded = [c for c in source.llm_messages(1) if c.purpose == "agent_decision"]
-    assert recorded_form(decision) == recorded_form(recorded[0].messages)
+    (recorded,) = recorded_chat_decisions(source, 1, consumer="this test")
+    assert recorded_form(decision) == recorded_form(recorded.messages)
     first = trace.step(0)
     assert first is not None and first.origin == "restored" and first.restoration is not None
     assert first.restoration.verdict == "ok", first.restoration.reasons
