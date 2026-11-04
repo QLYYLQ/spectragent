@@ -15,7 +15,11 @@ benchmark:
     # --benchmark <the copy>, or spectragent bench without --no-eval:
     #   verifiers:
     #     - verifier_id: browsecomp          # its grader, against the decrypted reference answer
-    #       llm: { model_type: openai, model: <a verified model>, provider: { name: direct } }
+    #       # temperature 0.5 is simple-evals' grader's: the grader sets none
+    #       # (https://github.com/openai/simple-evals/blob/652c89d0ca9df547706735883097e9537d40dc47/simple_evals.py#L333-L337),
+    #       # so it takes ChatCompletionSampler's default
+    #       # (https://github.com/openai/simple-evals/blob/652c89d0ca9df547706735883097e9537d40dc47/sampler/chat_completion_sampler.py#L25)
+    #       llm: { model_type: openai, model: <a verified model>, provider: { name: direct }, temperature: 0.5 }
     #     - verifier_id: exact_match         # no model: normalised string equality with the answer
     #       (it needs a plaintext expected_answer; the official dataset carries the answer
     #       encrypted, so it judges none of its runs yet: docs/architecture_design.md §4.11)

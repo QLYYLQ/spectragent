@@ -919,7 +919,9 @@ benchmark:
     verifiers:
       - verifier_id: online_mind2web
         require_screenshots: true      # a trace with no screenshot is an error, not a text-only verdict
-        llm: { model_type: openai, model: <a verified vision model>, provider: { name: direct } }
+        # temperature 0: WebJudge's own (Online-Mind2Web src/utils.py:115); a provider sends no
+        # sampling value the configuration does not write.
+        llm: { model_type: openai, model: <a verified vision model>, provider: { name: direct }, temperature: 0 }
 ```
 
 Where a verifier is attached follows from what it declares it needs (`__needs__`): one that
