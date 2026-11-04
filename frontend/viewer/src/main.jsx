@@ -386,7 +386,6 @@ function RunList({ revision, selected, setSelected, workspace, route }) {
             ) : view === "tasks" ? (
               <TaskGraphs
                 visible={visible}
-                revision={revision}
                 selected={selected}
                 onToggle={toggle}
                 route={route}

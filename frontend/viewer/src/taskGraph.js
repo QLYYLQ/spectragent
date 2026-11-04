@@ -255,6 +255,30 @@ export function runLabel(run, differs = []) {
     .map((part) => ({ ...part, bold: differs.includes(part.field) }));
 }
 
+/**
+ * What a run's graph depends on: the run, and what its list row says changed
+ * (its last write and its recording state). A refresh that changes neither
+ * reads nothing again.
+ */
+export function runSignature(row) {
+  return JSON.stringify([row.key, row.updated_at ?? null, row.trace_status ?? null]);
+}
+
+/** What a task's placement depends on: the signatures of its runs, in key order. */
+export function taskSignature(group) {
+  return JSON.stringify(group.runs.map(runSignature).sort());
+}
+
+/**
+ * The tasks whose placement must be read: those wanted whose cached
+ * placement was read for other runs, or not at all. `wanted` holds
+ * {key, signature}; `cache` maps a task key to {signature}. Nothing wanted,
+ * nothing read: an empty request is never sent.
+ */
+export function placementsToRead(wanted, cache) {
+  return wanted.filter(({ key, signature }) => cache[key]?.signature !== signature).map(({ key }) => key);
+}
+
 /** Aborts stop queued reads too; callers own both the queue and its lifetime. */
 export async function loadGraphs(keys, read, onResult, signal, concurrency = 3) {
   let cursor = 0;

@@ -6,10 +6,13 @@ import {
   forkChips,
   layoutTask,
   loadGraphs,
+  placementsToRead,
   readStored,
   restorationChips,
   runLabel,
+  runSignature,
   taskGroups,
+  taskSignature,
   taskSummary,
   verdictChip,
   visibleLines,
@@ -191,4 +194,17 @@ test("graph reads are bounded, report failures per run and stop queued requests 
   const read = [];
   await loadGraphs(["a", "b", "c"], async (key) => { read.push(key); controller.abort(); return key; }, () => assert.fail("aborted result"), controller.signal, 1);
   assert.deepEqual(read, ["a"]);
+});
+
+test("a refresh reads a task's placement again only when its runs changed, and never asks for nothing", () => {
+  const group = { runs: [live("b", { updated_at: "t1", trace_status: "complete" }), live("a", { updated_at: "t0", trace_status: "writing" })] };
+  const signature = taskSignature(group);
+  // the order the list gives the runs in does not matter
+  assert.equal(taskSignature({ runs: [...group.runs].reverse() }), signature);
+  assert.deepEqual(placementsToRead([], {}), []);
+  assert.deepEqual(placementsToRead([{ key: TASK, signature }], {}), [TASK]);
+  assert.deepEqual(placementsToRead([{ key: TASK, signature }], { [TASK]: { signature } }), []);
+  const written = taskSignature({ runs: [group.runs[0], { ...group.runs[1], updated_at: "t2" }] });
+  assert.deepEqual(placementsToRead([{ key: TASK, signature: written }], { [TASK]: { signature } }), [TASK]);
+  assert.notEqual(runSignature({ key: "a", trace_status: "writing" }), runSignature({ key: "a", trace_status: "complete" }));
 });

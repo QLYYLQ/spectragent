@@ -12,10 +12,13 @@ import {
   forkChips,
   layoutTask,
   loadGraphs,
+  placementsToRead,
   readStored,
   restorationChips,
   runLabel,
+  runSignature,
   taskGroups,
+  taskSignature,
   taskSummary,
   verdictChip,
   visibleLines,
@@ -45,24 +48,32 @@ async function readJSON(url, signal) {
   return data;
 }
 
-/** Each named run's graph, read three at a time and kept for this revision. */
-function useGraphs(keys, revision, enabled) {
-  const [data, setData] = useState({});
-  const cache = useRef({ revision, data: {} });
-  const signature = JSON.stringify(keys);
+/**
+ * Each named run's graph, read three at a time. A graph is kept for the
+ * run's signature (`runSignature`), so a refresh that changed nothing about
+ * a run reads it no more.
+ */
+function useGraphs(runs, enabled) {
+  const [, setTick] = useState(0);
+  const cache = useRef({});
+  const wanted = runs.map((run) => [run.key, runSignature(run)]);
+  const signature = JSON.stringify(wanted);
   useEffect(() => {
     if (!enabled) return undefined;
     const controller = new AbortController();
-    if (cache.current.revision !== revision) cache.current = { revision, data: {} };
-    setData({ ...cache.current.data });
-    const needed = JSON.parse(signature).filter((key) => !cache.current.data[key]);
-    loadGraphs(needed, (key, signal) => readJSON(query("graph", { key }), signal), (key, result) => {
-      cache.current.data[key] = result;
-      setData((previous) => ({ ...previous, [key]: result }));
+    const current = JSON.parse(signature);
+    // Keep only what the shown runs still are: a live run changes every tick.
+    const kept = new Set(current.map(([, sig]) => sig));
+    for (const sig of Object.keys(cache.current)) if (!kept.has(sig)) delete cache.current[sig];
+    const needed = current.filter(([, sig]) => !cache.current[sig]);
+    const byKey = new Map(needed.map(([key, sig]) => [key, sig]));
+    loadGraphs([...byKey.keys()], (key, signal) => readJSON(query("graph", { key }), signal), (key, result) => {
+      cache.current[byKey.get(key)] = result;
+      setTick((tick) => tick + 1);
     }, controller.signal);
     return () => controller.abort();
-  }, [signature, revision, enabled]);
-  return data;
+  }, [signature, enabled]);
+  return Object.fromEntries(wanted.filter(([, sig]) => cache.current[sig]).map(([key, sig]) => [key, cache.current[sig]]));
 }
 
 /** Whether an element has come near the viewport (and so is worth reading for). */
@@ -288,12 +299,12 @@ function moveFocus(event) {
   }
 }
 
-function TaskDiagram({ graph, revision, near, ctx }) {
+function TaskDiagram({ graph, near, ctx }) {
   const [open, setOpen] = useState(() => new Set());
   const [expanded, setExpanded] = useState(() => new Set());
   const [shown, setShown] = useState({});
   const keys = useMemo(() => visibleLines(graph, { open, expanded }), [graph, open, expanded]);
-  const graphs = useGraphs(keys, revision, near);
+  const graphs = useGraphs(keys.map((key) => graph.runs[key]), near);
   const layout = layoutTask(graph, { graphs, open, shown, expanded });
   const width = X0 * 2 + (layout.lanes - 1) * LANE_W;
   const toggle = (setter, value) => setter((old) => {
@@ -320,10 +331,12 @@ function TaskDiagram({ graph, revision, near, ctx }) {
   );
 }
 
-function TaskSection({ group, graph, error, folded, onFold, revision, ctx }) {
+function TaskSection({ group, graph, error, folded, onFold, ctx }) {
   const ref = useRef(null);
   const near = useNear(ref);
   const summary = taskSummary(group);
+  const broken = group.runs.filter((row) => row.read_error);
+  const unreadableTask = broken.length === group.runs.length;
   const header = group.header;
   const identity = `${header.benchmark || "未记录基准测试"}${header.subset ? ` / ${header.subset}` : ""} · ${header.incomplete || !header.task_id ? "任务身份不完整，单独列出" : `任务 ${header.task_id}`}`;
   return (
@@ -346,8 +359,13 @@ function TaskSection({ group, graph, error, folded, onFold, revision, ctx }) {
           </div>
         </div>
       </header>
+      {broken.length > 0 && !unreadableTask && (
+        <p className="tg-issue tg-task-error">
+          {broken.length} 次运行的记录读不出来，没有画进图里：{broken.map((row) => `${row.key}（${row.read_error}）`).join("；")}
+        </p>
+      )}
       {!folded && (error ? <p className="tg-issue tg-task-error">{error}</p> : graph ? (
-        <TaskDiagram graph={graph} revision={revision} near={near} ctx={ctx} />
+        <TaskDiagram graph={graph} near={near} ctx={ctx} />
       ) : <p className="tg-loading tg-task-error">读取任务的运行图…</p>)}
     </section>
   );
@@ -382,7 +400,7 @@ function DetailPanel({ active, graph, onClose, renderStep }) {
   );
 }
 
-export function TaskGraphs({ visible, revision, selected, onToggle, route, renderStep }) {
+export function TaskGraphs({ visible, selected, onToggle, route, renderStep }) {
   const groups = useMemo(() => taskGroups(visible), [visible]);
   const visibleKeys = useMemo(() => new Set(visible.map((row) => row.key)), [visible]);
   const [folded, setFolded] = useState(() => readStored(storage(), FOLD_KEY, false));
@@ -390,32 +408,40 @@ export function TaskGraphs({ visible, revision, selected, onToggle, route, rende
   const [limit, setLimit] = useState(TASKS_PER_PAGE);
   const page = groups.slice(0, limit);
   const isFolded = (key) => overrides[key] ?? folded;
-  // An unreadable run is a task of its own with nothing to place: its error is shown instead.
+  // A task of unreadable runs alone has nothing to place: its errors are shown instead.
   const unreadable = (group) => group.runs.every((row) => row.read_error);
-  const wanted = page.filter((group) => !isFolded(group.key) && !unreadable(group)).map((group) => group.key);
-  const [graphs, setGraphs] = useState({ revision, data: {}, errors: {} });
-  const signature = JSON.stringify(wanted);
+  const wanted = page
+    .filter((group) => !isFolded(group.key) && !unreadable(group))
+    .map((group) => ({ key: group.key, signature: taskSignature(group) }));
+  // Each task's placement, kept for the signature of the runs it was read for.
+  const [placements, setPlacements] = useState({});
+  const toRead = placementsToRead(wanted, placements);
+  const request = JSON.stringify(wanted.filter((task) => toRead.includes(task.key)));
   useEffect(() => {
-    const keys = JSON.parse(signature).filter((key) => graphs.revision !== revision || !graphs.data[key]);
-    if (!keys.length && graphs.revision === revision) return undefined;
+    const tasks = JSON.parse(request);
+    if (!tasks.length) return undefined;
     const controller = new AbortController();
-    const params = new URLSearchParams(keys.map((key) => ["task", key]));
+    const params = new URLSearchParams(tasks.map((task) => ["task", task.key]));
     readJSON(`/api/task-graph?${params}`, controller.signal)
       .then((list) => {
         const found = Object.fromEntries(list.map((graph) => [graph.task.key, graph]));
-        const gone = keys.filter((key) => !found[key]);
-        setGraphs((old) => ({
-          revision,
-          data: { ...(old.revision === revision ? old.data : {}), ...found },
-          errors: Object.fromEntries(gone.map((key) => [key, "这个任务的运行已不在根目录内，刷新后再看"])),
+        setPlacements((old) => ({
+          ...old,
+          ...Object.fromEntries(tasks.map(({ key, signature }) => [key, found[key]
+            ? { signature, graph: found[key] }
+            : { signature, error: "这个任务的运行已不在根目录内，刷新后再看" }])),
         }));
       })
       .catch((error) => {
         if (error.name !== "AbortError")
-          setGraphs((old) => ({ ...old, revision, errors: Object.fromEntries(keys.map((key) => [key, error.message])) }));
+          setPlacements((old) => ({ ...old, ...Object.fromEntries(tasks.map(({ key, signature }) => [key, { signature, error: error.message }])) }));
       });
     return () => controller.abort();
-  }, [signature, revision]);
+  }, [request]);
+  const graphs = {
+    data: Object.fromEntries(Object.entries(placements).filter(([, value]) => value.graph).map(([key, value]) => [key, value.graph])),
+    errors: Object.fromEntries(Object.entries(placements).filter(([, value]) => value.error).map(([key, value]) => [key, value.error])),
+  };
   const active = route.open ? { key: route.open, step: Number(route.step), kind: route.at || "step" } : null;
   const activeGraph = active && Object.values(graphs.data).find((graph) => graph.runs[active.key]);
   const setActive = (next) => {
@@ -467,7 +493,6 @@ export function TaskGraphs({ visible, revision, selected, onToggle, route, rende
             error={unreadable(group) ? `记录无法读取：${group.runs.map((row) => row.read_error).join("；")}` : graphs.errors[group.key]}
             folded={isFolded(group.key)}
             onFold={() => setOverrides((old) => ({ ...old, [group.key]: !isFolded(group.key) }))}
-            revision={revision}
             ctx={ctx}
           />
         ))}

@@ -418,18 +418,22 @@ class _FileRepository:
         except (OSError, UnicodeError, ValueError) as exc:
             raise RepositoryError(f"Cannot read {path.relative_to(self.root)}: {exc}") from exc
 
-    def _rows(self, *, outside_filters: bool = False) -> list[dict[str, Any]]:
-        """Every run row under the root with its source resolved and its task key.
+    def _rows(
+        self, *, outside_filters: bool = False, tasks: frozenset[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Every run row under the root with its source resolved and its task key and header.
 
         Rows the configuration filters leave out are dropped, or kept marked
         ``context`` with *outside_filters*. Unreadable runs are rows too. A
-        branch's source and its task are resolved against every readable run
-        under the root, never against the filter: a filtered-out run still
-        lends its identity, so the list and the task graph agree.
+        branch's source, its task and the task's header are resolved against
+        every readable run under the root, never against the filter: a
+        filtered-out run still lends its identity, so the list and the task
+        graph agree. Identities are cheap (a run's configuration); the full
+        summary is read only for the rows returned, and with *tasks* only for
+        the runs of those tasks.
         """
-        rows: list[dict[str, Any]] = []
-        # Identities of the readable runs the filters leave out, for resolution only.
-        others: list[dict[str, Any]] = []
+        identities: list[tuple[RunTrace, dict[str, Any]]] = []
+        broken: list[dict[str, Any]] = []
         keys_by_run_id: dict[str, list[str]] = {}
         for directory, files in self._directories():
             if "manifest.json" not in files or self._kind(directory / "manifest.json") == "dataset":
@@ -437,30 +441,25 @@ class _FileRepository:
             key = directory.relative_to(self.root).as_posix()
             try:
                 trace = self._trace(key)
+                config = trace.config
                 keys_by_run_id.setdefault(trace.run_id, []).append(key)
-                if self._matches(trace):
-                    rows.append(_summary(trace, key))
-                elif outside_filters:
-                    rows.append({**_summary(trace, key), "context": True})
-                else:
-                    config = trace.config
-                    others.append(
-                        {
-                            "key": key,
-                            "task_key": task_key(config),
-                            "branch": _json(config.branch),
-                            "benchmark": config.benchmark,
-                            "subset": config.subset,
-                            "task_id": config.task_id,
-                            "task": trace.task_text(),
-                            "created_at": trace.manifest.created_at.isoformat(),
-                        }
-                    )
+                identity = {
+                    "key": key,
+                    "task_key": task_key(config),
+                    "branch": _json(config.branch),
+                    "benchmark": config.benchmark,
+                    "subset": config.subset,
+                    "task_id": config.task_id,
+                    "task": trace.task_text(),
+                    "created_at": trace.manifest.created_at.isoformat(),
+                    "matches": self._matches(trace),
+                }
+                identities.append((trace, identity))
             except (RepositoryError, TraceSchemaError, OSError) as exc:
                 if self.config_source is not None or self.config_hash is not None:
                     # No readable identity means no evidence of membership.
                     continue
-                rows.append(
+                broken.append(
                     {
                         "key": key,
                         "run_id": directory.name,
@@ -469,7 +468,8 @@ class _FileRepository:
                         "verdicts": [],
                     }
                 )
-        for row in rows + others:
+        resolved = [identity for _, identity in identities] + broken
+        for row in resolved:
             if row.get("branch"):
                 # The same resolution ``run`` reports, from the same scan.
                 candidates = keys_by_run_id.get(row["branch"]["source_run_id"], [])
@@ -477,8 +477,33 @@ class _FileRepository:
                 row["source_resolution"] = (
                     "found" if len(candidates) == 1 else "ambiguous" if candidates else "missing"
                 )
-        task_keys(rows + others)
-        headers = task_headers(rows + others)
+        task_keys(resolved)
+        headers = task_headers(resolved)
+        rows: list[dict[str, Any]] = []
+        for trace, identity in identities:
+            if tasks is not None and identity["task_key"] not in tasks:
+                continue
+            if not (identity["matches"] or outside_filters):
+                continue
+            try:
+                row = _summary(trace, identity["key"])
+            except (RepositoryError, TraceSchemaError, OSError) as exc:
+                if self.config_source is not None or self.config_hash is not None:
+                    continue
+                row = {
+                    "key": identity["key"],
+                    "run_id": trace.run_id,
+                    "read_error": str(exc),
+                    "trace_status": "unreadable",
+                    "verdicts": [],
+                }
+            for field in ("task_key", "task_incomplete", "source_key", "source_resolution"):
+                if field in identity:
+                    row[field] = identity[field]
+            if not identity["matches"]:
+                row["context"] = True
+            rows.append(row)
+        rows += [row for row in broken if tasks is None or row["task_key"] in tasks]
         for row in rows:
             row["task_header"] = headers[row["task_key"]]
         return rows
@@ -504,7 +529,7 @@ class _FileRepository:
         task with no readable run left under the root is left out of the
         answer, so one run removed since the list was read fails no other task.
         """
-        rows = self._rows(outside_filters=True)
+        rows = self._rows(outside_filters=True, tasks=frozenset(tasks))
         by_key = {row["key"]: row for row in rows}
         shown = [row for row in rows if not row.get("context")]
         sources: dict[str, dict[str, Any]] = {}
