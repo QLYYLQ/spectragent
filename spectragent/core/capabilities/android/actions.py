@@ -452,8 +452,15 @@ class _FocusedTyping:
     app's full-screen root is not part of a field there. Focus may leave the
     old field a moment after the tap, so the wait covers that too; a service
     that names no field with focus by then cannot tell which field it is, and
-    the text is entered as asked. A refusal still reports the tap
-    (``AndroidTextEffect``).
+    the text is entered as asked. Focus that moved is on a text field only
+    once the input method has started input again since the tap
+    (``TextFocus.input_started``, read before the tap too): until then the
+    connection it serves may be the old field's. On a WebView's page the
+    service named a read-only date field 0.95 s after the tap while the input
+    method still served the field before it, and dropped that connection a
+    quarter second later (measured 2026-11-04). An input method that has not
+    started input by the end of the wait cannot tell either. A refusal still
+    reports the tap (``AndroidTextEffect``).
 
     Once nothing refuses, the configured typing backend must find a field to
     enter text into (``AndroidTypingBackend.finds_field``), read again within
@@ -482,16 +489,17 @@ class _FocusedTyping:
             description=(
                 "How long typing waits, in ms, while no text field has focus yet (after its tap, "
                 "or at once when it taps nowhere); after a tap, while focus stays on the field "
-                "that had it before the tap, with the tapped point outside that field as drawn, or "
-                "the service does not name the field with focus yet; and while the typing backend "
+                "that had it before the tap, with the tapped point outside that field as drawn, the "
+                "service does not name the field with focus yet, or focus moved and the input "
+                "method has not started input since the tap; and while the typing backend "
                 "finds no field to enter text into yet (set_text: until the service names an "
                 "editable node with input focus, which a WebView's page gives a moment after the "
                 "tap). Read again every 0.1 s. When the wait runs out, typing fails without "
-                "entering text, except where the service still names no field or the backend "
-                "finds none: it cannot tell then, and enters the text as asked. A tap that opens "
-                "a screen takes a while: on the API 33 emulator, Settings' search field had focus "
-                "1.8-2.8 s after a tap on its bar on a still page, and up to 4.6 s after a tap "
-                "right after Settings started."
+                "entering text, except where the service still names no field, the input method "
+                "has not started input, or the backend finds none: it cannot tell then, and "
+                "enters the text as asked. A tap that opens a screen takes a while: on the API 33 "
+                "emulator, Settings' search field had focus 1.8-2.8 s after a tap on its bar on a "
+                "still page, and up to 4.6 s after a tap right after Settings started."
             ),
         ),
     ] = 5000
@@ -514,13 +522,16 @@ class _FocusedTyping:
         device = capability.bridge.input
         no_field = "No text field has focus"
         before: FocusedNode | None = None
+        started: int | None = None
         tapped: Touch | None = None
         if point is not None:
             before = await device.focused_field(field_bounds=True, at=point)
+            if before is not None and before.field_holds(*point) is False:
+                started = (await capability.bridge.apps.text_focus()).input_started
             tapped = await touch(capability, "tap", point, point, TAP_MS)
             no_field = f"No text field took focus at {target}"
         try:
-            where = await self._no_field_at(capability, point, before, target)
+            where = await self._no_field_at(capability, point, before, started, target)
         except Exception as exc:  # nothing went in, and the tap happened
             return ActionResult(
                 success=False,
@@ -565,18 +576,20 @@ class _FocusedTyping:
         capability: AndroidCapability,
         point: tuple[int, int] | None,
         before: FocusedNode | None,
+        started: int | None,
         target: str,
     ) -> str | None:
         """Where focus is when no text should go in (at *point*, *before* the tap); ``None``: it should.
 
         Read again every :data:`FOCUS_POLL_S` while that is so, or while the
-        service names no field with focus or the typing backend finds none, up
-        to ``focus_wait_ms``; one that still names or finds none then cannot
-        tell, and the answer is ``None``.
+        service names no field with focus, the input method has not started
+        input since *started*, or the typing backend finds no field, up to
+        ``focus_wait_ms``; a device that still does not tell then is typed
+        into, and the answer is ``None``.
         """
         deadline = time.monotonic() + self.focus_wait_ms / 1000
         while True:
-            where, waiting = await self._no_field_now(capability, point, before, target)
+            where, waiting = await self._no_field_now(capability, point, before, started, target)
             if (where is None and not waiting) or time.monotonic() >= deadline:
                 return where
             await asyncio.sleep(max(0.0, min(FOCUS_POLL_S, deadline - time.monotonic())))
@@ -586,6 +599,7 @@ class _FocusedTyping:
         capability: AndroidCapability,
         point: tuple[int, int] | None,
         before: FocusedNode | None,
+        started: int | None,
         target: str,
     ) -> tuple[str | None, bool]:
         """Where focus is when no text should go in now, and whether to read again though nothing refuses.
@@ -593,8 +607,10 @@ class _FocusedTyping:
         Focus on a text field is refused only when it stayed on the field
         *before* named, with the point outside that field as drawn when tapped.
         Typing reads again while the service names no field with focus after
-        such a tap, and while the typing backend finds no field to enter text
-        into.
+        such a tap; while focus moved to another node and the input method's
+        latest start of input is still *started*, the one before the tap, so
+        the connection it serves may still be the old field's; and while the
+        typing backend finds no field to enter text into.
         """
         focus = await capability.bridge.apps.text_focus()
         if focus.text_field is False:
@@ -611,6 +627,8 @@ class _FocusedTyping:
                 return None, True
             if node.same_node(before):
                 return f"focus stayed on {_field(node)}, away from {target}", False
+            if started is not None and focus.input_started == started:
+                return None, True
         return None, not await device.finds_field()
 
 

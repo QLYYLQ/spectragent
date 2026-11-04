@@ -3,8 +3,9 @@
 :class:`ScriptedPhone` is one phone with both of its sides:
 
 - **adb's own commands**, answered with output shaped like the emulator's (API
-  33, 2026-11-01): the focus lines of ``dumpsys window``, the input method
-  client's served connection from ``dumpsys input_method``, a frame count from
+  33, 2026-11-01): the focus lines of ``dumpsys window``, the input method's
+  latest start of input and its client's served connection from ``dumpsys
+  input_method``, a frame count from
   ``dumpsys gfxinfo``, ``wm size``, ``getprop``, ``settings``, ``pm``,
   ``cmd package`` and ``am start``;
 - **the device side** (:class:`~tests._helpers.fake_device_side.FakeDeviceSide`):
@@ -184,6 +185,9 @@ class ScriptedPhone:
             method serves its window, and the view with focus holds an input
             connection. ``None``: the input method's client does not answer, so
             its report names no connection.
+        input_started: The number of the input method's latest start of input
+            (``StartInput #N`` in its report): raise it when focus moves to
+            another field, as the input method then starts input again.
         window_over: A window over the activity that has focus instead of it,
             by its title (``NotificationShade``): the input method still serves
             the activity's window, as the emulator reported.
@@ -240,6 +244,7 @@ class ScriptedPhone:
     screenshot_fails: bool = False
     screen: bytes | None = None
     text_field: bool | None = False
+    input_started: int = 4
     window_over: str | None = None
     field_bounds: tuple[int, int, int, int] | None = (0, 100, 1080, 250)
     field_node: int = 1
@@ -477,7 +482,7 @@ class ScriptedPhone:
         if command == "dumpsys window":
             return ShellResult(stdout=_window_report(self.focused, self.window_over))
         if command == "dumpsys input_method":
-            return ShellResult(stdout=_input_method_report(self.text_field))
+            return ShellResult(stdout=_input_method_report(self.text_field, self.input_started))
         if words[:2] == ["dumpsys", "gfxinfo"]:
             if words[2] != package or self.frames is None:
                 return ShellResult(stdout=f"No process found for: {words[2]}\n".encode())
@@ -527,8 +532,11 @@ def _window_report(focused: str, window_over: str | None) -> bytes:
     ).encode()
 
 
-def _input_method_report(text_field: bool | None) -> bytes:
-    """The input method client's lines of ``dumpsys input_method``, around the one the bridge reads."""
+def _input_method_report(text_field: bool | None, input_started: int) -> bytes:
+    """The lines of ``dumpsys input_method`` the bridge reads, in a little of the rest of it.
+
+    The input method's latest start of input, then its client's connection.
+    """
     connection = (
         "RemoteInputConnectionImpl{connection=dzl@450171d finished=false "
         "mParentInputMethodManager.isActive()=true mServedView=dzd{805613a VFED..CL. .F...... "
@@ -548,6 +556,11 @@ def _input_method_report(text_field: bool | None) -> bytes:
         "Current Input Method Manager state:\n"
         "  mShowRequested=false mShowExplicitlyRequested=false mShowForced=false "
         "mInputShown=false\n"
+        "  mStartInputHistory:\n"
+        f"   StartInput #{input_started}:\n"
+        "    time=2023-10-15 15:34:09.804 (timestamp=65789) reason=APP_CALLED_RESTART_INPUT_API "
+        "restarting=true\n"
+        "  mSoftInputShowHideHistory:\n"
         " \n"
         "Input method client state for android.view.inputmethod.InputMethodManager@ac641eb:\n"
         + client
