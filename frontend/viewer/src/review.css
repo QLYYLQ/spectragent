@@ -1350,33 +1350,81 @@
   .history-actions { grid-template-columns: minmax(0, 1fr); }
 }
 
-/* The archive as a folder: a strip of step tabs, and the one open card under them. */
-.folder-tabs { display: flex; gap: 2px; align-items: flex-end; margin: 10px 0 0; padding: 4px 4px 0; overflow-x: auto; scrollbar-width: thin; }
-.folder-tab { position: relative; flex: 0 0 auto; display: grid; gap: 1px; min-width: 76px; padding: 6px 12px 7px; text-align: left; border: 1px solid var(--folder-line); border-bottom: 0; border-radius: 8px 8px 0 0; background: var(--folder-tab); color: var(--muted); font: inherit; cursor: pointer; transform: translateY(3px); transition: transform 120ms ease, background 120ms ease; }
-.folder-tab:hover { transform: translateY(0); background: var(--folder-hover); }
-.folder-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.folder-tab-relation { font-size: 9px; letter-spacing: .04em; }
-.folder-tab-step { font-size: 12px; font-weight: 650; color: var(--text); }
-.folder-tab-origin { font-size: 9px; }
-.folder-tab.current { border-top: 3px solid var(--accent); }
-.folder-tab.future .folder-tab-relation { color: var(--lane-1); }
-.folder-tab.restored { background: repeating-linear-gradient(135deg, var(--folder-tab) 0 6px, var(--folder-hover) 6px 7px); }
-.folder-tab[aria-selected="true"] { z-index: 2; transform: none; background: var(--surface); color: var(--text); border-color: var(--folder-edge); box-shadow: 0 -2px 6px var(--shadow); }
-.folder-tab[aria-selected="true"]::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--surface); }
-.folder-card { position: relative; z-index: 1; min-width: 0; padding: 12px 14px 16px; background: var(--surface); border: 1px solid var(--folder-edge); border-radius: 0 8px 8px 8px; box-shadow: 0 6px 16px var(--shadow); }
-.folder-card-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
-.folder-card-head h3 { margin: 0; font-size: 15px; }
-.folder-card-head h3 > span { margin-left: 8px; font-weight: 400; color: var(--muted); font-size: 11px; }
+/* The archive: the step under review pinned on the desk beside one step taken
+   from the stack of folders below; the stack holds the run's other steps,
+   earlier ones to the left of the pinned step's place, later ones to the right. */
+.folder-desk { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-areas: "ph nh" "pi ni" "st st" "pt nt"; column-gap: 14px; align-items: stretch; margin-top: 10px; }
+.desk-head, .desk-images, .desk-text { min-width: 0; padding: 0 12px; border: 1px solid var(--folder-edge); border-top: 0; border-bottom: 0; }
+.desk-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; padding-top: 10px; padding-bottom: 6px; border-top: 1px solid var(--folder-edge); border-radius: 8px 8px 0 0; }
+.desk-images { padding-bottom: 8px; border-bottom: 1px solid var(--folder-edge); border-radius: 0 0 8px 8px; }
+.desk-text { padding-top: 8px; padding-bottom: 12px; border-top: 1px solid var(--folder-edge); border-bottom: 1px solid var(--folder-edge); border-radius: 8px; }
+.desk-stack { grid-area: st; margin: 12px 0; }
+.desk-head.pinned { grid-area: ph; } .desk-images.pinned { grid-area: pi; } .desk-text.pinned { grid-area: pt; }
+.desk-head.neighbour { grid-area: nh; } .desk-images.neighbour { grid-area: ni; } .desk-text.neighbour { grid-area: nt; }
+.desk-head.pinned, .desk-images.pinned, .desk-text.pinned { background: var(--sunk); border-left: 3px solid var(--accent); }
+.desk-head.neighbour, .desk-images.neighbour, .desk-text.neighbour { background: var(--surface); box-shadow: 0 6px 16px var(--shadow); }
+.desk-head h3 { margin: 0; font-size: 14px; }
+.desk-head h3 > span { margin-left: 8px; font-weight: 400; color: var(--muted); font-size: 11px; }
 .folder-card-nav { display: flex; gap: 14px; }
 .folder-card-nav .text-button:disabled { opacity: .4; cursor: default; }
+.desk-text .history-record { margin: 6px 0; }
+.folder-frames { padding: 8px; }
+
+/* Folders overlap by a padded edge, so each one's thumbnail and line stay
+   readable; the one nearest the pinned step lies on top. */
+.folder-stack { position: relative; display: flex; align-items: flex-end; min-width: 0; padding: 18px 14px 8px; overflow-x: auto; background: var(--sunk); border: 1px solid var(--folder-line); border-radius: 10px; scrollbar-width: thin; }
+.stack-side { display: flex; align-items: flex-end; flex: 0 0 auto; }
+.stack-folder { position: relative; flex: 0 0 auto; display: grid; width: 168px; margin: 0 0 0 -26px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; transform: translateY(6px); transition: transform 120ms ease; }
+.stack-side .stack-folder:first-child { margin-left: 0; }
+.stack-folder:hover, .stack-folder:focus-visible { transform: translateY(-2px); z-index: 60 !important; }
+.stack-folder:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.stack-ear { justify-self: start; padding: 3px 8px 2px; font-size: 11px; font-weight: 650; color: var(--text); background: var(--folder-tab); border: 1px solid var(--folder-edge); border-bottom: 0; border-radius: 6px 6px 0 0; white-space: nowrap; }
+.stack-ear small { font-weight: 400; color: var(--muted); }
+.stack-side.later .stack-ear { justify-self: end; }
+.stack-body { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 6px; height: 78px; padding: 6px 30px 6px 6px; background: var(--folder-tab); border: 1px solid var(--folder-edge); border-radius: 0 6px 6px 6px; box-shadow: -3px 2px 6px var(--shadow); }
+/* Later folders mirror earlier ones: the covered edge is on their left. */
+.stack-side.later .stack-body { padding: 6px 6px 6px 30px; border-radius: 6px 0 6px 6px; box-shadow: 3px 2px 6px var(--shadow); }
+.stack-side .stack-folder:last-child .stack-body { padding-right: 6px; }
+.stack-side.later .stack-folder:first-child .stack-body { padding-left: 6px; }
+.stack-side.later .stack-folder:last-child .stack-body { padding-right: 6px; }
+.stack-body img, .stack-noshot { width: 38px; height: 64px; object-fit: cover; object-position: top; border: 1px solid var(--border); background: var(--surface); }
+.stack-noshot { display: grid; place-items: center; font-size: 9px; color: var(--muted); }
+.stack-line { align-self: start; min-width: 0; max-height: 5.6em; font-size: 10.5px; line-height: 1.4; color: var(--text-2); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.stack-folder.restored .stack-body { background: repeating-linear-gradient(135deg, var(--folder-tab) 0 6px, var(--folder-hover) 6px 7px); }
+.stack-folder[aria-selected="true"] { transform: translateY(-12px); }
+.stack-folder[aria-selected="true"] .stack-ear, .stack-folder[aria-selected="true"] .stack-body { background: var(--surface); border-color: var(--accent); }
+.stack-folder[aria-selected="true"] .stack-ear { box-shadow: inset 0 2px 0 var(--accent); }
+.stack-slot { flex: 0 0 auto; display: grid; place-content: center; gap: 2px; width: 104px; height: 92px; margin: 0 18px; text-align: center; color: var(--accent); border: 2px dashed var(--accent); border-radius: 8px; font-size: 12px; font-weight: 650; }
+.stack-slot small { font-size: 10px; font-weight: 400; }
+
+/* On a phone the pinned step is a sticky strip that a tap expands, the stack
+   comes next, and the opened step fills the screen below. */
+.pinned-strip { display: none; }
+@media (max-width: 760px) {
+  .pinned-strip { position: sticky; top: 0; z-index: 8; display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 8px; padding: 6px 10px; text-align: left; color: inherit; font: inherit; background: var(--surface); border: 1px solid var(--folder-edge); border-left: 3px solid var(--accent); border-radius: 8px; box-shadow: 0 4px 10px var(--shadow); cursor: pointer; }
+  .pinned-strip img { width: 30px; height: 54px; object-fit: cover; object-position: top; border: 1px solid var(--border); }
+  .pinned-strip-text { display: grid; min-width: 0; flex: 1; font-size: 11px; }
+  .pinned-strip-text strong { font-size: 12px; }
+  .pinned-strip-text > span { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pinned-strip-toggle { flex-shrink: 0; font-size: 11px; color: var(--accent); }
+  .folder-desk { grid-template-columns: minmax(0, 1fr); grid-template-areas: "ph" "pi" "pt" "st" "nh" "ni" "nt"; }
+  .evidence-folder:not(.pinned-open) .desk-head.pinned,
+  .evidence-folder:not(.pinned-open) .desk-images.pinned,
+  .evidence-folder:not(.pinned-open) .desk-text.pinned { display: none; }
+  .evidence-folder.pinned-open .desk-text.pinned { margin-bottom: 12px; }
+  .desk-head, .desk-images, .desk-text { padding-left: 8px; padding-right: 8px; }
+  .folder-stack { padding: 16px 8px 6px; }
+  .stack-folder { width: 150px; }
+  .desk-stack { margin: 10px 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stack-folder { transition: none; }
+}
 .folder-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 4px 0 10px; font-size: 12px; }
 .folder-facts dt { color: var(--muted); }
 .folder-facts dd { margin: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: 11px; }
 .folder-action h4 { margin: 8px 0 6px; font-size: 12px; }
 .folder-action pre { margin: 0; padding: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11.5px; line-height: 1.65; background: var(--sunk); border: 1px solid var(--border); border-radius: 4px; }
-@media (prefers-reduced-motion: reduce) {
-  .folder-tab { transition: none; }
-}
 
 
 .review-evidence-section .item-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }

@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  actionLine,
   comparisonEvidence,
+  defaultNeighbour,
   folderNeighbour,
   folderSteps,
   frameStatus,
@@ -113,4 +115,21 @@ test("observation facts come from recorded fields, never from fragment names", (
 test("a comparison row's box takes the tallest known image, and knows nothing without sizes", () => {
   assert.equal(tallestRatio([{width: 640, height: 400}, {width: 1080, height: 2400}, null, {width: 0, height: 5}]), 2400 / 1080);
   assert.equal(tallestRatio([{}, null]), null);
+});
+
+test("the folder opens the step just before the reviewed one, else the one after", () => {
+  const steps = [0, 1, 3, 4].map(index => ({index}));
+  assert.equal(defaultNeighbour(steps, 3), 1);
+  assert.equal(defaultNeighbour(steps, 0), 1);
+  assert.equal(defaultNeighbour([{index: 2}], 2), null);
+  // moving the opened neighbour skips nothing but the pinned step, which is not among them
+  const others = steps.filter(step => step.index !== 3);
+  assert.equal(folderNeighbour(others, 1, 1), 4);
+  assert.equal(folderNeighbour(others, 0, -Infinity), 0);
+});
+
+test("a folder tab says a step's actions in one line", () => {
+  assert.equal(actionLine("1. 点击 (1, 2) → #0 按钮“Save”\n2. 按键 返回"), "点击 (1, 2) → #0 按钮“Save”（另 1 个动作）");
+  assert.equal(actionLine("（没有动作）"), "（没有动作）");
+  assert.equal(actionLine(""), "没有动作");
 });

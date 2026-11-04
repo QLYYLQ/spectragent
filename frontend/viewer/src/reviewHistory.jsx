@@ -1,13 +1,18 @@
 /**
- * The review page's archive: the committed steps before and after the
- * reviewed one, laid out like a folder of tabs. One step's card is open at a
- * time (its observation, the screen after its actions, what it did and what
- * the model replied); the rest are tabs, chosen by click or ← →.
+ * The review page's archive. The step under review is pinned: its evidence
+ * (observation, the screen after its actions, what it did and what the model
+ * replied) always stays shown. The run's other committed steps are a stack of
+ * folders, earlier ones to the left of the pinned step's place and later
+ * ones to the right; one of them is open at a time, beside the pinned step,
+ * its screens at the same size and aligned to the top with the pinned ones.
+ * On a phone the pinned step shrinks to a sticky strip that a tap expands.
  */
 import React, { useEffect, useRef, useState } from "react";
 import { query, RemoteState, useRemote } from "./common.jsx";
 import { MarkLayer, MarkLegend } from "./marks.jsx";
 import {
+  actionLine,
+  defaultNeighbour,
   folderNeighbour,
   folderSteps,
   frameStatus,
@@ -54,16 +59,63 @@ export function ComparedImage({ src, alt, marks, pointer, missing }) {
   );
 }
 
-function ImageInfo({ marks, pointer, showMarks, showPointer }) {
+function ImageInfo({ marks, pointer, show }) {
   return (
     <div className="history-image-info">
-      {showPointer && pointer && <p className="history-pointer-reading">{pointerPresentation(pointer).label}</p>}
-      {showMarks && <MarkLegend data={marks} />}
+      {show.pointer && pointer && <p className="history-pointer-reading">{pointerPresentation(pointer).label}</p>}
+      {show.marks && <MarkLegend data={marks} />}
     </div>
   );
 }
 
-function StepCard({ data, params, index, steps, show, setShow }) {
+/** A step's two screens: its observation, and the next observation with this step's actions on it. */
+function stepFigures(data, params, index, steps) {
+  const record = data.record;
+  const after = nextObservation(steps, index);
+  return [
+    {
+      key: "observation",
+      title: `第 ${index} 步 · 观测`,
+      note: record.origin === "terminal" ? "结束后的观测" : record.origin === "restored" ? "恢复过程中实际采集的观测" : "模型作出这一步决定时的画面",
+      src: data.has_screenshot ? imageUrl(params, index, "observation") : null,
+      missing: "这一步没有记录观测截图",
+      marks: data.observation_marks,
+      pointer: data.observation_pointer,
+    },
+    {
+      key: "after",
+      title: after ? `动作之后 · 第 ${after.index} 步的观测` : "动作之后",
+      note: after ? `画的是第 ${index} 步的动作` : record.origin === "terminal" ? "终止观测之后没有动作" : "下一步没有提交，没有之后的画面",
+      src: after?.has_screenshot ? imageUrl(params, after.index, "observation") : null,
+      missing: after ? "下一步没有记录观测截图" : "没有之后的画面",
+      marks: data.after_marks,
+      pointer: null,
+    },
+  ];
+}
+
+function StepImages({ figures, ratio, show }) {
+  return (
+    <div className="compare-row" style={{ "--compare-count": figures.length, "--compare-ratio": ratio ?? undefined }}>
+      {figures.map((figure) => (
+        <figure key={figure.key} className="compare-figure">
+          <figcaption>{figure.title}<span>{figure.note}</span></figcaption>
+          <ComparedImage
+            key={figure.src || figure.key}
+            src={figure.src}
+            alt={figure.title}
+            missing={figure.missing}
+            marks={show.marks ? figure.marks : null}
+            pointer={show.pointer ? figure.pointer : null}
+          />
+          <ImageInfo marks={figure.marks} pointer={figure.pointer} show={show} />
+        </figure>
+      ))}
+    </div>
+  );
+}
+
+function StepText({ data, params, index, steps, show }) {
   const frames = (data.frames || []).filter((frame) => frame.kind === "before_action");
   const [picked, setPicked] = useState(null);
   const frame = frames.find((candidate) => candidate.id === picked) || frames[0];
@@ -74,73 +126,10 @@ function StepCard({ data, params, index, steps, show, setShow }) {
   );
   const record = data.record;
   const restored = record.origin === "restored";
-  const after = nextObservation(steps, index);
   const facts = observationFacts(data.fragments);
   const summary = steps.find((step) => step.index === index)?.action_summary;
-  const figures = [
-    {
-      key: "observation",
-      title: `第 ${index} 步 · 观测`,
-      note: record.origin === "terminal" ? "结束后的观测" : restored ? "恢复过程中实际采集的观测" : "模型作出这一步决定时的画面",
-      src: data.has_screenshot ? imageUrl(params, index, "observation") : null,
-      missing: "这一步没有记录观测截图",
-      marks: data.observation_marks,
-      pointer: data.observation_pointer,
-    },
-    ...(frames.length
-      ? [{
-          key: "frame",
-          title: "同一步 · 动作前画面",
-          note: "辅助证据，没有送给模型",
-          src: frame?.has_image ? imageUrl(params, index, "before_action", frame.id) : null,
-          missing: frameStatus(frame),
-          marks: frame?.marks,
-          pointer: frame?.pointer,
-        }]
-      : []),
-    {
-      key: "after",
-      title: after ? `动作之后 · 第 ${after.index} 步的观测` : "动作之后",
-      note: after ? `画的是第 ${index} 步的动作，看它们之后屏幕变成什么样` : record.origin === "terminal" ? "终止观测之后没有动作" : "下一步没有提交，没有之后的画面",
-      src: after?.has_screenshot ? imageUrl(params, after.index, "observation") : null,
-      missing: after ? "下一步没有记录观测截图" : "没有之后的画面",
-      marks: data.after_marks,
-      pointer: null,
-    },
-  ];
   return (
     <>
-      <div className="history-image-tools">
-        <label className="toggle"><input type="checkbox" checked={show.marks} onChange={(event) => setShow({ ...show, marks: event.target.checked })} />动作位置</label>
-        <label className="toggle" title="显示记录位置的辅助标记；原图自带的光标保持原样"><input type="checkbox" checked={show.pointer} onChange={(event) => setShow({ ...show, pointer: event.target.checked })} />当时鼠标位置</label>
-        {frames.length > 1 && (
-          <label className="history-frame-picker">动作前截图
-            <select value={frame.id} onChange={(event) => setPicked(event.target.value)}>
-              {frames.map((candidate) => (
-                <option key={candidate.id} value={candidate.id}>
-                  第 {(candidate.action_index ?? 0) + 1} 个动作 · {candidate.action || "未记录动作名"} · {frameStatus(candidate)}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-      </div>
-      <div className="compare-row" style={{ "--compare-count": figures.length, "--compare-ratio": tallestRatio(figures.map((figure) => figure.marks)) ?? undefined }}>
-        {figures.map((figure) => (
-          <figure key={figure.key} className="compare-figure">
-            <figcaption>{figure.title}<span>{figure.note}</span></figcaption>
-            <ComparedImage
-              key={figure.src || figure.key}
-              src={figure.src}
-              alt={figure.title}
-              missing={figure.missing}
-              marks={show.marks ? figure.marks : null}
-              pointer={show.pointer ? figure.pointer : null}
-            />
-            <ImageInfo marks={figure.marks} pointer={figure.pointer} showMarks={show.marks} showPointer={show.pointer} />
-          </figure>
-        ))}
-      </div>
       {(facts.front || facts.page) && (
         <dl className="folder-facts">
           {facts.front && <><dt>前台应用</dt><dd>{facts.front}</dd></>}
@@ -149,21 +138,47 @@ function StepCard({ data, params, index, steps, show, setShow }) {
       )}
       {restored && <p className="history-note">这是实际恢复的一步，没有重新让策略模型决定。原回复和原动作属于来源材料。</p>}
       {record.origin === "terminal" && <p className="history-note">这里只记录结束后的观测，没有下一次决定。</p>}
-      <div className="history-actions">
-        <div className="folder-action">
-          <h4>{restored ? "本次实际恢复的动作" : "这一步的动作"}</h4>
-          <pre>{summary || "（没有动作）"}</pre>
-          {record.skipped_actions > 0 && <p className="history-note">先前的动作失败，末尾 {record.skipped_actions} 个动作没有执行。</p>}
-        </div>
-        <RecordedText title={restored ? "源运行的回复（恢复材料，不是本次新思考）" : "模型的回复"} value={recordedReply(record)} open />
+      <div className="folder-action">
+        <h4>{restored ? "本次实际恢复的动作" : "这一步的动作"}</h4>
+        <pre>{summary || "（没有动作）"}</pre>
+        {record.skipped_actions > 0 && <p className="history-note">先前的动作失败，末尾 {record.skipped_actions} 个动作没有执行。</p>}
       </div>
+      <RecordedText title={restored ? "源运行的回复（恢复材料，不是本次新思考）" : "模型的回复"} value={recordedReply(record)} open />
+      {frames.length > 0 && (
+        <details className="history-record">
+          <summary>同一步的动作前画面（{frames.length} 张，辅助证据，没有送给模型）</summary>
+          <div className="folder-frames">
+            {frames.length > 1 && (
+              <label className="history-frame-picker">动作前截图
+                <select value={frame.id} onChange={(event) => setPicked(event.target.value)}>
+                  {frames.map((candidate) => (
+                    <option key={candidate.id} value={candidate.id}>
+                      第 {(candidate.action_index ?? 0) + 1} 个动作 · {candidate.action || "未记录动作名"} · {frameStatus(candidate)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <StepImages
+              show={show}
+              figures={[{
+                key: frame.id,
+                title: `第 ${(frame.action_index ?? 0) + 1} 个动作之前`,
+                note: frameStatus(frame),
+                src: frame.has_image ? imageUrl(params, index, "before_action", frame.id) : null,
+                missing: frameStatus(frame),
+                marks: frame.marks,
+                pointer: frame.pointer,
+              }]}
+            />
+          </div>
+        </details>
+      )}
       {facts.text && (
         <RecordedText title={`界面文字 · ${facts.text.source}（${facts.text.lines.length} 行）`} value={facts.text.lines.join("\n")} />
       )}
-      <div className="history-actions">
-        <RecordedText title="动作原文" value={record.actions} />
-        <RecordedText title="动作返回结果" value={record.action_results} />
-      </div>
+      <RecordedText title="动作原文" value={record.actions} />
+      <RecordedText title="动作返回结果" value={record.action_results} />
       {restored && <RecordedText title="完整恢复尝试、异常与来源" value={{ restoration: record.restoration, source_history: record.source_history }} />}
       <section className="history-calls" aria-label="记录的模型思考与调用">
         <h4>记录的模型思考与调用</h4>
@@ -196,74 +211,137 @@ function StepCard({ data, params, index, steps, show, setShow }) {
   );
 }
 
+/** One folder of the stack: its step's ear, a thumbnail of its screen and its action in one line. */
+function Folder({ step, params, opened, onOpen, order }) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      id={`folder-tab-${step.index}`}
+      data-index={step.index}
+      aria-selected={opened}
+      aria-controls="folder-neighbour"
+      tabIndex={opened ? 0 : -1}
+      className={`stack-folder ${step.relation} ${step.origin}`}
+      style={{ zIndex: opened ? 50 : order }}
+      onClick={() => onOpen(step.index)}
+      title={step.action_summary || ""}
+    >
+      <span className="stack-ear">第 {step.index} 步 <small>{originText[step.origin] || step.origin}</small></span>
+      <span className="stack-body">
+        {step.has_screenshot ? <img src={imageUrl(params, step.index, "observation")} alt="" loading="lazy" /> : <span className="stack-noshot">无截图</span>}
+        <span className="stack-line">{actionLine(step.action_summary)}</span>
+      </span>
+    </button>
+  );
+}
+
 function EvidenceFolder({ data, params }) {
-  const steps = folderSteps(data.steps, data.anchor_step);
-  const [selected, setSelected] = useState(data.anchor_step);
+  const anchor = data.anchor_step;
+  const steps = folderSteps(data.steps, anchor);
+  const others = steps.filter((step) => step.index !== anchor);
+  const earlier = others.filter((step) => step.index < anchor);
+  const later = others.filter((step) => step.index > anchor);
+  const pinnedStep = steps.find((step) => step.index === anchor);
+  const [opened, setOpened] = useState(() => defaultNeighbour(others, anchor));
   const [show, setShow] = useState({ marks: true, pointer: false });
-  const tabs = useRef(null);
-  const detail = useRemote(query("review/trajectory-step", { ...params, index: selected }), params.queue_sha256);
-  const current = steps.find((step) => step.index === selected);
+  const [pinnedOpen, setPinnedOpen] = useState(false);
+  const stack = useRef(null);
+  const pinned = useRemote(query("review/trajectory-step", { ...params, index: anchor }), params.queue_sha256);
+  const neighbour = useRemote(opened == null ? null : query("review/trajectory-step", { ...params, index: opened }), params.queue_sha256);
+  const openedStep = others.find((step) => step.index === opened);
   useEffect(() => {
-    // Scroll the strip sideways only: scrolling the tab into view would move the page too.
-    const strip = tabs.current;
-    const tab = strip?.querySelector('[aria-selected="true"]');
-    if (strip && tab) strip.scrollLeft = tab.offsetLeft - strip.clientWidth / 2 + tab.clientWidth / 2;
-  }, [selected]);
-  const move = (offset, focus = false) => {
-    const next = folderNeighbour(steps, selected, offset);
-    setSelected(next);
-    if (focus) requestAnimationFrame(() => tabs.current?.querySelector(`[data-index="${next}"]`)?.focus());
+    // Bring the opened folder into the stack's view: scroll the stack sideways only, never the page.
+    const strip = stack.current;
+    const folder = strip?.querySelector('[aria-selected="true"]');
+    if (strip && folder) strip.scrollLeft = folder.offsetLeft - strip.clientWidth / 2 + folder.clientWidth / 2;
+  }, [opened]);
+  const move = (offset) => {
+    if (opened == null) return;
+    const next = folderNeighbour(others, opened, offset);
+    setOpened(next);
+    requestAnimationFrame(() => stack.current?.querySelector(`[data-index="${next}"]`)?.focus());
   };
-  // ← → and Home / End move between tabs here; the review page's own
-  // ← → (previous and next item) keep working everywhere else.
+  // ← → move the opened neighbour, Home / End go to the first and last; only
+  // on the stack, so the review page's own ← → (previous and next item) keep
+  // working everywhere else.
   const onKeyDown = (event) => {
     const offsets = { ArrowLeft: -1, ArrowRight: 1, Home: -Infinity, End: Infinity };
     if (!(event.key in offsets)) return;
     event.preventDefault();
     event.stopPropagation();
-    const offset = offsets[event.key];
-    move(Number.isFinite(offset) ? offset : offset < 0 ? -steps.length : steps.length, true);
+    move(offsets[event.key]);
   };
+  // The pinned and the opened screens share one box size: the tallest image of the four.
+  const ratio = tallestRatio([
+    pinned.data?.observation_marks, pinned.data?.after_marks,
+    neighbour.data?.observation_marks, neighbour.data?.after_marks,
+  ]);
   return (
-    <section className="trajectory-evidence evidence-folder" aria-label="档案">
+    <section className={`trajectory-evidence evidence-folder ${pinnedOpen ? "pinned-open" : ""}`} aria-label="档案">
       <div className="trajectory-heading">
         <h3>档案</h3>
-        <span>每次只打开一步 · 点标签或在标签上按 ← → 换一步</span>
+        <span>当前审阅的这一步固定在左边；从画面下方的文件夹里抽出一步放在旁边对照 · 在文件夹上按 ← → 换一步</span>
       </div>
-      <p className="history-note">当前审阅第 {data.anchor_step} 步。下面按顺序陈列这次运行已提交的每一步：观测、动作、动作之后的画面和模型的回复。之后的记录供审阅参考，不是模型当时的输入。</p>
-      <div className="folder-tabs" role="tablist" aria-label="已提交的步骤" ref={tabs} onKeyDown={onKeyDown}>
-        {steps.map((step) => (
-          <button
-            key={step.index}
-            type="button"
-            role="tab"
-            id={`folder-tab-${step.index}`}
-            data-index={step.index}
-            aria-selected={step.index === selected}
-            aria-controls="folder-card"
-            tabIndex={step.index === selected ? 0 : -1}
-            className={`folder-tab ${step.relation} ${step.origin}`}
-            onClick={() => setSelected(step.index)}
-            title={step.action_summary || ""}
-          >
-            <span className="folder-tab-relation">{relationText[step.relation]}</span>
-            <span className="folder-tab-step">第 {step.index} 步</span>
-            <span className="folder-tab-origin">{originText[step.origin] || step.origin}</span>
-          </button>
-        ))}
+      <p className="history-note">之后的步骤供审阅参考，不是模型当时的输入。</p>
+      <div className="history-image-tools">
+        <label className="toggle"><input type="checkbox" checked={show.marks} onChange={(event) => setShow({ ...show, marks: event.target.checked })} />动作位置</label>
+        <label className="toggle" title="显示记录位置的辅助标记；原图自带的光标保持原样"><input type="checkbox" checked={show.pointer} onChange={(event) => setShow({ ...show, pointer: event.target.checked })} />当时鼠标位置</label>
       </div>
-      <article className={`folder-card ${current?.relation || ""}`} role="tabpanel" id="folder-card" aria-labelledby={`folder-tab-${selected}`}>
-        <div className="folder-card-head">
-          <h3>第 {selected} 步 <span>{relationText[current?.relation]} · {originText[current?.origin] || current?.origin}</span></h3>
-          <div className="folder-card-nav">
-            <button type="button" className="text-button" disabled={steps[0]?.index === selected} onClick={() => move(-1)}>← 上一步</button>
-            <button type="button" className="text-button" disabled={steps.at(-1)?.index === selected} onClick={() => move(1)}>下一步 →</button>
+      <button type="button" className="pinned-strip" aria-expanded={pinnedOpen} onClick={() => setPinnedOpen(!pinnedOpen)}>
+        {pinnedStep?.has_screenshot && <img src={imageUrl(params, anchor, "observation")} alt="" />}
+        <span className="pinned-strip-text">
+          <strong>当前审阅 · 第 {anchor} 步</strong>
+          <span>{actionLine(pinnedStep?.action_summary)}</span>
+        </span>
+        <span className="pinned-strip-toggle">{pinnedOpen ? "收起 ▴" : "展开 ▾"}</span>
+      </button>
+      <div className="folder-desk">
+        <header className="desk-head pinned">
+          <h3>第 {anchor} 步 <span>当前审阅 · {originText[pinnedStep?.origin] || pinnedStep?.origin} · 固定</span></h3>
+        </header>
+        <header className="desk-head neighbour" id="folder-neighbour" role="tabpanel" aria-labelledby={opened == null ? undefined : `folder-tab-${opened}`}>
+          {openedStep ? (
+            <h3>第 {opened} 步 <span>{relationText[openedStep.relation]} · {originText[openedStep.origin] || openedStep.origin}</span></h3>
+          ) : <h3>这次运行没有别的已提交步骤</h3>}
+          {openedStep && (
+            <div className="folder-card-nav">
+              <button type="button" className="text-button" disabled={others[0]?.index === opened} onClick={() => move(-1)}>← 上一步</button>
+              <button type="button" className="text-button" disabled={others.at(-1)?.index === opened} onClick={() => move(1)}>下一步 →</button>
+            </div>
+          )}
+        </header>
+        <div className="desk-images pinned">
+          <RemoteState state={pinned}>{(step) => <StepImages figures={stepFigures(step, params, anchor, steps)} ratio={ratio} show={show} />}</RemoteState>
+        </div>
+        <div className="desk-images neighbour">
+          {opened != null && <RemoteState state={neighbour}>{(step) => <StepImages figures={stepFigures(step, params, opened, steps)} ratio={ratio} show={show} />}</RemoteState>}
+        </div>
+        {others.length > 0 && (
+        <div className="folder-stack desk-stack" role="tablist" aria-label="这次运行的其余步骤" ref={stack} onKeyDown={onKeyDown}>
+          <div className="stack-side earlier">
+            {earlier.map((step, position) => (
+              <Folder key={step.index} step={step} params={params} opened={step.index === opened} onOpen={setOpened} order={position + 1} />
+            ))}
+          </div>
+          <div className="stack-slot" aria-hidden="true">
+            <span>第 {anchor} 步</span>
+            <small>当前审阅 · 已取出</small>
+          </div>
+          <div className="stack-side later">
+            {later.map((step, position) => (
+              <Folder key={step.index} step={step} params={params} opened={step.index === opened} onOpen={setOpened} order={later.length - position} />
+            ))}
           </div>
         </div>
-        <RemoteState state={detail}>
-          {(step) => <StepCard key={selected} data={step} params={params} index={selected} steps={steps} show={show} setShow={setShow} />}
-        </RemoteState>
-      </article>
+      )}
+        <div className="desk-text pinned">
+          <RemoteState state={pinned}>{(step) => <StepText key={anchor} data={step} params={params} index={anchor} steps={steps} show={show} />}</RemoteState>
+        </div>
+        <div className="desk-text neighbour">
+          {opened != null && <RemoteState state={neighbour}>{(step) => <StepText key={opened} data={step} params={params} index={opened} steps={steps} show={show} />}</RemoteState>}
+        </div>
+      </div>
     </section>
   );
 }

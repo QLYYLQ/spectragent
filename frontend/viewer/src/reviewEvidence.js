@@ -117,3 +117,17 @@ export function tallestRatio(sizes) {
   const ratios = sizes.filter((size) => size?.width > 0 && size?.height > 0).map((size) => size.height / size.width);
   return ratios.length ? Math.max(...ratios) : null;
 }
+
+/** The neighbour the folder opens first: the step just before the reviewed one, else the one just after. */
+export function defaultNeighbour(steps, anchor) {
+  const before = steps.filter((step) => step.index < anchor).at(-1);
+  const after = steps.find((step) => step.index > anchor);
+  return (before || after)?.index ?? null;
+}
+
+/** A step's actions as one line for a folder tab: the first action, and how many more. */
+export function actionLine(summary) {
+  const lines = (summary || "").split("\n").map((line) => line.replace(/^\d+\.\s*/, "").trim()).filter(Boolean);
+  if (!lines.length) return "没有动作";
+  return lines.length > 1 ? `${lines[0]}（另 ${lines.length - 1} 个动作）` : lines[0];
+}
