@@ -528,9 +528,10 @@ async def test_with_the_wait_on_the_clock_is_pinned_on_a_still_screen_that_then_
         await capability.begin_observation(1)
         shot = await capability.resolve_fragment(SCREENSHOT)
 
-    assert phone.clock_sets == [CLOCK]
+    # Pinned, a quiet period waited for, pinned again: the wait's own time is taken back.
+    assert phone.clock_sets == [CLOCK, CLOCK]
     assert isinstance(shot, AndroidScreenshotObs) and shot.device is not None
-    assert shot.device.clock_ms - CLOCK >= 100, "a quiet period passed after the pinning"
+    assert 0 <= shot.device.clock_ms - CLOCK < 100
     assert shot.settle is not None and shot.settle.outcome == "settled"
 
 

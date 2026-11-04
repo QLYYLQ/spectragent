@@ -47,9 +47,10 @@ class ClockAlignment(BaseModel):
     """What pinning the device clock did before one restored capture.
 
     ``target_ms`` is the recorded capture's device clock (``None``: it has
-    none); the clock was set to it after the wait for a still screen, and the
-    screen was let settle again before the capture. ``detail`` says why, in
-    words, when it was not aligned.
+    none); the clock was set to it after the wait for a still screen, the
+    screen was let settle again, and the clock was set to it once more right
+    before the capture. ``detail`` says why, in words, when it was not
+    aligned.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

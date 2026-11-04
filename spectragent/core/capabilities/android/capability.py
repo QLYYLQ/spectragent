@@ -572,9 +572,10 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
                     "Checkpoint restoration (branch runs): how far, in seconds, the device "
                     "clock of a restored capture may lie from the recorded capture's and "
                     "still pass the restoration check. Each restored capture pins the clock "
-                    "to the recorded one once the screen is still, then lets the screen settle "
-                    "again, so the clocks differ by about that second wait. Recorded with "
-                    "each restoration measurement. Read only by a restorer."
+                    "to the recorded one once the screen is still, lets the screen settle "
+                    "again and pins it once more right before the capture, so the clocks "
+                    "differ by the capture's own reads. Recorded with each restoration "
+                    "measurement. Read only by a restorer."
                 ),
             ),
         ] = 2.0,
@@ -1266,8 +1267,9 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         """Pin the device clock to *recorded*'s capture inside the next capture.
 
         Only the request is kept here; the device is not touched. The next
-        capture sets the clock once the screen is still and waits for a still
-        screen again before its sources (:meth:`_capture_job`), and the next
+        capture sets the clock once the screen is still, waits for a still
+        screen again and sets it once more before its sources
+        (:meth:`_capture_job`), and the next
         :meth:`verify_restoration` reports what it did. The request belongs to
         that one capture: a later one never pins.
         """
@@ -1477,10 +1479,11 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         beside the sources, never failing the capture.
 
         A restored observation (``align_next_observation``) pins the device
-        clock to the recorded capture's once the screen is still, then waits
-        for a still screen again, so what shows the time is drawn anew,
-        before the sources are asked; the record of that wait is the first
-        one's, the wait the recording took.
+        clock to the recorded capture's once the screen is still, waits for a
+        still screen again, so what shows the time is drawn anew, and pins it
+        once more, so the time that wait took (up to its limit on a screen
+        that never settles) is taken back, before the sources are asked; the
+        record of the wait is the first one's, the wait the recording took.
         """
         await self._keep_service()
         wanted = self.provided_fragments
@@ -1502,8 +1505,11 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
             pin, self._clock_request = self._clock_request, None
             if pin is not None:
                 self._clock_alignment = await self._pin_clock(pin)
-                if settle is not None:
-                    await self._settle()
+                if settle is not None and self._clock_alignment.outcome == "aligned":
+                    await self._settle()  # what shows the time is drawn anew
+                    # The wait itself took time, up to its limit on a screen that
+                    # never settles: pinned again, the capture is at the target.
+                    self._clock_alignment = await self._pin_clock(pin)
             fetched, device = await asyncio.gather(
                 self._ask_sources(sources),
                 self._device_now(foreground=FOREGROUND_APP not in wanted),
