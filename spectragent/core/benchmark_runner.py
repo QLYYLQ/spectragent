@@ -99,7 +99,6 @@ from spectragent.schemas._types import (
 )
 from spectragent.schemas.benchmark_spec import BenchmarkSpec
 from spectragent.schemas.config_source import ConfigSource
-from spectragent.schemas.task import TaskContext
 from spectragent.schemas.verdict import Verdict
 from spectragent.verifiers.base import OfflineVerifier
 from spectragent.verifiers.report import VerifierTally, tallies
@@ -778,8 +777,8 @@ class BenchmarkRunner:
         self._env_id = env_id
         self._timeout = timeout
         self._verify_timeout = verify_timeout
-        self._benchmark = getattr(loader, "benchmark_name", "")
-        self._subset = getattr(loader, "subset", "")
+        self._benchmark = loader.benchmark_name
+        self._subset = loader.subset
         self._run_id_prefix = run_id_prefix
         self._benchmark_spec = benchmark_spec
         self._inherited = inherited
@@ -1061,7 +1060,7 @@ class BenchmarkRunner:
         """
         try:
             context = self._loader.get_task_context(task_id)
-            run = self._benchmark_of(inherited_of(context)).compose()
+            run = self._benchmark_of(context.benchmark).compose()
             if self._experiment_scope is not None:
                 self._experiment_scope.bind(run)
             self._attach_progress(run)
@@ -1091,7 +1090,7 @@ class BenchmarkRunner:
         seen: set[BenchmarkSpec | None] = set()
         for task_id in selected:
             try:
-                key = inherited_of(self._loader.get_task_context(task_id))
+                key = self._loader.get_task_context(task_id).benchmark
             except Exception:
                 continue
             if key not in seen:
@@ -1170,7 +1169,7 @@ class BenchmarkRunner:
                 elapsed_ms=int((time.monotonic() - started) * 1000),
             )
 
-        inherited = inherited_of(context)
+        inherited = context.benchmark
         try:
             run = run if run is not None else self._benchmark_of(inherited).compose()
             scope.bind(run)
@@ -1258,15 +1257,6 @@ def select_task_ids(
     """*task_ids*, or every task of *loader*, the first *limit* of them."""
     selected = list(task_ids) if task_ids is not None else list(loader.task_ids())
     return selected[:limit] if limit is not None else selected
-
-
-def inherited_of(context: TaskContext) -> BenchmarkSpec | None:
-    """The benchmark a task inherited: a branch task's source's; ``None`` for every other task.
-
-    A branch of a run that belonged to no benchmark inherits none either, and
-    runs as the sweep's own task.
-    """
-    return context.benchmark if context.branch is not None else None
 
 
 def _verification_of(benchmark: TaskBenchmark) -> VerificationRunner | None:
@@ -1525,8 +1515,6 @@ def main(
     loader = chosen.task_loader
 
     verifiers = [] if args.no_eval else chosen.offline_verifiers()
-    benchmark = loader.benchmark_name
-    subset = getattr(loader, "subset", "")
     try:
         reference_loader = _reference_loader(chosen, verifiers, args.benchmark)
     except ValueError as exc:
@@ -1559,7 +1547,7 @@ def main(
     trace_root = Path("traces")
     if selected:
         try:
-            spec = inherited_of(loader.get_task_context(selected[0]))
+            spec = loader.get_task_context(selected[0]).benchmark
             probe = inherited(spec).compose() if spec is not None else composer.compose(raw)
         except Exception as exc:
             print(f"spectragent bench: {PreflightError(selected[0], exc)}", file=sys.stderr)
@@ -1570,8 +1558,8 @@ def main(
         )
     session = BatchSession(
         args.session_dir or trace_root / ".sessions",
-        benchmark=benchmark,
-        subset=subset,
+        benchmark=loader.benchmark_name,
+        subset=loader.subset,
         config_source=config_source,
     )
     if progress is not None:

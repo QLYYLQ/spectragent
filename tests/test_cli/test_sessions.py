@@ -16,7 +16,9 @@ from spectragent.core.composer import ComposedRun
 def make_runner(tmp_path):
     session = BatchSession(tmp_path / ".sessions", benchmark="fixture", subset="test")
     runner = BenchmarkRunner(
-        loader=SimpleNamespace(task_ids=lambda: ["first", "second", "third"]),
+        loader=SimpleNamespace(
+            benchmark_name="fixture", subset="test", task_ids=lambda: ["first", "second", "third"]
+        ),
         compose=lambda: ComposedRun(by_layer={}),
         session=session,
     )
