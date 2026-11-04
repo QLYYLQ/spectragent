@@ -911,7 +911,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 
    以模型调用失败结束的 run（429、超时、被拒的 schema，`error_phase: llm`）列在 `model_failures` 里。它们不会让站点进剔除名单。teacher 调用失败的分叉是空分叉，不计入 `miss_policy` 依据的占比，按原因记在 `metrics.branch_coverage.empty`；原路径回放在最后一步失败的 run 没有终止截图。预算里给重跑这些任务留出余量。
 5. 磁盘。UI-TARS 在 memory 容量范围内携带此前截图；trace 里每张截图只存一份（`messages/images/`，报告存储一节的 `messages:images` 类别），调用记录里只写引用，所以 `messages/` 随不同截图的张数线性增长；此外还有 WARC 里的 body 和原始 DOM。截图只存一份之前，一个 12 步的 UI-TARS 录制在 `messages/` 里存了 78 份截图（32.9 MB），不同的只有 10 张（3.9 MB）；现在同一个录制的 `messages/` 约 3 MB。三个站点的冒烟链按每个任务各段合计约 74 MB（之前约 102 MB），300 个任务约 22 GB；真实页面上的字节以报告的存储和保留期两节的实测为准。
-6. 判分默认关闭（`evaluate: false`，即 `--no-eval`）。给 `record` 段写 `evaluate: true`，并让 `tasks.benchmark` 指向一份在基准块里列了 `verifiers:` 的基准 YAML（发布的别名一个判分器也不列，这时什么也不判）：这一段的 sweep 跑完之后，基准的离线判分器判它的每个 run，每个 LLM 判分器每个任务多一轮 judge 调用，判定写进每个 run 的 `verdicts/`，链根下没有单独的判定目录。分叉段（`same_path`、`branch`）写 `evaluate: true` 会被拒。段的 `verify_timeout` 交给 bench 的 `--verify-timeout`（判分时间点活体判分器的时限）。
+6. 判分默认关闭（`evaluate: false`，即 `--no-eval`）。给 `record` 段写 `evaluate: true`，并让 `tasks.benchmark` 指向一份在基准块里列了 `verifiers:` 的基准 YAML（发布的别名一个判分器也不列，这时什么也不判）：这一段的 sweep 跑完之后，基准的离线判分器判它的每个 run，每个 LLM 判分器每个任务多一轮 judge 调用，判定写进每个 run 的 `verdicts/`，链根下没有单独的判定目录。分叉段（`same_path`、`branch`）写 `evaluate: true` 时，每个分叉 run 由它源 run 的基准的离线判分器判（录制段用的基准 YAML 列了判分器才有东西判）。段的 `verify_timeout` 交给 bench 的 `--verify-timeout`（判分时间点活体判分器的时限）。
 7. 报告之后，把 `sections.sites.yaml` 放进导出配置的 `filters`，手动再导一次。
 
 ## 排错

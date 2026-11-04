@@ -164,7 +164,15 @@ class TestThePaths:
         assert (root / "report" / "report.json").is_file() and result.report is not None
 
     def test_the_argv_of_each_run_stage(self, tmp_path: Path) -> None:
-        spec = _spec(tmp_path, control={"config": tmp_path / "control.yaml", "evaluate": True})
+        spec = _spec(
+            tmp_path,
+            control={"config": tmp_path / "control.yaml", "evaluate": True},
+            branch={
+                "config": _write(tmp_path / "branch.yaml", RUN_YAML),
+                "benchmark": _write(tmp_path / "branch_branches.yaml", BRANCHES_YAML),
+                "evaluate": True,
+            },
+        )
         bench = Recorder(commit_one_run)
         run_chain(spec, bench=bench, export=Recorder(publish_dataset), log_level="WARNING")
         record, control, same_path, branch = bench.calls
@@ -191,11 +199,13 @@ class TestThePaths:
             "--no-eval",
         ]
         # An evaluating stage runs the benchmark's offline verifiers: no --no-eval.
+        # A branch stage's runs are each judged by its source's benchmark's.
         assert "--no-eval" not in control
         for stage, call in (("same_path", same_path), ("branch", branch)):
             branches = str(root / "configs" / f"{stage}_branches.yaml")
             assert call[call.index("--benchmark") + 1] == branches
-            assert "--no-eval" in call and "--task-id" not in call
+            assert "--task-id" not in call
+        assert "--no-eval" in same_path and "--no-eval" not in branch
 
     def test_a_stage_may_set_its_verify_timeout(self, tmp_path: Path) -> None:
         record = {"config": _write(tmp_path / "record.yaml", RUN_YAML), "verify_timeout": 90}
@@ -400,10 +410,6 @@ class TestTheSpec:
     def test_a_planted_secret_has_exactly_one_source(self, planted: dict[str, Any]) -> None:
         with pytest.raises(ValueError):
             PlantedSecret.model_validate(planted)
-
-    def test_a_branch_stage_never_evaluates(self, tmp_path: Path) -> None:
-        with pytest.raises(ValueError, match="same_path.evaluate"):
-            _spec(tmp_path, same_path={"config": tmp_path / "x.yaml", "evaluate": True})
 
     def test_a_branch_stage_names_its_branches_yaml_and_only_a_branch_stage_does(
         self, tmp_path: Path

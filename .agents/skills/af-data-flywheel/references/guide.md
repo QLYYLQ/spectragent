@@ -760,7 +760,8 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   `--no-eval`, so the benchmark's offline verifiers judge its runs after the sweep, each
   verdict into its run's `verdicts/` (the chain keeps no verdict directory of its own);
   only a `tasks.benchmark` that lists `verifiers:` has any (a shipped alias lists none).
-  `same_path` and `branch` refuse `evaluate: true`. A stage's `verify_timeout` is the
+  On `same_path` and `branch`, `evaluate: true` judges each branch run with its source
+  run's benchmark's offline verifiers. A stage's `verify_timeout` is the
   bench's `--verify-timeout`. With the export selected,
   an existing `datasets/first` or `datasets/second` is a `ChainConfigError` before any paid
   stage runs.
