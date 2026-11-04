@@ -51,6 +51,15 @@ environment — an offline verifier reads committed traces, which is what lets
 the same sweep be judged again later, by a different judge, on a machine with
 no browser; each verdict goes into its run's own verdict store. Running the
 pass here only saves you from typing ``spectragent eval``.
+
+**A branch task belongs to its source run's benchmark** (§4.10.1 "分叉 sweep 是一种任务来源"):
+a branch sweep's task source (``trace_branches``) is no benchmark of its own,
+and each task names its source's (``TaskContext.benchmark``). The runner
+composes such a task's stack, judges its trace and reads its primary verdict
+as that benchmark's (:class:`TaskBenchmark`), records the source's
+``benchmark_spec``, and checks the configuration once for the first task of
+each benchmark the sweep's tasks belong to; a sweep over runs of several
+benchmarks does each per task.
 """
 
 from __future__ import annotations
@@ -69,7 +78,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from spectragent.benchmarks import Benchmark
-from spectragent.benchmarks.selection import read_benchmark, run_root
+from spectragent.benchmarks.selection import read_benchmark, read_spec, run_root, spec_of
 from spectragent.core.benchmark_session import SessionLedger, TaskProgress
 from spectragent.core.composer import ComposedRun, ConfigComposer
 from spectragent.core.data_loader.eval.base import BaseEvalLoader
@@ -88,6 +97,7 @@ from spectragent.schemas._types import (
     Unlimited,
     limit_value,
 )
+from spectragent.schemas.benchmark_spec import BenchmarkSpec
 from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.verdict import Verdict
 from spectragent.verifiers.base import OfflineVerifier
@@ -207,7 +217,14 @@ class TaskOutcome:
     #: Why the task's tokens could not be counted: its trace, or one of its
     #: recorded calls, does not read back.
     usage_note: str | None = None
-    #: The benchmark's primary verdict on the run (§4.10.1 "主判定"), read once
+    #: The benchmark a branch task inherited from its source run
+    #: (``TaskContext.benchmark``), which composed, judged and gives the primary
+    #: verdict of its run; ``None``: the sweep's own benchmark did.
+    inherited: BenchmarkSpec | None = None
+    #: The verifier kind whose verdict is the brief result of the benchmark the
+    #: task belongs to; ``None`` when it declares none.
+    primary_verifier: str | None = None
+    #: That benchmark's primary verdict on the run (§4.10.1 "主判定"), read once
     #: the sweep's verifiers have judged it; ``None`` when there is none.
     primary: Verdict | None = None
     #: How far the task succeeded by it, from 0 to 1 (the benchmark's success
@@ -284,6 +301,31 @@ class TokenLimitReached:
 
 
 @dataclass(frozen=True)
+class PrimaryTally:
+    """One primary verifier kind over the sweep's tasks whose benchmark declares it (§4.10.1 "主判定").
+
+    A sweep of one benchmark has at most one; a branch sweep over runs of
+    several benchmarks has one per kind they declare, since a success rate
+    across different judges would mean nothing.
+    """
+
+    verifier_id: str
+    #: The tasks whose benchmark declares this kind its primary verdict.
+    tasks: int
+    #: Those a primary verdict of this kind judged.
+    judged: int
+    #: Their mean success; ``None`` when it judged none.
+    success_rate: float | None
+
+    def describe(self) -> str:
+        rate = f"{self.success_rate:.1%}" if self.success_rate is not None else "-"
+        return (
+            f"primary verdict ({self.verifier_id}): success rate {rate} over the "
+            f"{self.judged} of {self.tasks} task(s) it judged"
+        )
+
+
+@dataclass(frozen=True)
 class BenchmarkRunSummary:
     """Aggregate of one benchmark sweep: three counters, the failures, the veto.
 
@@ -304,9 +346,6 @@ class BenchmarkRunSummary:
     #: ``<task> (<slug>): <why>`` for each trace a verifier could not judge,
     #: or the pass's own failure.
     verification_errors: list[str] = field(default_factory=list)
-    #: The verifier kind whose verdict is the benchmark's brief result (its
-    #: primary verdict); ``None`` when it declares none or none was asked for.
-    primary_verifier: str | None = None
 
     #: Set when a guard vetoed the sweep (``RunAbort``), naming the task that
     #: did it. ``outcomes`` ends with that task, so without this a short sweep
@@ -361,21 +400,30 @@ class BenchmarkRunSummary:
         return len(self.outcomes)
 
     @property
-    def judged(self) -> int:
-        """Tasks a primary verdict judged."""
-        return sum(1 for o in self.outcomes if o.success is not None)
-
-    @property
-    def success_rate(self) -> float | None:
-        """The mean success over the tasks a primary verdict judged; ``None`` when it judged none.
+    def primaries(self) -> list[PrimaryTally]:
+        """Each primary verifier kind the sweep's tasks' benchmarks declare, in the order of the tasks.
 
         A task with no judged primary verdict (no trace, a verifier that
         could not judge it, a live verdict that timed out) is not counted as
-        a failure: it is left out, and :attr:`judged` against :attr:`total`
-        says how much the rate covers.
+        a failure: it is left out of the rate, and ``judged`` against
+        ``tasks`` says how much the rate covers.
         """
-        values = [o.success for o in self.outcomes if o.success is not None]
-        return sum(values) / len(values) if values else None
+        kinds: dict[str, list[TaskOutcome]] = {}
+        for outcome in self.outcomes:
+            if outcome.primary_verifier is not None:
+                kinds.setdefault(outcome.primary_verifier, []).append(outcome)
+        counted: list[PrimaryTally] = []
+        for kind, outcomes in kinds.items():
+            values = [o.success for o in outcomes if o.success is not None]
+            counted.append(
+                PrimaryTally(
+                    verifier_id=kind,
+                    tasks=len(outcomes),
+                    judged=len(values),
+                    success_rate=sum(values) / len(values) if values else None,
+                )
+            )
+        return counted
 
     @property
     def completed(self) -> int:
@@ -415,12 +463,7 @@ class BenchmarkRunSummary:
         ):
             listed = ", ".join(f"{key}={count}" for key, count in sorted(counts.items()))
             lines.append(f"  {label}: {listed or '-'}")
-        if self.primary_verifier is not None:
-            rate = f"{self.success_rate:.1%}" if self.success_rate is not None else "-"
-            lines.append(
-                f"  primary verdict ({self.primary_verifier}): success rate {rate} over the "
-                f"{self.judged} of {self.total} task(s) it judged"
-            )
+        lines += [f"  {tally.describe()}" for tally in self.primaries]
         if self.token_limit is not None:
             lines.append(
                 f"  tokens: {self.tokens} recorded by {self.calls} call(s); "
@@ -444,7 +487,7 @@ class BenchmarkRunSummary:
                 if outcome.usage is not None and outcome.usage.tokens is not None
                 else ""
             )
-            primary = f", {_primary_words(outcome)}" if self.primary_verifier is not None else ""
+            primary = f", {_primary_words(outcome)}" if outcome.primary_verifier is not None else ""
             lines.append(
                 f"  {outcome.task_id}: {outcome.agent_done} "
                 f"({outcome.elapsed_ms} ms, trace={where}{tokens}{primary}){detail}"
@@ -501,13 +544,15 @@ class BenchmarkRunSummary:
                 for tally in self.verification
             ],
             "verification_errors": list(self.verification_errors),
-            "primary": {
-                "verifier_id": self.primary_verifier,
-                "judged": self.judged,
-                "success_rate": self.success_rate,
-            }
-            if self.primary_verifier is not None
-            else None,
+            "primary": [
+                {
+                    "verifier_id": tally.verifier_id,
+                    "tasks": tally.tasks,
+                    "judged": tally.judged,
+                    "success_rate": tally.success_rate,
+                }
+                for tally in self.primaries
+            ],
         }
 
 
@@ -632,6 +677,26 @@ def _model_call_that_ended(trace: RunTrace, result: Any) -> str | None:
     return f"{failed[-1].error}: {failed[-1].detail}"
 
 
+@dataclass(frozen=True)
+class TaskBenchmark:
+    """A benchmark some of a sweep's tasks belong to, as the sweep composes and judges them.
+
+    The sweep's own (the one ``--benchmark`` selected, whose task source gives
+    the tasks), or the one a branch task inherits from its source run
+    (``TaskContext.benchmark``, ``docs/architecture_design.md`` §4.10.1
+    "分叉 sweep 是一种任务来源").
+    """
+
+    #: A fresh stack for one of its tasks.
+    compose: Callable[[], ComposedRun]
+    #: Its offline verifiers: each judges its tasks' traces after the sweep.
+    verifiers: Sequence[OfflineVerifier] = ()
+    #: Its reference rows, for a verifier that judges against one.
+    reference_loader: BaseEvalLoader | None = None
+    #: Which verdict is its tasks' brief result and how it counts; ``None``: none.
+    primary_rule: Benchmark | None = None
+
+
 class BenchmarkRunner:
     """Run every task of a benchmark through a composed agent stack.
 
@@ -668,6 +733,16 @@ class BenchmarkRunner:
             usage at all. With a number, each finished task's tokens are
             read from its trace and added up; once the total reaches the
             limit, no further task starts (module docstring).
+        benchmark_spec: How the selected benchmark was selected, recorded by
+            the run of each task its task source gives (``None``: none is
+            recorded). A branch task records its source run's instead.
+        inherited: How to compose and judge a branch task, which belongs to
+            the benchmark its source run did (``TaskContext.benchmark``),
+            given that benchmark's record; called once per benchmark. ``None``:
+            such a task cannot be composed, and fails as one whose stack
+            could not be. *compose*, *verifiers*, *reference_loader* and
+            *primary_rule* are the selected benchmark's, and serve every
+            other task (a branch of a run that belonged to no benchmark too).
     """
 
     def __init__(
@@ -687,6 +762,8 @@ class BenchmarkRunner:
         progress: TaskProgress | None = None,
         session: SessionLedger | None = None,
         config_source: ConfigSource | None = None,
+        benchmark_spec: BenchmarkSpec | None = None,
+        inherited: Callable[[BenchmarkSpec], TaskBenchmark] | None = None,
     ) -> None:
         if token_limit != UNLIMITED and (
             isinstance(token_limit, bool) or not isinstance(token_limit, int) or token_limit < 1
@@ -696,23 +773,30 @@ class BenchmarkRunner:
             )
         self._token_limit = limit_value(token_limit)
         self._loader = loader
-        self._compose = compose
         self._agent_id = agent_id
         self._env_id = env_id
         self._timeout = timeout
         self._verify_timeout = verify_timeout
-        self._benchmark = getattr(loader, "benchmark_name", "")
-        self._subset = getattr(loader, "subset", "")
+        self._benchmark = loader.benchmark_name
+        self._subset = loader.subset
         self._run_id_prefix = run_id_prefix
-        # Built before any task runs: a verifier that needs reference rows the
-        # benchmark does not have, or one attached live, is refused now, not
-        # hours later at the judging pass.
-        self._verification = (
-            VerificationRunner(verifiers=verifiers, reference_loader=reference_loader)
-            if verifiers
-            else None
+        self._benchmark_spec = benchmark_spec
+        self._inherited = inherited
+        own = TaskBenchmark(
+            compose=compose,
+            verifiers=verifiers,
+            reference_loader=reference_loader,
+            primary_rule=primary_rule,
         )
-        self._primary_rule = primary_rule
+        # Each benchmark the sweep's tasks belong to, by the record a branch
+        # task names (``None``: the selected one), with its judging pass. Built
+        # before any of its tasks runs: a verifier that needs reference rows
+        # its benchmark does not have, or one attached live, is refused now,
+        # not hours later at the judging pass.
+        self._task_benchmarks: dict[BenchmarkSpec | None, TaskBenchmark] = {None: own}
+        self._verifications: dict[BenchmarkSpec | None, VerificationRunner | None] = {
+            None: _verification_of(own)
+        }
         self._progress = progress
         self._session = session
         self._config_source = config_source
@@ -737,10 +821,7 @@ class BenchmarkRunner:
         task_ids: Sequence[str] | None = None,
         limit: int | None = None,
     ) -> list[str]:
-        selected = list(task_ids) if task_ids is not None else list(self._loader.task_ids())
-        if limit is not None:
-            selected = selected[:limit]
-        return selected
+        return select_task_ids(self._loader, task_ids=task_ids, limit=limit)
 
     async def run(
         self,
@@ -813,15 +894,15 @@ class BenchmarkRunner:
             self._subset or "-",
             len(selected),
         )
-        # The first task runs on the stack the pre-flight assembled, so the
-        # sweep still composes exactly one stack per task.
-        prepared = self.preflight(selected[0]) if selected else None
+        # Each pre-flight's task runs on the stack the pre-flight assembled,
+        # so the sweep still composes exactly one stack per task.
+        prepared = {task_id: self.preflight(task_id) for task_id in self._checked_first(selected)}
         outcomes: list[TaskOutcome] = []
         aborted: str | None = None
         reached: TokenLimitReached | None = None
         tokens = 0
         for task_id in selected:
-            run, prepared = prepared, None
+            run = prepared.pop(task_id, None)
             for observer in (self._session, self._progress):
                 if observer is not None:
                     observer.start_task(task_id)
@@ -872,18 +953,13 @@ class BenchmarkRunner:
                 )
                 break
         verification, verification_errors = await self._verify(outcomes)
-        primary_verifier = (
-            self._primary_rule.primary_verifier if self._primary_rule is not None else None
-        )
-        if primary_verifier is not None:
-            outcomes = [self._with_primary(outcome) for outcome in outcomes]
+        outcomes = [self._with_primary(outcome) for outcome in outcomes]
         return BenchmarkRunSummary(
             benchmark=self._benchmark,
             subset=self._subset,
             outcomes=outcomes,
             verification=verification,
             verification_errors=verification_errors,
-            primary_verifier=primary_verifier,
             aborted=aborted,
             token_limit=self._token_limit,
             token_limit_reached=reached,
@@ -892,30 +968,51 @@ class BenchmarkRunner:
     async def _verify(
         self, outcomes: Sequence[TaskOutcome]
     ) -> tuple[list[VerifierTally], list[str]]:
-        """Judge the traces this sweep produced with the benchmark's offline verifiers.
+        """Judge the traces this sweep produced, each with the offline verifiers of its benchmark.
 
         Runs *after* every task (a vetoed sweep's and one stopped at its token
         limit included: only what ran is judged), over trace directories
         rather than live objects — so a judging crash cannot destroy a
         sweep's worth of compute, and the same traces can be judged again
-        later without re-running anything.
+        later without re-running anything. A branch task's trace is judged by
+        its source's benchmark's verifiers (``TaskOutcome.inherited``); each
+        benchmark's pass runs once, after the last task, its own failure
+        failing only its tallies.
         """
-        if self._verification is None:
-            return [], []
-        trace_dirs = [o.trace_dir for o in outcomes if o.trace_dir is not None]
-        try:
-            report = await self._verification.run(trace_dirs)
-        except Exception as exc:
-            logger.exception("BenchmarkRunner: the judging pass failed")
-            return [], [f"{type(exc).__name__}: {exc}"]
-        return tallies(report), [
-            f"{outcome.task_id} ({outcome.slug}): {outcome.error}" for outcome in report.errors
-        ]
+        trace_dirs: dict[BenchmarkSpec | None, list[Path]] = {}
+        for outcome in outcomes:
+            if outcome.trace_dir is not None:
+                trace_dirs.setdefault(outcome.inherited, []).append(outcome.trace_dir)
+        counted: list[VerifierTally] = []
+        errors: list[str] = []
+        for key, verification in self._verifications.items():
+            if verification is None:
+                continue
+            try:
+                report = await verification.run(trace_dirs.get(key, []))
+            except Exception as exc:
+                logger.exception("BenchmarkRunner: the judging pass failed")
+                errors.append(f"{type(exc).__name__}: {exc}")
+                continue
+            counted += tallies(report)
+            errors += [
+                f"{outcome.task_id} ({outcome.slug}): {outcome.error}" for outcome in report.errors
+            ]
+        return counted, errors
 
     def _with_primary(self, outcome: TaskOutcome) -> TaskOutcome:
-        """*outcome* with the benchmark's primary verdict on its run and how far the task succeeded."""
-        rule = self._primary_rule
-        if rule is None or outcome.trace_dir is None:
+        """*outcome* with its benchmark's primary verdict on its run and how far the task succeeded.
+
+        The benchmark the task belongs to (``TaskOutcome.inherited``: a
+        branch task's source's) states both; one this sweep never composed
+        (its task did not load) states nothing.
+        """
+        benchmark = self._task_benchmarks.get(outcome.inherited)
+        rule = benchmark.primary_rule if benchmark is not None else None
+        if rule is None or rule.primary_verifier is None:
+            return outcome
+        outcome = dataclasses.replace(outcome, primary_verifier=rule.primary_verifier)
+        if outcome.trace_dir is None:
             return outcome
         try:
             trace = RunTrace(outcome.trace_dir)
@@ -944,9 +1041,11 @@ class BenchmarkRunner:
         with the task's loop inputs and environment setup context: slot
         validation, the Loop's inputs, the negotiations and the
         environment's setup check (``docs/architecture_design.md`` §4.2) —
-        everything that would refuse every task of the sweep alike. Nothing
-        is set up, no hook is called and no trace is opened. The returned
-        stack is the one this task then runs on (``run_task(run=...)``).
+        everything that would refuse every task of its benchmark alike. A
+        branch task's stack is its source's benchmark's (``inherited``), whose
+        judging pass is built here too. Nothing is set up, no hook is called
+        and no trace is opened. The returned stack is the one this task then
+        runs on (``run_task(run=...)``).
 
         A sweep with a token limit also needs a hook that writes a trace:
         the limit counts what each task's trace recorded, and without one
@@ -961,7 +1060,7 @@ class BenchmarkRunner:
         """
         try:
             context = self._loader.get_task_context(task_id)
-            run = self._compose()
+            run = self._benchmark_of(context.benchmark).compose()
             if self._experiment_scope is not None:
                 self._experiment_scope.bind(run)
             self._attach_progress(run)
@@ -977,6 +1076,51 @@ class BenchmarkRunner:
         except Exception as exc:
             raise PreflightError(task_id, exc) from exc
         return run
+
+    def _checked_first(self, selected: Sequence[str]) -> list[str]:
+        """The tasks the pre-flight checks: the sweep's first, and the first of each other benchmark.
+
+        A sweep's tasks belong to the selected benchmark, except a branch task,
+        which belongs to its source run's (``TaskContext.benchmark``): a branch
+        sweep over runs of several benchmarks runs under one configuration per
+        benchmark, each checked once. A task whose context does not read is
+        left to its own run to report, unless it is the first.
+        """
+        checked = list(selected[:1])
+        seen: set[BenchmarkSpec | None] = set()
+        for task_id in selected:
+            try:
+                key = self._loader.get_task_context(task_id).benchmark
+            except Exception:
+                continue
+            if key not in seen:
+                seen.add(key)
+                if task_id not in checked:
+                    checked.append(task_id)
+        return checked
+
+    def _benchmark_of(self, inherited: BenchmarkSpec | None) -> TaskBenchmark:
+        """The benchmark a task belongs to: the selected one, or the one a branch task *inherited*.
+
+        Raises:
+            ValueError: This runner cannot compose a task of another benchmark
+                (no ``inherited``), or that benchmark's verifiers cannot judge
+                its traces (``VerificationRunner``'s refusals).
+            Exception: Whatever composing that benchmark raised (its YAML no
+                longer reads, its package or its data is not here).
+        """
+        if inherited is None or inherited in self._task_benchmarks:
+            return self._task_benchmarks[inherited]
+        if self._inherited is None:
+            raise ValueError(
+                f"the task is a branch of a run of the benchmark {inherited.benchmark_id!r} "
+                f"({inherited.describe()}), and this sweep has no way to compose a task of "
+                f"another benchmark"
+            )
+        benchmark = self._inherited(inherited)
+        self._verifications[inherited] = _verification_of(benchmark)
+        self._task_benchmarks[inherited] = benchmark
+        return benchmark
 
     def _attach_progress(self, run: ComposedRun) -> None:
         if self._progress is not None:
@@ -1010,7 +1154,8 @@ class BenchmarkRunner:
         Args:
             task_id: The task.
             run: The stack to run it on — the one :meth:`preflight` assembled
-                for the sweep's first task; composed fresh when omitted.
+                for it (the first task of its benchmark); composed fresh, as its
+                benchmark's, when omitted.
         """
         started = time.monotonic()
         try:
@@ -1024,8 +1169,9 @@ class BenchmarkRunner:
                 elapsed_ms=int((time.monotonic() - started) * 1000),
             )
 
+        inherited = context.benchmark
         try:
-            run = run if run is not None else self._compose()
+            run = run if run is not None else self._benchmark_of(inherited).compose()
             scope.bind(run)
             self._attach_progress(run)
             agent_id = self._agent_id or run.ids("agent")[0]
@@ -1036,14 +1182,16 @@ class BenchmarkRunner:
                 task_id=task_id,
                 error=f"compose failed: {type(exc).__name__}: {exc}",
                 elapsed_ms=int((time.monotonic() - started) * 1000),
+                inherited=inherited,
             )
 
         # The link the framework never had: dataset setup → capability.
         # For SWE-bench this is the container image and checkout commit;
-        # for a browser benchmark, the start URL. The task's context has
-        # three parts with three consumers, and each goes to its own
-        # parameter: ``env`` to the capabilities' setup, ``loop`` to the
-        # Loop (a branch task's checkpoint), ``branch`` to the trace.
+        # for a browser benchmark, the start URL. The task's context parts
+        # each go to their own parameter: ``env`` to the capabilities' setup,
+        # ``loop`` to the Loop (a branch task's checkpoint), ``branch`` to the
+        # trace; a branch task's ``benchmark`` chose its stack above, and the
+        # trace records it as the benchmark the run belongs to.
         try:
             result = await runtime.execute(
                 task=getattr(task, "task_text", ""),
@@ -1054,6 +1202,7 @@ class BenchmarkRunner:
                 env_context=context.env,
                 loop_inputs=context.loop,
                 branch=context.branch,
+                benchmark_spec=inherited if context.branch is not None else self._benchmark_spec,
                 config_source=self._config_source,
                 timeout=self._timeout,
                 verify_timeout=self._verify_timeout,
@@ -1098,7 +1247,30 @@ class BenchmarkRunner:
             model_unavailable=ledger.model_unavailable,
             usage=ledger.usage,
             usage_note=ledger.usage_note,
+            inherited=inherited,
         )
+
+
+def select_task_ids(
+    loader: Any, *, task_ids: Sequence[str] | None = None, limit: int | None = None
+) -> list[str]:
+    """*task_ids*, or every task of *loader*, the first *limit* of them."""
+    selected = list(task_ids) if task_ids is not None else list(loader.task_ids())
+    return selected[:limit] if limit is not None else selected
+
+
+def _verification_of(benchmark: TaskBenchmark) -> VerificationRunner | None:
+    """The judging pass of *benchmark*'s offline verifiers; ``None`` when it has none.
+
+    Raises:
+        ValueError: ``VerificationRunner``'s refusals (a verifier attached live,
+            one needing reference rows the benchmark does not have).
+    """
+    if not benchmark.verifiers:
+        return None
+    return VerificationRunner(
+        verifiers=benchmark.verifiers, reference_loader=benchmark.reference_loader
+    )
 
 
 def task_snapshot(task: Any, benchmark: str, subset: str) -> dict[str, Any]:
@@ -1124,24 +1296,78 @@ def task_snapshot(task: Any, benchmark: str, subset: str) -> dict[str, Any]:
 def _reference_loader(
     benchmark: Benchmark, verifiers: Sequence[OfflineVerifier], selection: str
 ) -> BaseEvalLoader | None:
-    """The reference rows the sweep's verifiers judge against; ``None`` when none needs one.
+    """The reference rows *verifiers* judge *benchmark*'s runs against; ``None`` when none needs one.
 
-    The benchmark's own (:meth:`BenchmarkBase.reference_loader`). A verifier
-    that needs one on a benchmark with none stops the sweep before anything
-    runs, naming it: a sweep must not run for hours to fail at its judging
-    pass.
+    The benchmark's own (:meth:`BenchmarkBase.reference_loader`), the selected
+    one's or the one a branch task inherits. A verifier that needs one on a
+    benchmark with none stops the sweep before anything runs, naming it: a
+    sweep must not run for hours to fail at its judging pass.
+
+    Raises:
+        ValueError: A verifier needs reference rows and *benchmark* has none.
     """
     needing = [verifier.verifier_id for verifier in verifiers if "reference" in verifier.needs]
     if not needing:
         return None
     loader = benchmark.reference_loader()
     if loader is None:
-        raise SystemExit(
+        raise ValueError(
             f"Verifier(s) {', '.join(needing)} of benchmark {selection!r} judge against the "
             f"task's reference row, and the benchmark has no reference data: drop them from its "
             f"verifiers, or pass --no-eval."
         )
     return loader
+
+
+def compose_benchmark_alone(block: dict[str, Any]) -> Benchmark:
+    """The benchmark *block* builds as a run root of its own: its task source, verifiers and rules.
+
+    What gives a sweep its tasks. A branch sweep's own run root may not
+    compose: its run configuration may leave to each task's source benchmark
+    what that benchmark supplies (an AVD, an app table;
+    ``docs/architecture_design.md`` §4.10.1 "分叉 sweep 是一种任务来源").
+    """
+    root = run_root({}, block)
+    return ConfigComposer.for_config(root).compose(root).single("benchmark")
+
+
+def inherited_benchmark(
+    configuration: object,
+    task_source: dict[str, Any],
+    spec: BenchmarkSpec,
+    *,
+    evaluate: bool = True,
+) -> TaskBenchmark:
+    """The benchmark a branch task inherits, by its source run's *spec*, as a sweep composes and judges it.
+
+    The task's run root is the run *configuration*, the branch sweep's
+    *task_source* block and the source's benchmark block, read again from how
+    the source selected it (``read_spec``): its setup component is hosted, its
+    live verifiers judge at the scoring point and its part of the capability
+    configuration is merged, as for the source run
+    (``docs/architecture_design.md`` §4.10.1 "分叉 sweep 是一种任务来源").
+    With *evaluate* (``spectragent bench`` without ``--no-eval``), its offline
+    verifiers judge the branch's trace after the sweep, against its reference
+    rows when they need them.
+
+    Raises:
+        BenchmarkSelectionError: The selection no longer reads, names another
+            benchmark, or its block changed since the source ran (``read_spec``).
+        ValueError: A verifier it lists needs reference rows it does not have.
+        Exception: What composing its block raises (``ComposeError``, a task
+            loader's data error); composing the whole root is the pre-flight's.
+    """
+    block = read_spec(spec)
+    root = run_root(configuration, task_source, block)
+    composer = ConfigComposer.for_config(root)
+    benchmark = compose_benchmark_alone(block)
+    verifiers = benchmark.offline_verifiers() if evaluate else []
+    return TaskBenchmark(
+        compose=lambda: composer.compose(root),
+        verifiers=verifiers,
+        reference_loader=_reference_loader(benchmark, verifiers, spec.selection),
+        primary_rule=benchmark,
+    )
 
 
 def _token_limit_argument(text: str) -> int | Unlimited:
@@ -1276,32 +1502,64 @@ def main(
 
     canonical = args.config.expanduser().resolve()
     source_bytes = canonical.read_bytes()
-    raw = run_root(yaml.safe_load(source_bytes), read_benchmark(args.benchmark, subset=args.subset))
+    configuration = yaml.safe_load(source_bytes)
+    task_source = read_benchmark(args.benchmark, subset=args.subset)
+    raw = run_root(configuration, task_source)
     config_source = (
         ConfigSource(path=str(args.config_source), sha256=args.config_source_sha256)
         if args.config_source is not None
         else ConfigSource.from_path(canonical, data=source_bytes)
     )
     composer = ConfigComposer.for_config(raw)
-    probe = composer.compose(raw)
-    chosen: Benchmark = probe.single("benchmark")
+    chosen = compose_benchmark_alone(task_source)
     loader = chosen.task_loader
 
     verifiers = [] if args.no_eval else chosen.offline_verifiers()
-    benchmark = loader.benchmark_name
-    subset = getattr(loader, "subset", "")
-    reference_loader = _reference_loader(chosen, verifiers, args.benchmark)
+    try:
+        reference_loader = _reference_loader(chosen, verifiers, args.benchmark)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    # One per benchmark the branch tasks inherit, shared by the probe below
+    # and the runner, which composes each task's stack from it.
+    built: dict[BenchmarkSpec, TaskBenchmark] = {}
+
+    def inherited(spec: BenchmarkSpec) -> TaskBenchmark:
+        if spec not in built:
+            built[spec] = inherited_benchmark(
+                configuration, task_source, spec, evaluate=not args.no_eval
+            )
+        return built[spec]
+
+    selected = select_task_ids(loader, task_ids=args.task_ids, limit=args.limit)
+    if args.list:
+        for task_id in selected:
+            print(task_id)
+        if report is not None:
+            report({"task_ids": selected, "launched": False})
+        return 0
 
     from spectragent.core.benchmark_session import BatchSession
 
-    trace_root = next(
-        (Path(hook.trace_dir) for hook in probe.hooks if hasattr(hook, "trace_dir")),
-        Path("traces"),
-    )
+    # Where the traces go, for the session file beside them: the first task's
+    # stack, as it runs (a branch task's is its source benchmark's). One that
+    # does not compose is the pre-flight's refusal, made before it. A sweep
+    # with no task composes nothing: its session goes under ``traces``.
+    trace_root = Path("traces")
+    if selected:
+        try:
+            spec = loader.get_task_context(selected[0]).benchmark
+            probe = inherited(spec).compose() if spec is not None else composer.compose(raw)
+        except Exception as exc:
+            print(f"spectragent bench: {PreflightError(selected[0], exc)}", file=sys.stderr)
+            return PREFLIGHT_EXIT_CODE
+        trace_root = next(
+            (Path(hook.trace_dir) for hook in probe.hooks if hasattr(hook, "trace_dir")),
+            trace_root,
+        )
     session = BatchSession(
         args.session_dir or trace_root / ".sessions",
-        benchmark=benchmark,
-        subset=subset,
+        benchmark=loader.benchmark_name,
+        subset=loader.subset,
         config_source=config_source,
     )
     if progress is not None:
@@ -1321,15 +1579,9 @@ def main(
         progress=progress,
         session=session,
         config_source=config_source,
+        benchmark_spec=spec_of(args.benchmark, task_source, subset=args.subset),
+        inherited=inherited,
     )
-
-    selected = runner.select_task_ids(task_ids=args.task_ids, limit=args.limit)
-    if args.list:
-        for task_id in selected:
-            print(task_id)
-        if report is not None:
-            report({"task_ids": selected, "launched": False})
-        return 0
 
     try:
         summary = execute(runner.run(task_ids=selected))

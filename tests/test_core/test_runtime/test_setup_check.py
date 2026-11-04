@@ -504,6 +504,28 @@ class TestPrepareRoutesTheBenchmarksSetup:
             AgentRuntime.for_agent(run, AGENT_ID).prepare()
 
 
+class TestABranchTasksTwoBenchmarkBlocks:
+    """A branch task's run holds its task source and its source's benchmark (§4.10.1).
+
+    The task source never has a setup component or a verifier of its own, so
+    what is routed is the source benchmark's.
+    """
+
+    def test_the_source_benchmarks_components_are_routed(self) -> None:
+        cap, setup, verifier = _JudgingCap(), _Setup(), _Verifier()
+        run = _benchmark_run(cap, setup, [verifier])
+        task_source = _Benchmark(None)
+        run.by_layer["benchmark"] = {
+            "trace_branches#0": task_source,
+            "source#0": run.by_layer["benchmark"]["benchmark#0"],
+        }
+
+        AgentRuntime.for_agent(run, AGENT_ID).prepare()
+
+        assert ("bind", setup) in cap.hosted
+        assert ("bind verifiers", (verifier,)) in cap.hosted
+
+
 class TestPrepareRoutesTheBenchmarksLiveVerifiers:
     """Routed as the setup component is: checked by their host with it, then bound last."""
 

@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from spectragent.benchmarks.selection import read_benchmark, spec_of
 from spectragent.core.capabilities.browser.settle import PageSettle
 from spectragent.core.capabilities.browser.task_setup import BrowserSetup
 from spectragent.core.composer import ComposedRun, ConfigComposer
@@ -21,6 +22,7 @@ from spectragent.core.data_loader.task.require_eval import RequireEval
 from spectragent.core.data_loader.task.step_selector import EveryKSteps, ExplicitSteps, LastStep
 from spectragent.core.trace.models import TraceStatus
 from spectragent.schemas._types import AgentDoneStatus
+from spectragent.schemas.benchmark_spec import BenchmarkSpec, BlockFingerprints
 from spectragent.schemas.restoration import BranchProvenance, BranchTaskVariant, Checkpoint
 from spectragent.schemas.task import TaskContext
 from spectragent.schemas.verdict import Verdict
@@ -452,6 +454,25 @@ def _duplicate(root: Path) -> None:
     write_source(root / "copy", "run-x", steps=1)
 
 
+def _benchmark_yaml(root: Path, benchmark_id: str, *, name: str = "world.yaml") -> Path:
+    """A benchmark YAML holding one block of *benchmark_id* (a branch re-reads only its YAML)."""
+    path = root.parent / f"{root.name}-{name}"
+    path.write_text(f"benchmark:\n  - benchmark_id: {benchmark_id}\n    task_loader: {{}}\n")
+    return path
+
+
+def _selected(path: Path, *, subset: str | None = None) -> BenchmarkSpec:
+    """The record of selecting the benchmark YAML at *path*, as ``bench`` makes it."""
+    return spec_of(str(path), read_benchmark(str(path), subset=subset), subset=subset)
+
+
+def _edited(root: Path) -> None:
+    """A source whose benchmark YAML had its task source edited after the run selected it."""
+    path = _benchmark_yaml(root, "world")
+    write_source(root, "run-x", steps=1, benchmark_spec=_selected(path))
+    path.write_text("benchmark:\n  - benchmark_id: world\n    task_loader: {subset: Other}\n")
+
+
 _PRECONDITIONS: dict[str, tuple[Any, str]] = {
     "older_format": (
         lambda root: write_source(root, "run-x", steps=1, format_version=2),
@@ -504,6 +525,36 @@ _PRECONDITIONS: dict[str, tuple[Any, str]] = {
         "the recorded one is redacted (1 value(s)), and re-resolving nowhere/Hard/task-001 failed",
     ),
     "unreadable": (_corrupt_manifest, "not a readable trace"),
+    "benchmark_gone": (
+        lambda root: write_source(
+            root,
+            "run-x",
+            steps=1,
+            benchmark_spec=BenchmarkSpec(
+                benchmark_id="world",
+                selection=str(root / "gone.yaml"),
+                fingerprints=BlockFingerprints.of({}),
+            ),
+        ),
+        "its benchmark 'world', which its branches belong to, is no longer found",
+    ),
+    "benchmark_replaced": (
+        lambda root: write_source(
+            root,
+            "run-x",
+            steps=1,
+            benchmark_spec=BenchmarkSpec(
+                benchmark_id="world",
+                selection=str(_benchmark_yaml(root, "other")),
+                fingerprints=BlockFingerprints.of({}),
+            ),
+        ),
+        "its block is the benchmark 'other', not 'world'",
+    ),
+    "benchmark_changed": (
+        _edited,
+        "its task source (task_loader) changed since the run selected it",
+    ),
 }
 
 
@@ -568,6 +619,44 @@ class TestPreconditions:
             tasks.task_ids()
         with pytest.raises(BenchmarkDataError):
             tasks.get_task_context("run-ok/s0/b0")
+
+
+class TestSourceBenchmark:
+    """Each branch task belongs to its source run's benchmark (§4.10.1 "分叉 sweep 是一种任务来源")."""
+
+    def test_a_branch_task_carries_its_sources_benchmark(self, tmp_path: Path) -> None:
+        spec = _selected(_benchmark_yaml(tmp_path, "world"), subset="S1")
+        write_source(tmp_path, "run-a", steps=2, benchmark_spec=spec)
+        write_source(tmp_path, "run-b", steps=1)
+        tasks = loader(tmp_path)
+        assert tasks.get_task_context("run-a/s1/b0").benchmark == spec
+        assert tasks.get_task_context("run-b/s0/b0").benchmark is None, "it belonged to none"
+        assert tasks["run-a/s1/b0"].benchmark == "trace_branches", (
+            "the data's join key is unchanged"
+        )
+
+    def test_sources_of_several_benchmarks_mix(self, tmp_path: Path) -> None:
+        world = _selected(_benchmark_yaml(tmp_path, "world"))
+        shop = _selected(_benchmark_yaml(tmp_path, "shop", name="shop.yaml"))
+        write_source(tmp_path, "run-a", steps=1, benchmark_spec=world)
+        write_source(tmp_path, "run-b", steps=1, benchmark_spec=shop)
+        tasks = loader(tmp_path)
+        assert [tasks.get_task_context(t).benchmark for t in tasks.task_ids()] == [world, shop]
+
+    def test_the_benchmark_is_read_again_by_how_it_was_selected(self, tmp_path: Path) -> None:
+        """Only its YAML is read: whether its block composes is the pre-flight's to say."""
+        path = _benchmark_yaml(tmp_path, "world")
+        write_source(
+            tmp_path,
+            "run-a",
+            steps=1,
+            benchmark_spec=_selected(path),
+        )
+        tasks = loader(tmp_path)
+        assert tasks.task_ids() == ["run-a/s0/b0"]
+        path.unlink()
+        with pytest.raises(BenchmarkDataError, match="no such file"):
+            loader(tmp_path).task_ids()
 
 
 # ── the environment setup context ────────────────────────────────────

@@ -405,12 +405,23 @@ class TestFormatVersions:
 
     Format 3 split the manifest's status from the agent's outcome; format 4
     stores each image a prompt sent inline once per run; format 7 records each
-    step's coordinate frame; format 8 keeps no verdict in the manifest.
+    step's coordinate frame; format 8 keeps no verdict in the manifest; format
+    9 records how a run's benchmark was selected.
     """
 
     @pytest.mark.parametrize(
         ("version", "named"),
-        [(None, "1"), (1, "1"), (2, "2"), (3, "3"), (4, "4"), ("5", "'5'"), (6, "6"), (7, "7")],
+        [
+            (None, "1"),
+            (1, "1"),
+            (2, "2"),
+            (3, "3"),
+            (4, "4"),
+            ("5", "'5'"),
+            (6, "6"),
+            (7, "7"),
+            (8, "8"),
+        ],
     )
     def test_an_older_or_malformed_format_is_refused_at_construction(
         self, reference, version, named
@@ -442,6 +453,13 @@ class TestFormatVersions:
             _trace(reference.run_dir)
         assert exc_info.value.path == path
 
+    def test_a_format_8_trace_is_refused_for_its_unsaid_benchmark(self, reference):
+        """Its configuration does not say whether its task belonged to a benchmark, or to which."""
+        path = _declare_format(reference.run_dir, 8)
+        with pytest.raises(TraceSchemaError, match="how its benchmark was selected") as exc_info:
+            _trace(reference.run_dir)
+        assert exc_info.value.path == path
+
     def test_a_format_2_status_is_never_read_as_a_ledger(self, reference):
         """An old ``error`` meant "the agent failed" or "the trace is incomplete": no guess."""
         path = _declare_format(reference.run_dir, 2)
@@ -452,8 +470,8 @@ class TestFormatVersions:
             _trace(reference.run_dir)
 
     def test_a_newer_format_is_refused_at_construction(self, reference):
-        path = _declare_format(reference.run_dir, 9)
-        with pytest.raises(TraceSchemaError, match="format version 9") as exc_info:
+        path = _declare_format(reference.run_dir, 10)
+        with pytest.raises(TraceSchemaError, match="format version 10") as exc_info:
             _trace(reference.run_dir)
         assert exc_info.value.path == path
         assert "the spectragent that wrote it" in str(exc_info.value)

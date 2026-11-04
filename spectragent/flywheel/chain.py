@@ -152,7 +152,8 @@ class StageSpec(_Spec):
     #: Seconds each live verifier may take to judge a task; ``None``: the bench's default.
     verify_timeout: float | None = Field(default=None, gt=0)
     #: Whether the benchmark's offline verifiers judge the stage's runs after
-    #: it (``False``: ``--no-eval``); each verdict goes into its run's store.
+    #: it (``False``: ``--no-eval``); each verdict goes into its run's store. A
+    #: branch stage's runs are each judged by its source run's benchmark's.
     evaluate: bool = False
 
 
@@ -206,17 +207,6 @@ class ChainSpec(_Spec):
     branch: StageSpec | None = None
     export: ExportStageSpec | None = None
     report: ReportSpec = Field(default_factory=ReportSpec)
-
-    @model_validator(mode="after")
-    def _branch_stages_never_evaluate(self) -> ChainSpec:
-        for stage in BRANCH_STAGES:
-            spec = getattr(self, stage)
-            if spec is not None and spec.evaluate:
-                raise ValueError(
-                    f"{stage}.evaluate: a trace_branches sweep configures no verifier of its own "
-                    f"(arch §4.10.1); it always runs with --no-eval"
-                )
-        return self
 
     @model_validator(mode="after")
     def _branch_stages_name_their_tasks(self) -> ChainSpec:
@@ -769,7 +759,7 @@ def _run_stage(
             argv += ["--task-id", task_id]
         if tasks.limit is not None:
             argv += ["--limit", str(tasks.limit)]
-    if not stage_spec.evaluate or stage in BRANCH_STAGES:
+    if not stage_spec.evaluate:
         argv.append("--no-eval")
     if remaining is not None:
         argv += ["--token-limit", str(remaining)]

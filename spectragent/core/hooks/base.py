@@ -18,6 +18,7 @@ from spectragent.core.llm.base import BaseChatModel
 from spectragent.core.llm.call_context import RunCallContext
 from spectragent.core.loops.identity import RunIdentity
 from spectragent.schemas.action_space import ActionSpace
+from spectragent.schemas.benchmark_spec import BenchmarkSpec
 from spectragent.schemas.config_source import ConfigSource
 
 
@@ -109,6 +110,7 @@ class RuntimeHook(Protocol):
         env_evidence_privacy: list[str] | None,
         task_setup: Mapping[str, Any] | None,
         branch: Any,
+        benchmark_spec: BenchmarkSpec | None,
         config_source: ConfigSource | None,
         **kwargs: Any,
     ) -> None:
@@ -158,6 +160,10 @@ class RuntimeHook(Protocol):
           the source run, its trace and the checkpoint step — or ``None``
           for every run that is not a branch. Per task, like ``task_setup``;
           the runtime passes it through without reading it.
+        - ``benchmark_spec``: how the benchmark this task belongs to was
+          selected (a branch task's is its source run's), or ``None`` when it
+          belongs to none. Per task; the runtime passes it through without
+          reading it.
         - ``step_budget``: the most policy steps the Loop allows this task
           (``loop.step_budget(loop_inputs)``: a task's own budget lowers
           ReAct's configured ``max_steps``; a branch's is its

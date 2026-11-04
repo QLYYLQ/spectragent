@@ -551,9 +551,24 @@ uv run spectragent run --config configs/flywheel/branch_ui_tars_archive.yaml \
   `online_mind2web`) judges it, on the variant's text, its verdict's evidence carrying
   `task_variant` (architecture §4.11). Any other branch run is judged against its source
   task's reference row (evidence `source_reference`).
-- A `trace_branches` block takes no `verifiers:` (written there, it is refused), so a
-  branch sweep judges nothing and needs no `--no-eval`; its tasks belong to their source
-  runs' benchmarks, and a branch run is judged afterwards with `spectragent eval`.
+- A `trace_branches` block takes no `verifiers:`, `setup:` or `capability:` (written there,
+  it is refused): each branch task belongs to its source run's benchmark. A source recorded
+  with `--benchmark` names it in its `config.json` (`benchmark_spec`, how it was selected);
+  the branch task carries that record, and its run is composed from the run configuration,
+  the `trace_branches` block and the source benchmark's block read again from that
+  selection. So the source benchmark's setup component and live verifiers are hosted, its
+  part of the capability configuration is merged (AndroidWorld's AVD and app table: the
+  branch run configuration writes neither), and its offline verifiers judge the branch run
+  after the sweep (`--no-eval` skips them). Sources of several benchmarks mix in one sweep,
+  each task its own; the pre-flight runs once per benchmark. A source whose benchmark YAML no
+  longer reads, holds another benchmark, or changed its task source, reference data, setup
+  component or capability part since the source ran (`benchmark_spec.fingerprints`; a
+  verifier added later is fine) is unbranchable (`on_unbranchable`), the refusal naming the
+  changed parts. The fingerprints do not see the data itself, a `data_dir: null` resolved
+  through the environment, or capability parts computed in code from the data. A branch of
+  a run that belonged to no benchmark inherits nothing. `spectragent eval --benchmark
+  <source benchmark>` still judges branch runs afterwards
+  (architecture §4.10.1 "分叉任务继承源基准落地了什么").
 - Write branch runs outside the sources glob; the shipped file sets the trace writer's
   `trace_dir` to `traces/branches`. A branch run is unbranchable, so under
   `on_unbranchable: raise` it would stop the next sweep.
@@ -749,7 +764,8 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   `--no-eval`, so the benchmark's offline verifiers judge its runs after the sweep, each
   verdict into its run's `verdicts/` (the chain keeps no verdict directory of its own);
   only a `tasks.benchmark` that lists `verifiers:` has any (a shipped alias lists none).
-  `same_path` and `branch` refuse `evaluate: true`. A stage's `verify_timeout` is the
+  On `same_path` and `branch`, `evaluate: true` judges each branch run with its source
+  run's benchmark's offline verifiers. A stage's `verify_timeout` is the
   bench's `--verify-timeout`. With the export selected,
   an existing `datasets/first` or `datasets/second` is a `ChainConfigError` before any paid
   stage runs.

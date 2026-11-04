@@ -12,11 +12,11 @@ from typing import Any
 import yaml
 
 from spectragent import GENERATED_DIR
-from spectragent.benchmarks.selection import read_benchmark, run_root
+from spectragent.benchmarks.selection import read_benchmark, read_spec, run_root
 from spectragent.cli.configuration_errors import inspection_stage
 from spectragent.cli.configuration_provenance import explain_provenance
 from spectragent.cli.fingerprints import source_fingerprints
-from spectragent.core.composer import ConfigComposer, named_packages
+from spectragent.core.composer import ComposedRun, ConfigComposer, ValidatedConfig, named_packages
 from spectragent.core.hooks.base import declare_environment_presence
 from spectragent.core.run_cli import start_context
 from spectragent.core.runtime import AgentRuntime
@@ -42,7 +42,9 @@ def explain_config(
     composes it, with *subset* written into its task loader first (the one
     knob ``bench`` and ``run`` set on a benchmark, §4.10.1); alone, the check
     prepares with no task context, and with *task_id* it prepares with that
-    task's.
+    task's. A branch task's run is composed with its source run's benchmark
+    beside the task source, as ``bench`` composes it, and that is what is
+    checked.
     """
     if task_id is not None and benchmark is None:
         raise ValueError("--task-id selects a task of a benchmark: give --benchmark with it")
@@ -54,8 +56,8 @@ def explain_config(
             f"the start flags out with --benchmark"
         )
     with inspection_stage("yaml"):
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict):
+        configuration = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(configuration, dict):
             raise ValueError("The configuration must be a YAML mapping")
         blocks = [read_benchmark(benchmark, subset=subset)] if benchmark is not None else []
     with inspection_stage("validation"):
@@ -63,30 +65,17 @@ def explain_config(
         # package, an agent with no capability or a start flag of a
         # capability it does not name, is refused before the schema is built;
         # it is the configuration's error.
-        raw = run_root(raw, *blocks)
+        raw = run_root(configuration, *blocks)
         named_packages(raw)
         context = start_context(start or {}, raw)
-    with inspection_stage("schema"):
-        composer = ConfigComposer.for_config(raw)
-    with inspection_stage("validation"):
-        validated = composer.validated(raw)
-    with inspection_stage("composition"):
-        run = composer.compose(validated.config)
-    agents = run.ids("agent")
-    negotiation = None
-    descriptors: list[dict[str, Any]] = []
-    checked = "configuration"
-    selected_agent = agent_id
-    with inspection_stage("selection"):
-        loop_inputs = None
-        if agents and selected_agent is None:
-            if len(agents) != 1:
-                raise ValueError("Several agents are configured; select one with --agent-id")
-            selected_agent = agents[0]
-        if not agents and any((agent_id, env_id, start, task_id)):
-            raise ValueError("Agent or task options require an agent in the configuration")
-        if agents and task_id is not None:
-            loader = run.single("benchmark").task_loader
+    loop_inputs = None
+    if task_id is not None:
+        # The task comes from the selected block alone: a branch task's run is
+        # composed with its source run's benchmark too (§4.10.1), and without
+        # it the run configuration may not compose.
+        _, _, alone = _composed(run_root({}, blocks[0]))
+        with inspection_stage("selection"):
+            loader = alone.single("benchmark").task_loader
             if loader.get(task_id) is None:
                 raise ValueError(
                     f"--task-id {task_id}: benchmark {benchmark!r} (subset {loader.subset!r}) has "
@@ -94,6 +83,21 @@ def explain_config(
                 )
             task = loader.get_task_context(task_id)
             context, loop_inputs = task.env, task.loop
+            if task.branch is not None and task.benchmark is not None:
+                raw = run_root(configuration, *blocks, read_spec(task.benchmark))
+    composer, validated, run = _composed(raw)
+    agents = run.ids("agent")
+    negotiation = None
+    descriptors: list[dict[str, Any]] = []
+    checked = "configuration"
+    selected_agent = agent_id
+    with inspection_stage("selection"):
+        if agents and selected_agent is None:
+            if len(agents) != 1:
+                raise ValueError("Several agents are configured; select one with --agent-id")
+            selected_agent = agents[0]
+        if not agents and any((agent_id, env_id, start, task_id)):
+            raise ValueError("Agent or task options require an agent in the configuration")
     if agents:
         assert selected_agent is not None
         with inspection_stage("prepare"):
@@ -181,6 +185,17 @@ def explain_config(
         "resolved": redact_config(recorded),
         "provenance": provenance,
     }
+
+
+def _composed(raw: dict[str, Any]) -> tuple[ConfigComposer, ValidatedConfig, ComposedRun]:
+    """*raw*'s Composer, its validated configuration and the run composed from it, stage by stage."""
+    with inspection_stage("schema"):
+        composer = ConfigComposer.for_config(raw)
+    with inspection_stage("validation"):
+        validated = composer.validated(raw)
+    with inspection_stage("composition"):
+        run = composer.compose(validated.config)
+    return composer, validated, run
 
 
 def list_components(layer: str | None = None) -> dict[str, Any]:

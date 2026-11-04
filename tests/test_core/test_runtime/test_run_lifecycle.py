@@ -1411,6 +1411,9 @@ async def test_task_elapsed_time_includes_loading_cleanup_and_result_readback(mo
     monkeypatch.setattr(benchmark_module, "time", measured_time)
 
     class Loader:
+        benchmark_name = "timed"
+        subset = "all"
+
         def __getitem__(self, task_id):
             clock.now += 1
             return SimpleNamespace(task_text="task")

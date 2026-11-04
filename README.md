@@ -6,7 +6,7 @@ An evaluation and experimentation framework for agent researchers.
 
 Spectragent splits an agent run into parts you can change one at a time: the agent, its model, the execution loop, observations, actions, memory and the environment. One YAML file picks an implementation for each part. A trace hook records the run, and everything after it reads that recording instead of rerunning the agent: inspection, scoring, offline replay, branching from a recorded step, and training export.
 
-Version 0.3.0 · Python 3.11+ · Apache-2.0 · trace format 7 · `AgentResult` schema 5.0
+Version 0.3.0 · Python 3.11+ · Apache-2.0 · trace format 9 · `AgentResult` schema 5.0
 
 - [How it works](#how-it-works)
 - [What is implemented](#what-is-implemented)
@@ -222,7 +222,7 @@ traces/<run_id>/
   verdicts/                        # every verdict, live or offline, one <slug>.json each, outside the manifest
 ```
 
-A trace is complete within its declared recording scope; an omitted channel is not corrupt evidence. Token usage is stored as the provider reported it, and unreported usage stays unknown. No prices are computed. Readers refuse any trace format other than 8.
+A trace is complete within its declared recording scope; an omitted channel is not corrupt evidence. Token usage is stored as the provider reported it, and unreported usage stays unknown. No prices are computed. Readers refuse any trace format other than 9.
 
 Read it in Python through `spectragent.core.trace.RunTrace`, which only serves committed files and checks their sizes and hashes.
 

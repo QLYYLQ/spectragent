@@ -77,6 +77,7 @@ if TYPE_CHECKING:
     from spectragent.benchmarks._setup_registrar import BenchmarkSetup
     from spectragent.core.environments.base import Environment
     from spectragent.core.llm.base import BaseChatModel
+    from spectragent.schemas.benchmark_spec import BenchmarkSpec
     from spectragent.schemas.restoration import BranchProvenance
     from spectragent.verifiers.base import LiveVerifier
 
@@ -750,24 +751,30 @@ class AgentRuntime:
 
         return wrapped_agent
 
-    def _benchmark_setups(self) -> list[BenchmarkSetup]:
-        """The run's benchmark setup component, as a list: ``[]`` with no benchmark or none.
+    def _benchmarks(self) -> list[Benchmark]:
+        """The run's benchmark blocks: none, the one ``--benchmark`` selected, or a branch task's two.
 
-        A run root holds at most one benchmark block (``--benchmark``).
+        A branch task's run root holds its task source (``trace_branches``,
+        which never has a setup component or a verifier of its own) and the
+        benchmark the task belongs to, its source run's
+        (``docs/architecture_design.md`` §4.10.1 "分叉 sweep 是一种任务来源").
         """
-        benchmark = self._run.optional_single("benchmark")
-        setup = getattr(benchmark, "setup", None)
-        return [] if setup is None else [setup]
+        return self._run.instances("benchmark")
+
+    def _benchmark_setups(self) -> list[BenchmarkSetup]:
+        """The run's benchmark setup components: ``[]`` with no benchmark or none (:meth:`_benchmarks`)."""
+        return [benchmark.setup for benchmark in self._benchmarks() if benchmark.setup is not None]
 
     def _live_verifiers(self) -> list[LiveVerifier]:
-        """The run's benchmark's verifiers that judge at the scoring point; ``[]`` with no benchmark.
+        """The run's benchmarks' verifiers that judge at the scoring point; ``[]`` with no benchmark.
 
         Raises:
             TypeError: A verifier needs the live environment and names no
                 capability to host it (``Benchmark.live_verifiers``).
         """
-        benchmark: Benchmark | None = self._run.optional_single("benchmark")
-        return [] if benchmark is None else benchmark.live_verifiers()
+        return [
+            verifier for benchmark in self._benchmarks() for verifier in benchmark.live_verifiers()
+        ]
 
     def seed_messages(self, task: str) -> list[Any]:
         """The run's seed messages for *task*, after :meth:`prepare` (arch §4.2).
@@ -817,6 +824,7 @@ class AgentRuntime:
         env_context: Mapping[str, Any] | None = None,
         loop_inputs: Mapping[str, Any] | None = None,
         branch: BranchProvenance | None = None,
+        benchmark_spec: BenchmarkSpec | None = None,
         config_source: ConfigSource | None = None,
         action_filter: list[str] | None = None,
         config: dict[str, Any] | None = None,
@@ -922,6 +930,11 @@ class AgentRuntime:
                 handed to ``on_run_start`` by name and recorded as
                 ``TraceConfig.branch``; the runtime does not read it.
                 ``None`` for every other run.
+            benchmark_spec: How the benchmark this task belongs to was
+                selected, handed to ``on_run_start`` by name and recorded as
+                ``TraceConfig.benchmark_spec``; the runtime does not read it.
+                A branch task's is its source run's (``TaskContext.benchmark``).
+                ``None`` for a task that belongs to no benchmark.
             action_filter: Optional extra narrowing of the action space.
             config_source: Explicit source YAML file identity, if the caller has one.
                 Passed through to persistence; never inferred from the resolved settings.
@@ -1016,6 +1029,7 @@ class AgentRuntime:
                 ),
                 task_setup=self._prepared_setup.recordable if has_env_context else None,
                 branch=branch,
+                benchmark_spec=benchmark_spec,
                 config_source=config_source,
             )
 
