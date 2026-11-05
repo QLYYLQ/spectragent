@@ -10,7 +10,7 @@ of the pinned commit hold parameters that are not JSON (dataclass rows, one
 image), which the list records in a plain form, so they could not be handed
 back to the service in any case.
 
-A task list is one JSON document, ``{"format": "androidworld-tasks-2",
+A task list is one JSON document, ``{"format": "androidworld-tasks-3",
 "tasks": [<task>, ...]}``, written offline in AndroidWorld's own venv by
 ``androidworld_service/task_list.py`` (``docs/architecture_design.md`` §11.2).
 VenusBench's fork of AndroidWorld writes its lists in the same format, with
@@ -33,7 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, m
 from spectragent.core.data_loader._common import BenchmarkDataError, validation_summary
 
 #: The ``format`` a task list declares.
-TASK_LIST_FORMAT = "androidworld-tasks-2"
+TASK_LIST_FORMAT = "androidworld-tasks-3"
 #: What AndroidWorld's ``initialize_task`` does to a task's goal (:class:`AndroidWorldTask`).
 GoalAtInitialize = Literal["unchanged", "made", "rewritten"]
 #: The family whose tasks are scored on the agent's answer.
@@ -91,12 +91,11 @@ class AndroidWorldTask(BaseModel):
             (``docs/architecture_design.md`` §11.2).
         complexity: AndroidWorld's estimate; its own runner gives a task
             ``int(10 * complexity)`` steps (:attr:`step_budget`).
-        start_on_home_screen: Whether the episode starts on the home screen,
-            as the task's class says; MiniWoB tasks start in their app. A task
-            may change it in its initialize (VenusBench's
-            VagueMarkorDeleteNewestTwoNotes starts in Markor), so the setup
-            component resets as the initialized task says
-            (``/task/start_on_home_screen``).
+
+    Where the episode starts is not recorded: a task may change it in its
+    initialize (VenusBench's VagueMarkorDeleteNewestTwoNotes starts in
+    Markor), so the setup component asks the initialized task
+    (``/task/start_on_home_screen``).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
@@ -110,7 +109,6 @@ class AndroidWorldTask(BaseModel):
     goal: str
     goal_at_initialize: GoalAtInitialize
     complexity: float = Field(gt=0)
-    start_on_home_screen: bool
 
     @property
     def step_budget(self) -> int:
@@ -138,7 +136,7 @@ class AndroidWorldTaskList(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
-    format: Literal["androidworld-tasks-2"]
+    format: Literal["androidworld-tasks-3"]
     tasks: list[AndroidWorldTask]
 
 

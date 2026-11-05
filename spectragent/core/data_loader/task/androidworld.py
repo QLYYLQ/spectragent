@@ -1,7 +1,7 @@
 """AndroidWorld task loader: a task list made offline in AndroidWorld's own venv.
 
 ``docs/architecture_design.md`` §11.2 ("任务裁判与 ``AndroidSetup``"). The list
-(format ``androidworld-tasks-2``, ``spectragent/benchmarks/androidworld/tasks.py``)
+(format ``androidworld-tasks-3``, ``spectragent/benchmarks/androidworld/tasks.py``)
 is a split file in the usual data layout: ``data_dir`` (default
 ``<data root>/android/androidworld``, in the shared cache) holds ``data_info.json``,
 whose ``split`` maps the ``subset`` to the file. ``task_list.py`` beside the

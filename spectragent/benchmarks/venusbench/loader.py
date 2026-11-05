@@ -14,9 +14,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import ClassVar
 
 from spectragent.benchmarks.venusbench.tasks import UNSUPPORTED
 from spectragent.core.data_loader.task.androidworld import AndroidWorldTaskLoader
+from spectragent.core.data_loader.task.base import StepBudget
 
 
 @dataclass
@@ -24,6 +26,13 @@ class VenusBenchTaskLoader(AndroidWorldTaskLoader):
     """VenusBench's tasks, prepared and scored on the device by AndroidWorld's service on its checkout."""
 
     __registry_key__ = "venusbench"
+    __step_budget__: ClassVar[StepBudget | None] = StepBudget(
+        steps="int(10 x complexity) steps, 10 to 100 on the pinned commit",
+        source=(
+            "VenusBench-Mobile's _allocate_step_budget: https://github.com/inclusionAI/UI-Venus/"
+            "blob/5b2c618ef146ea38890ea35dca8b07ec2d0284dd/android_world/suite_utils.py#L718-L729"
+        ),
+    )
 
     def _left_out(self) -> Mapping[str, str]:
         return UNSUPPORTED

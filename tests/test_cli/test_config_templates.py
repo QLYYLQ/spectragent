@@ -918,9 +918,8 @@ def _androidworld_data(root: Path) -> Path:
         "goal": "Turn brightness to the max value.",
         "goal_at_initialize": "unchanged",
         "complexity": 1.0,
-        "start_on_home_screen": True,
     }
-    (data / "All.json").write_text(json.dumps({"format": "androidworld-tasks-2", "tasks": [task]}))
+    (data / "All.json").write_text(json.dumps({"format": "androidworld-tasks-3", "tasks": [task]}))
     return data
 
 
@@ -1238,6 +1237,44 @@ def test_androidworlds_per_task_budget_is_named_beside_m3as_ceiling(composer, tm
         "android_world/blob/55ddaf5edc6f6c25673aed343907d5b9dca66f84/android_world/"
         "suite_utils.py#L491-L502)."
     ) in comment
+
+
+def test_venusbenchs_per_task_budget_and_its_own_source_are_named(composer, tmp_path):
+    """VenusBench's loader is AndroidWorld's subclass, and states its own range and source."""
+    from spectragent.benchmarks.venusbench.tasks import VENUSBENCH
+
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / OPEN_APP_FILE).write_text(
+        json.dumps({"format": OPEN_APP_FORMAT, "commit": VENUSBENCH.commit, "apps": TABLE})
+    )
+    (data / "data_info.json").write_text(json.dumps({"split": {"All": "All.json"}}))
+    task = {
+        "commit": VENUSBENCH.commit,
+        "family": "venus",
+        "task": "VagueSystemBrightnessMax",
+        "index": 0,
+        "suite_seed": 30,
+        "params": {"seed": instance_seed(30, "VagueSystemBrightnessMax", 0)},
+        "goal": "It is too dark on the screen.",
+        "goal_at_initialize": "unchanged",
+        "complexity": 2.0,
+    }
+    (data / "All.json").write_text(json.dumps({"format": "androidworld-tasks-3", "tasks": [task]}))
+    shipped = yaml.safe_load(Path("configs/benchmarks/venusbench.yaml").read_text())
+    shipped["benchmark"][0]["task_loader"]["data_dir"] = str(data)
+    benchmark = tmp_path / "venusbench.yaml"
+    benchmark.write_text(yaml.safe_dump(shipped))
+    text = render_config_template(
+        TemplateChoices(agent="m3a", model="m", benchmark=str(benchmark)), composer=composer
+    )
+    assert (
+        "Step budget: the benchmark venusbench gives each task int(10 x complexity) steps, "
+        "10 to 100 on the pinned commit, handed to the Loop per task as the Loop input "
+        "max_steps (VenusBench-Mobile's _allocate_step_budget: https://github.com/inclusionAI/"
+        "UI-Venus/blob/5b2c618ef146ea38890ea35dca8b07ec2d0284dd/android_world/"
+        "suite_utils.py#L718-L729)."
+    ) in _max_steps_comment(text)
 
 
 def test_without_a_benchmark_no_step_budget_is_named(composer):

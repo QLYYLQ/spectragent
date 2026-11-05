@@ -12,7 +12,7 @@ Spectragent::
 It makes the suite AndroidWorld's own runner makes (``create_suite``: each
 task's instances, their seeds derived from the suite seed, the task and the
 index) and writes ``<data dir>/<split>.json``, format
-``androidworld-tasks-2`` (``spectragent/benchmarks/androidworld/tasks.py``),
+``androidworld-tasks-3`` (``spectragent/benchmarks/androidworld/tasks.py``),
 then names the split in ``<data dir>/data_info.json``. ``spectragent
 benchmark fetch androidworld`` runs it for the subsets the benchmark ships
 (``spectragent/benchmarks/androidworld/data.py``) into the benchmark's data
@@ -64,7 +64,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from android_world.task_evals.task_eval import TaskEval
 
-FORMAT = "androidworld-tasks-2"
+FORMAT = "androidworld-tasks-3"
 OPEN_APP_FORMAT = "androidworld-open-app-1"
 #: Searched in this order for the family that holds a task, unless ``--holders`` says otherwise.
 FAMILIES = "android,information_retrieval,miniwob"
@@ -179,7 +179,6 @@ def main() -> None:
                     "goal": goal,
                     "goal_at_initialize": at_initialize,
                     "complexity": float(instance.complexity),
-                    "start_on_home_screen": bool(type(instance).start_on_home_screen),
                 }
             )
     out = Path(args.out).expanduser()

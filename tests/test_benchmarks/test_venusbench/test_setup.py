@@ -49,7 +49,6 @@ def _task(**changes: JsonValue) -> dict[str, JsonValue]:
         "goal": GOAL,
         "goal_at_initialize": "unchanged",
         "complexity": 2.0,
-        "start_on_home_screen": True,
     }
     record.update(changes)
     return record

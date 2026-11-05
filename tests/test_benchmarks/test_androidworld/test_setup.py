@@ -70,7 +70,6 @@ def _task(**changes: JsonValue) -> dict[str, JsonValue]:
         "goal": "Turn brightness to the max value.",
         "goal_at_initialize": "unchanged",
         "complexity": 1.0,
-        "start_on_home_screen": True,
     }
     record.update(changes)
     return record
@@ -259,7 +258,6 @@ def _miniwob_task() -> dict[str, JsonValue]:
         params={"task_name": "click-button", "seed": instance_seed(42, "click-button", 0)},
         goal=_MINIWOB_FIXED,
         goal_at_initialize="made",
-        start_on_home_screen=False,
     )
 
 

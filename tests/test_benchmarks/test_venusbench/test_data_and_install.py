@@ -45,7 +45,6 @@ def _record(task: str, commit: str = VENUSBENCH.commit) -> dict[str, object]:
         "goal": f"the goal of {task}",
         "goal_at_initialize": "unchanged",
         "complexity": 2.4,
-        "start_on_home_screen": True,
     }
 
 
