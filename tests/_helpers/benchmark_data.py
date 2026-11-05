@@ -59,7 +59,6 @@ def androidworld_task(
         "goal": goal,
         "goal_at_initialize": goal_at_initialize,
         "complexity": 1.0,
-        "start_on_home_screen": family != "miniwob",
     }
 
 

@@ -46,7 +46,6 @@ def _record(
         "goal": f"Do {task}.",
         "goal_at_initialize": "unchanged",
         "complexity": 1.2,
-        "start_on_home_screen": True,
     }
     record.update(changes)
     return record

@@ -12,6 +12,11 @@ seed 42, one instance of each task): ``All``, the ``android_world`` family
 family; ``data_info.json`` naming both; and the ``open_app`` table
 (``open_app.json``), read off the same checkout. Each file records the commit
 it was made from, and the fetch checks it is the pinned one.
+
+:class:`TaskLists` is that fetch for any installation of AndroidWorld's code:
+VenusBench's fork makes its lists with the same program, in its own
+installation, from its own pinned commit and with its own subsets
+(``spectragent/benchmarks/venusbench/``).
 """
 
 from __future__ import annotations
@@ -22,42 +27,65 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from spectragent.benchmarks.androidworld.open_app import read_open_app_table
-from spectragent.benchmarks.androidworld.service import PINNED_COMMIT, Installation
+from spectragent.benchmarks.androidworld.service import ANDROIDWORLD, Installation
 from spectragent.benchmarks.androidworld.tasks import AndroidWorldTaskList
 from spectragent.benchmarks.data import Say, run_program
 from spectragent.core.data_loader._common import BenchmarkDataError, validation_summary
 from spectragent.schemas.data_version import DataVersion
 
-#: AndroidWorld's repository, and the commit its tasks are made from.
-REPOSITORY = "https://github.com/google-research/android_world.git"
-DATA = DataVersion(source="git", repository=REPOSITORY, revision=PINNED_COMMIT)
-#: The program that lists the tasks, run under AndroidWorld's interpreter.
+#: The commit AndroidWorld's tasks are made from.
+DATA = DataVersion(source="git", repository=ANDROIDWORLD.repository, revision=ANDROIDWORLD.commit)
+#: The program that lists the tasks, run under the installation's interpreter.
 TASK_LIST = Path(__file__).resolve().parent / "androidworld_service" / "task_list.py"
-#: The subsets a fetch writes: AndroidWorld's suite family, and the subset's name.
-SUBSETS = (("android_world", "All"), ("miniwob", "miniwob"))
 
 
 @dataclass(frozen=True)
-class AndroidWorldData:
-    """AndroidWorld's task lists at :data:`DATA`, made in *installation*."""
+class Subset:
+    """One subset a fetch writes: the suite's family, the subset's name and the suite seed."""
+
+    family: str
+    name: str
+    seed: int = 42
+
+
+#: The subsets AndroidWorld's fetch writes.
+SUBSETS = (Subset("android_world", "All"), Subset("miniwob", "miniwob"))
+#: AndroidWorld's families, searched in this order for the narrowest one holding a task.
+HOLDERS = ("android", "information_retrieval", "miniwob")
+
+
+@dataclass(frozen=True)
+class TaskLists:
+    """Task lists made by the code in *installation*, from its pinned commit, one per subset.
+
+    Attributes:
+        installation: Where the code and its interpreter are.
+        subsets: The subsets to write.
+        holders: The families ``task_list.py`` searches, in order, for the
+            narrowest one holding each task.
+    """
 
     installation: Installation
+    subsets: tuple[Subset, ...]
+    holders: tuple[str, ...]
 
     @property
     def version(self) -> DataVersion:
-        return DATA
+        code = self.installation.code
+        return DataVersion(source="git", repository=code.repository, revision=code.commit)
 
     def fetch(self, into: Path, say: Say) -> None:
         installation = self.installation
+        name = installation.code.name
         problems = installation.checkout_problems()
         if problems:
             raise BenchmarkDataError(
-                "AndroidWorld's task lists are made by its own code, in its installation, and "
+                f"{name}'s task lists are made by its own code, in its installation, and "
                 + "; ".join(problems)
                 + f": install it first with {installation.setup_command()}"
             )
-        for family, subset in SUBSETS:
-            say(f"listing AndroidWorld's {family} tasks as the subset {subset}")
+        for subset in self.subsets:
+            say(f"listing {name}'s {subset.family} tasks as the subset {subset.name}")
             run_program(
                 [
                     installation.python,
@@ -67,31 +95,36 @@ class AndroidWorldData:
                     installation.src,
                     "--out",
                     into,
+                    "--holders",
+                    ",".join(self.holders),
+                    "--seed",
+                    str(subset.seed),
                     "--family",
-                    family,
+                    subset.family,
                     "--split",
-                    subset,
+                    subset.name,
                 ],
-                f"list AndroidWorld's {family} tasks",
+                f"list {name}'s {subset.family} tasks",
             )
-        for _, subset in SUBSETS:
-            _check_listing(into / f"{subset}.json")
-        read_open_app_table(into)
+        for subset in self.subsets:
+            _check_listing(into / f"{subset.name}.json", installation)
+        read_open_app_table(into, installation.code)
 
 
-def _check_listing(path: Path) -> None:
+def _check_listing(path: Path, installation: Installation) -> None:
     """Refuse a task list that is not one, or lists a task made from another commit."""
+    code = installation.code
     try:
         listing = AndroidWorldTaskList.model_validate_json(path.read_bytes())
     except (OSError, ValidationError) as exc:
         why = validation_summary(exc) if isinstance(exc, ValidationError) else str(exc)
         raise BenchmarkDataError(f"task_list.py wrote no task list at {path} ({why})") from None
-    commits = sorted({task.commit for task in listing.tasks} - {PINNED_COMMIT})
+    commits = sorted({task.commit for task in listing.tasks} - {code.commit})
     if commits:
         raise BenchmarkDataError(
-            f"{path} lists tasks made from AndroidWorld {', '.join(commits)}, and the benchmark "
-            f"pins {PINNED_COMMIT}"
+            f"{path} lists tasks made from {code.name} {', '.join(commits)}, and the benchmark "
+            f"pins {code.commit}"
         )
 
 
-__all__ = ["DATA", "REPOSITORY", "SUBSETS", "TASK_LIST", "AndroidWorldData"]
+__all__ = ["DATA", "HOLDERS", "SUBSETS", "TASK_LIST", "Subset", "TaskLists"]

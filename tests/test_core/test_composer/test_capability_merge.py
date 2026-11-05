@@ -271,10 +271,9 @@ def test_the_merged_block_is_what_the_run_builds_and_records(tmp_path: Path) -> 
         "goal": "Turn brightness to the max value.",
         "goal_at_initialize": "unchanged",
         "complexity": 1.0,
-        "start_on_home_screen": True,
     }
     (tmp_path / "data" / "All.json").write_text(
-        json.dumps({"format": "androidworld-tasks-2", "tasks": [task]})
+        json.dumps({"format": "androidworld-tasks-3", "tasks": [task]})
     )
     run = ConfigComposer.for_config(raw).compose(raw)
 

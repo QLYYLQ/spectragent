@@ -8,8 +8,16 @@ Spectragent's own bridge. The ``androidworld`` setup component
 (``setup.py``) starts one per task once the device is up and stops it first
 at teardown; the score is read from the same service (``scoring.py``).
 
-:meth:`AndroidWorldService.start` runs the launcher
-(``androidworld_service/serve.py``) under AndroidWorld's interpreter, in a
+The same service runs another benchmark's fork of AndroidWorld: VenusBench's
+setup component starts it on VenusBench's checkout, from VenusBench's own
+installation and launcher (``spectragent/benchmarks/venusbench/``, §11.2
+"VenusBench-Mobile 的接入方案"). Which code an installation holds, at which
+commit, and which launcher runs it are the class's (:class:`PinnedCode`,
+:class:`Installation`); this module registers no component, so a benchmark
+that shares it imports none of AndroidWorld's.
+
+:meth:`AndroidWorldService.start` runs the installation's launcher
+(``androidworld_service/serve.py`` for AndroidWorld) under its interpreter, in a
 process group of its own tied to this process (``processes.py`` of the
 Android package), on a free loopback port, with a whitelisted environment
 whose ``PATH`` adds to the system's directories only a link to the host's
@@ -43,6 +51,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar, Self
 
 import httpx
 from pydantic import JsonValue
@@ -62,6 +71,8 @@ logger = logging.getLogger(__name__)
 
 #: The AndroidWorld commit the launcher's patches are written against.
 PINNED_COMMIT = "55ddaf5edc6f6c25673aed343907d5b9dca66f84"
+#: AndroidWorld's repository.
+REPOSITORY = "https://github.com/google-research/android_world.git"
 #: The accessibility forwarder build the pinned android_env installs, cached by
 #: the one-time setup; without it the service downloads it on every start.
 FORWARDER_APK = "2024.05.13-accessibility_forwarder.apk"
@@ -80,15 +91,38 @@ _HANDLER_RAISED = "Exception in ASGI application"
 _LOOPBACK = "localhost,127.0.0.1,::1"
 
 
-def default_root() -> Path:
-    """Where the installation is when the setup leaves ``root`` out.
+@dataclass(frozen=True)
+class PinnedCode:
+    """The AndroidWorld code a benchmark runs: the benchmark, what messages call the code, and its pin.
 
-    ``android/androidworld/installation`` under the benchmark data root
+    Attributes:
+        benchmark: The ``benchmark_id`` that runs it; it names the commands
+            that install it and fetch its task lists.
+        name: What messages call it (``AndroidWorld``, ``VenusBench``).
+        repository: Its git repository.
+        commit: The commit its checkout, task lists and ``open_app`` table
+            are pinned at: a list or table made from another is refused.
+    """
+
+    benchmark: str
+    name: str
+    repository: str
+    commit: str
+
+
+#: AndroidWorld itself, at the commit the launcher is written against.
+ANDROIDWORLD = PinnedCode("androidworld", "AndroidWorld", REPOSITORY, PINNED_COMMIT)
+
+
+def default_root(benchmark: str) -> Path:
+    """Where *benchmark*'s installation is when its setup leaves ``root`` out.
+
+    ``android/<benchmark>/installation`` under the benchmark data root
     (``$SPECTRAGENT_BENCHMARK_DATA``, the data root's default otherwise),
     read on each call as the data root is. It does not follow the task
     loader's ``data_dir``: the installation is not the task data.
     """
-    return resolve_data_dir("android", "androidworld", None) / "installation"
+    return resolve_data_dir("android", benchmark, None) / "installation"
 
 
 class AndroidWorldError(RuntimeError):
@@ -101,14 +135,28 @@ class AndroidWorldSetupError(Refusal, ValueError):
 
 @dataclass(frozen=True)
 class Installation:
-    """An AndroidWorld installation, laid out as the setup component's ``root`` describes."""
+    """An AndroidWorld installation, laid out as the setup component's ``root`` describes.
+
+    A subclass is another benchmark's installation of a fork of AndroidWorld
+    (VenusBench's): its :attr:`code`, the :attr:`launcher` its service runs,
+    the file that tells its checkout from another directory
+    (:attr:`checkout_file`), and what else its launcher is given
+    (:meth:`launcher_arguments`) and needs in place (:meth:`problems`).
+    """
 
     root: Path
 
+    #: The code it holds and the commit pinned.
+    code: ClassVar[PinnedCode] = ANDROIDWORLD
+    #: The launcher its service runs: AndroidWorld's runs the checkout's own app.
+    launcher: ClassVar[Path] = LAUNCHER
+    #: A file every checkout of :attr:`code` holds, relative to it.
+    checkout_file: ClassVar[str] = "server/android_server.py"
+
     @classmethod
-    def at(cls, root: str | None) -> Installation:
+    def at(cls, root: str | None) -> Self:
         """The installation a setup's ``root`` names ('~' expanded); :func:`default_root` when ``None``."""
-        return cls(default_root() if root is None else Path(root).expanduser())
+        return cls(default_root(cls.code.benchmark) if root is None else Path(root).expanduser())
 
     @property
     def python(self) -> Path:
@@ -121,6 +169,10 @@ class Installation:
     @property
     def forwarder_apk(self) -> Path:
         return self.root / "cache" / "a11y" / FORWARDER_APK
+
+    def launcher_arguments(self) -> list[str]:
+        """What the launcher is given beyond the device's endpoints; ``[]`` here."""
+        return []
 
     def ffmpeg(self) -> Path:
         """Where Spectragent's own PATH finds ffmpeg, as an absolute path.
@@ -148,39 +200,46 @@ class Installation:
         found = self.checkout_problems()
         if self.root.is_dir() and not self.forwarder_apk.is_file():
             found.append(f"there is no cached accessibility forwarder at {self.forwarder_apk}")
+        if self.root.is_dir():
+            found.extend(self.own_problems())
         if found:
-            found.append(f"{self.setup_command()} installs AndroidWorld there")
+            found.append(f"{self.setup_command()} installs {self.code.name} there")
         try:
             self.ffmpeg()
         except AndroidWorldSetupError as exc:
             found.append(str(exc))
         return found
 
+    def own_problems(self) -> list[str]:
+        """What else a subclass's service needs in an installation that exists; ``[]`` here."""
+        return []
+
     def setup_command(self) -> str:
-        """The command that installs AndroidWorld here (``docs/architecture_design.md`` §4.10.1 "数据")."""
-        if self.root == default_root():
-            return "spectragent benchmark setup androidworld"
+        """The command that installs it here (``docs/architecture_design.md`` §4.10.1 "数据")."""
+        benchmark = self.code.benchmark
+        if self.root == default_root(benchmark):
+            return f"spectragent benchmark setup {benchmark}"
         return (
-            f"spectragent benchmark setup <a benchmark YAML whose androidworld setup has root "
+            f"spectragent benchmark setup <a benchmark YAML whose {benchmark} setup has root "
             f"{self.root}>"
         )
 
     def checkout_problems(self) -> list[str]:
-        """What keeps AndroidWorld's own programs from running here: its venv, and its checkout at the pinned commit."""
+        """What keeps its own programs from running here: its venv, and its checkout at the pinned commit."""
+        name, pinned = self.code.name, self.code.commit
         if not self.root.is_dir():
-            return [f"there is no AndroidWorld installation at {self.root}"]
+            return [f"there is no {name} installation at {self.root}"]
         found: list[str] = []
         if not (self.python.is_file() and self.python.stat().st_mode & 0o111):
-            found.append(f"there is no AndroidWorld venv interpreter at {self.python}")
-        if not (self.src / "server" / "android_server.py").is_file():
-            found.append(f"there is no AndroidWorld checkout at {self.src}")
+            found.append(f"there is no {name} venv interpreter at {self.python}")
+        if not (self.src / self.checkout_file).is_file():
+            found.append(f"there is no {name} checkout at {self.src}")
         else:
             commit = checkout_commit(self.src)
-            if commit != PINNED_COMMIT:
+            if commit != pinned:
                 at = f"is at {commit}" if commit else "has a commit that cannot be read"
                 found.append(
-                    f"the checkout {self.src} {at}, and the launcher is written against "
-                    f"{PINNED_COMMIT}"
+                    f"the checkout {self.src} {at}, and the launcher is written against {pinned}"
                 )
         return found
 
@@ -351,7 +410,7 @@ class AndroidWorldService:
                     str(installation.python),
                     "-I",
                     "-u",
-                    str(LAUNCHER),
+                    str(installation.launcher),
                     "--port",
                     str(port),
                     "--src",
@@ -368,6 +427,7 @@ class AndroidWorldService:
                     grpc.token_file,
                     "--forwarder-apk",
                     str(installation.forwarder_apk),
+                    *installation.launcher_arguments(),
                 ],
                 env={
                     # Nothing else: android_env logs its whole environment at INFO.

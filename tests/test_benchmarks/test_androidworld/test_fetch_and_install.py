@@ -19,8 +19,10 @@ from spectragent.benchmarks.androidworld import install
 from spectragent.benchmarks.androidworld.data import DATA, TASK_LIST
 from spectragent.benchmarks.androidworld.install import LOCK, named_emulator
 from spectragent.benchmarks.androidworld.service import (
+    ANDROIDWORLD,
     FORWARDER_APK,
     PINNED_COMMIT,
+    REPOSITORY,
     Installation,
     checkout_commit,
 )
@@ -136,7 +138,7 @@ class _Installer:
         command = [str(part) for part in argv]
         self.ran.append(command)
         src = self.root / "src"
-        if command[1] == "clone":
+        if command[3:4] == ["init"]:
             (src / ".git").mkdir(parents=True)
             (src / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
         elif "checkout" in command:
@@ -187,15 +189,11 @@ def test_setup_installs_the_checkout_the_venv_and_the_forwarder_then_skips_them(
 
     bin_dir = tmp_path / "bin"
     python = root / ".venv" / "bin" / "python"
+    git, src = str(bin_dir / "git"), str(root / "src")
     assert installer.ran == [
-        [
-            str(bin_dir / "git"),
-            "clone",
-            "--quiet",
-            "--no-checkout",
-            install.REPOSITORY,
-            str(root / "src"),
-        ],
+        [git, "-C", src, "init", "--quiet"],
+        [git, "-C", src, "remote", "add", "origin", REPOSITORY],
+        [git, "-C", src, "fetch", "--quiet", "--depth", "1", "origin", PINNED_COMMIT],
         [
             str(bin_dir / "git"),
             "-C",
@@ -227,7 +225,7 @@ def test_a_checkout_at_another_commit_is_moved_to_the_pinned_one(installer: _Ins
     src = installer.root / "src"
     (src / ".git").mkdir(parents=True)
     (src / ".git" / "HEAD").write_text("0" * 40 + "\n")
-    install.AndroidWorldInstallation(Installation(installer.root))._check_out(lambda line: None)
+    install.check_out(src, ANDROIDWORLD, lambda line: None)
     assert [command[3:5] for command in installer.ran] == [
         ["fetch", "--quiet"],
         ["-c", "advice.detachedHead=false"],

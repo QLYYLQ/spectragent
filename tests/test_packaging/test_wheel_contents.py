@@ -104,6 +104,21 @@ class TestRuntimeDataShips:
             assert (service / program).is_file(), f"{relative} moved; update this gate"
             assert f"{_PACKAGE}/{relative}" in wheel_names
 
+    def test_the_venusbench_programs_and_manifest_ship(self, wheel_names: frozenset[str]) -> None:
+        """The venusbench setup runs its launcher, and its AVD's one-time setup runs setup_apps.py,
+        under VenusBench's interpreter; its installation reads the lock and the manifest of its
+        files on Google Drive."""
+        package = PACKAGE_ROOT / "benchmarks" / "venusbench"
+        service = package / "venusbench_service"
+        assert not (service / "__init__.py").exists(), "discovery would import android_world"
+        shipped = [
+            service / name for name in ("serve.py", "setup_apps.py", "requirements.lock.txt")
+        ]
+        for path in [*shipped, package / "files_gui_browsing.tsv"]:
+            relative = path.relative_to(PACKAGE_ROOT).as_posix()
+            assert path.is_file(), f"{relative} moved; update this gate"
+            assert f"{_PACKAGE}/{relative}" in wheel_names
+
 
 class TestBenchmarkDataDoesNotShip:
     def test_no_benchmark_data_member_at_all(self, wheel_names: frozenset[str]) -> None:

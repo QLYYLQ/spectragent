@@ -44,7 +44,13 @@ def test_a_selection_is_a_path_or_an_alias(selection: str, path: bool) -> None:
 
 
 def test_every_shipped_alias_reads() -> None:
-    assert set(aliases()) == {"androidworld", "browsecomp", "lexbench_browser", "online_mind2web"}
+    assert set(aliases()) == {
+        "androidworld",
+        "browsecomp",
+        "lexbench_browser",
+        "online_mind2web",
+        "venusbench",
+    }
     for alias in aliases():
         block = read_benchmark(alias)
         assert block["benchmark_id"] == alias

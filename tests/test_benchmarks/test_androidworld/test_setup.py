@@ -70,7 +70,6 @@ def _task(**changes: JsonValue) -> dict[str, JsonValue]:
         "goal": "Turn brightness to the max value.",
         "goal_at_initialize": "unchanged",
         "complexity": 1.0,
-        "start_on_home_screen": True,
     }
     record.update(changes)
     return record
@@ -191,6 +190,7 @@ async def test_a_task_is_prepared_scored_and_ended_and_the_service_is_gone_after
         ("GET", "/suite/reinitialize", {"task_family": "android", "n_task_combinations": "1", "seed": "42"}),
         ("GET", "/task/goal", address),
         ("POST", "/task/initialize", address),
+        ("GET", "/task/start_on_home_screen", address),
         ("POST", "/reset", {"go_home": "true"}),
         ("GET", "/task/score", address),
         ("POST", "/task/tear_down", address),
@@ -258,14 +258,19 @@ def _miniwob_task() -> dict[str, JsonValue]:
         params={"task_name": "click-button", "seed": instance_seed(42, "click-button", 0)},
         goal=_MINIWOB_FIXED,
         goal_at_initialize="made",
-        start_on_home_screen=False,
     )
 
 
 async def test_a_miniwob_task_reads_its_goal_after_initializing_and_that_goal_is_the_task_text(
     root: Path, tmp_path: Path
 ) -> None:
-    write_behaviour(root, {"/task/goal": {"json": {"goal": _MINIWOB_GOAL}}})
+    write_behaviour(
+        root,
+        {
+            "/task/goal": {"json": {"goal": _MINIWOB_GOAL}},
+            "/task/start_on_home_screen": {"json": {"start_on_home_screen": False}},
+        },
+    )
     setup = _setup(root)
     await setup.start(_device(tmp_path), _miniwob_task())
     try:
@@ -275,7 +280,13 @@ async def test_a_miniwob_task_reads_its_goal_after_initializing_and_that_goal_is
         await setup.stop()
 
     paths = [path for _, path, _ in _calls(root) if path != "/health"]
-    assert paths[:4] == ["/suite/reinitialize", "/task/initialize", "/reset", "/task/goal"]
+    assert paths[:5] == [
+        "/suite/reinitialize",
+        "/task/initialize",
+        "/task/start_on_home_screen",
+        "/reset",
+        "/task/goal",
+    ]
     assert ("POST", "/reset", {"go_home": "false"}) in _calls(root)
     assert made == _MINIWOB_GOAL, "as AndroidWorld hands it to an agent, unchanged"
     assert reading.evidence["goal"] == _MINIWOB_GOAL
@@ -326,10 +337,11 @@ async def test_a_goal_rewritten_at_initialize_is_checked_before_it_and_read_afte
         await setup.stop()
 
     paths = [path for _, path, _ in _calls(root) if path != "/health"]
-    assert paths[:5] == [
+    assert paths[:6] == [
         "/suite/reinitialize",
         "/task/goal",
         "/task/initialize",
+        "/task/start_on_home_screen",
         "/reset",
         "/task/goal",
     ]
@@ -559,6 +571,67 @@ class _Tables:
             poll_s=0.01,
         )
         wrapped(*_TABLE, self.env, "osmand")
+
+
+async def test_the_episode_starts_where_the_initialized_task_says(
+    root: Path, tmp_path: Path
+) -> None:
+    """A task may change start_on_home_screen in its initialize; the runner reads it only then."""
+    write_behaviour(root, {"/task/start_on_home_screen": {"json": {"start_on_home_screen": False}}})
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _task())  # the list says it starts on the home screen
+    await setup.stop()
+    assert ("POST", "/reset", {"go_home": "false"}) in _calls(root)
+
+
+async def test_a_start_the_service_does_not_say_is_refused(root: Path, tmp_path: Path) -> None:
+    write_behaviour(root, {"/task/start_on_home_screen": {"json": {}}})
+    setup = _setup(root)
+    with pytest.raises(AndroidWorldError, match="answered no start_on_home_screen"):
+        await setup.start(_device(tmp_path), _task())
+    await setup.stop()
+
+
+class _Taps:
+    """AndroidWorld's find-and-tap, failing with each of *failures* in turn, then tapping."""
+
+    def __init__(self, *failures: Exception) -> None:
+        self.failures = list(failures)
+        self.calls: list[tuple[object, ...]] = []
+        self.notes: list[str] = []
+        self.slept: list[float] = []
+
+    def find_and_click(self, *arguments: object) -> None:
+        self.calls.append(arguments)
+        if self.failures:
+            raise self.failures.pop(0)
+
+    def tap(self, tries: int = 3) -> None:
+        wrapped = _launcher().tap_on_a_settled_screen(
+            self.find_and_click, warn=self.notes.append, tries=tries, sleep=self.slept.append
+        )
+        wrapped("SAVE", "env")
+
+
+_STALE = ValueError("Invalid element index: 15, must be between 0 and 12.")
+
+
+def test_the_launcher_taps_again_when_the_index_went_stale_between_androidworlds_reads() -> None:
+    taps = _Taps(_STALE)
+    taps.tap()
+    assert taps.calls == [("SAVE", "env"), ("SAVE", "env")]
+    assert taps.slept == [1.0] and len(taps.notes) == 1 and "tapping again" in taps.notes[0]
+
+
+def test_the_launcher_raises_the_last_stale_index_and_any_other_failure() -> None:
+    taps = _Taps(_STALE, _STALE, _STALE)
+    with pytest.raises(ValueError, match="Invalid element index"):
+        taps.tap()
+    assert len(taps.calls) == 3
+    other = _Taps(ValueError("Element with text 'SAVE' not found"))
+    with pytest.raises(ValueError, match="not found"):
+        other.tap()
+    assert len(other.calls) == 1 and other.notes == []
 
 
 def test_the_launcher_clears_a_table_that_is_there_without_launching_the_app() -> None:
@@ -1264,11 +1337,13 @@ async def test_a_kept_service_serves_the_next_task_after_androidworlds_reset(
         ("GET", "/suite/reinitialize", {"task_family": "android", "n_task_combinations": "1", "seed": "42"}),
         ("GET", "/task/goal", brightness),
         ("POST", "/task/initialize", brightness),
+        ("GET", "/task/start_on_home_screen", brightness),
         ("POST", "/reset", {"go_home": "true"}),
         ("POST", "/task/tear_down", brightness),
         ("GET", "/suite/reinitialize", {"task_family": "information_retrieval", "n_task_combinations": "1", "seed": "42"}),
         ("GET", "/task/goal", asks),
         ("POST", "/task/initialize", asks),
+        ("GET", "/task/start_on_home_screen", asks),
         ("POST", "/reset", {"go_home": "true"}),
         ("POST", "/task/tear_down", asks),
     ]  # fmt: skip

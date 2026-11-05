@@ -31,7 +31,8 @@ it was cloned:
 - the emulator's gRPC listens on loopback only behind a token
   (``-grpc-use-token``): every call carries ``authorization: Bearer <token>``,
   read from the emulator's discovery file, and goes to the exact address the
-  emulator reported;
+  emulator reported (with no discovery file given, for an emulator started
+  without a token, the calls carry none);
 - Android deletes AndroidWorld's per-app snapshots at every boot, so the app
   states tasks restore are taken again once the service is up;
 - AndroidWorld's one-time app setup gives Markor, Simple Gallery Pro and VLC
@@ -49,20 +50,39 @@ it was cloned:
   in the background queue behind Play Services' burst, AndroidWorld's past the
   10 s it gives each: every one goes to the foreground queue
   (:func:`broadcast_in_the_foreground`);
+- AndroidWorld taps a button by its text (``actuation.find_and_click_element``:
+  its contacts helper taps SAVE while a task adds contacts) by finding its
+  index in one read of the UI tree and tapping that index in a second read,
+  so a screen that changes in between (a warm keyboard opening) fails the
+  initialize before anything is tapped: the find and tap are done again
+  (:func:`tap_on_a_settled_screen`);
 - AndroidWorld's MiniWoB++ initialize resets the task's page a fixed 1 s after
   loading it and reads its instruction right after: a page that has not
   loaded by then starts no episode, and a read before the page has made the
   instruction hands over an empty one. The reset waits for the page to load,
   and the read for its episode to start (:func:`wait_for_the_cover`).
 
-It also adds one endpoint the app lacks. AndroidWorld's runner ends a MiniWoB++
+It also adds two endpoints the app lacks. AndroidWorld's runner ends a MiniWoB++
 episode itself, when the page has reported a reward, and asks after every step
 (``miniwob_base.is_episode_terminated``); ``GET /task/episode_over`` answers
 that question for the setup component, which asks after each of the agent's
-steps (:func:`reward_ends_episode`).
+steps (:func:`reward_ends_episode`). The runner resets the agent onto the home
+screen or not as the task says once it is initialized
+(``agent.reset(task.start_on_home_screen)``), and a task may change that in its
+``initialize_task`` (VenusBench's VagueMarkorDeleteNewestTwoNotes starts in
+Markor); ``GET /task/start_on_home_screen`` reads it from the initialized task
+for the setup component's ``/reset``.
 
 The setup component starts it with a whitelisted environment: android_env logs its
 whole environment when its log level is INFO, which this file never sets.
+
+VenusBench's launcher (``spectragent/benchmarks/venusbench/venusbench_service/serve.py``)
+loads this file by its path, under VenusBench's interpreter, and runs the same
+steps on VenusBench's checkout: :func:`argument_parser`, :func:`enter_checkout`,
+:func:`patch` and :func:`serve`, with AndroidWorld's app file in between
+(VenusBench has no service of its own; ``docs/architecture_design.md`` §11.2
+"VenusBench-Mobile 的接入方案"). Every patch applies there too: the names it
+replaces are all in the fork.
 """
 
 from __future__ import annotations
@@ -100,6 +120,14 @@ COVER = "sync-task-cover"
 PAGE_WAIT_S = 30.0
 #: The pause between two looks; each look reads AndroidWorld's UI tree.
 PAGE_POLL_S = 0.5
+
+#: How many times the launcher finds and taps a button whose index went stale
+#: between AndroidWorld's two reads (:func:`tap_on_a_settled_screen`).
+TAP_TRIES = 3
+#: The pause before it finds the button again.
+TAP_RETRY_S = 1.0
+#: The words AndroidWorld's ``execute_adb_action`` refuses a stale index with.
+STALE_INDEX = "Invalid element index"
 
 #: AndroidWorld's ``sqlite_utils.delete_all_rows_from_table``: it deletes every
 #: row of a table, given the table, the database's path on the device, the
@@ -188,6 +216,49 @@ def wait_for_the_table(
             clear(table_name, remote_db_file_path, env, app_name, timeout_sec)
 
     return clear_once_the_table_is_there
+
+
+def tap_on_a_settled_screen(
+    find_and_click: Callable[..., object],
+    *,
+    warn: Callable[[str], object],
+    tries: int = TAP_TRIES,
+    retry_s: float = TAP_RETRY_S,
+    sleep: Callable[[float], object] = time.sleep,
+) -> Callable[..., object]:
+    """AndroidWorld's ``find_and_click_element``, found and tapped again when the index went stale.
+
+    It finds the element by its text in one read of the UI tree and taps the
+    index it found in a second read; ``execute_adb_action`` refuses an index
+    past the second read's elements (``ValueError: Invalid element index``)
+    before it taps anything. Its contacts helper (``contacts_utils.add_contact``)
+    taps SAVE in the editor its intent opens, and on a device kept from a task
+    whose agent typed, the keyboard, already warm, opened in the editor between
+    the two reads: VenusBench's GSATrackingSMSHandleIncomingKeywords and
+    GSATrackingSimpleSmsNotifyDelivery failed their initialize, each the fifth
+    task on its device (2026-11-05), and both initialized on a device where no
+    agent had typed. On fresh devices and in AndroidWorld's runs it was never
+    seen (``docs/architecture_design.md`` §11.2).
+
+    The function returned takes *find_and_click*'s arguments. On that refusal
+    it waits *retry_s* and finds and taps again, at most *tries* times in all;
+    *warn* hears each retry. Any other failure, and the last refusal, is raised.
+    """
+
+    def find_and_click_element(*arguments: object, **named: object) -> object:
+        for attempt in range(1, tries + 1):
+            try:
+                return find_and_click(*arguments, **named)
+            except ValueError as error:
+                if not str(error).startswith(STALE_INDEX) or attempt == tries:
+                    raise
+                warn(
+                    f"the screen changed between AndroidWorld's two reads ({error}); tapping again"
+                )
+                sleep(retry_s)
+        raise AssertionError("unreachable")
+
+    return find_and_click_element
 
 
 def _look_until(look: Callable[[], bool], deadline: float, poll_s: float) -> bool:
@@ -468,20 +539,48 @@ def _add_episode_over(android_server) -> None:
         return {"over": reward_ends_episode(reward)}
 
 
-def _arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Serve AndroidWorld's tasks for one run.")
-    parser.add_argument("--port", type=int, required=True, help="Loopback port to serve on.")
-    parser.add_argument("--src", required=True, help="The AndroidWorld checkout.")
+def _add_start_on_home_screen(android_server) -> None:
+    """Add ``GET /task/start_on_home_screen``: whether the addressed task's episode starts on the home screen.
+
+    Read from the task as it is now, so after ``/task/initialize`` it is what
+    AndroidWorld's runner hands its agent's reset.
+    """
+    app = android_server.app
+
+    @app.get("/task/start_on_home_screen")
+    async def start_on_home_screen(task_type: str, task_idx: int):
+        task = app.state.suite[task_type][task_idx]
+        return {"start_on_home_screen": bool(task.start_on_home_screen)}
+
+
+def argument_parser(description: str, *, serving: bool = True) -> argparse.ArgumentParser:
+    """The arguments every launcher takes: the checkout and the run's device, and where to serve
+    when *serving* (a one-time setup serves nothing)."""
+    parser = argparse.ArgumentParser(description=description)
+    if serving:
+        parser.add_argument("--port", type=int, required=True, help="Loopback port to serve on.")
+    parser.add_argument("--src", required=True, help="The checkout of AndroidWorld's code.")
     parser.add_argument("--adb", required=True, help="The adb binary of the run's server.")
     parser.add_argument("--adb-server-port", type=int, required=True)
     parser.add_argument("--console-port", type=int, required=True)
     parser.add_argument("--grpc-target", required=True, help="host:port the emulator reported.")
-    parser.add_argument("--grpc-token-file", required=True, help="The emulator's discovery file.")
+    parser.add_argument(
+        "--grpc-token-file",
+        help="The emulator's discovery file, whose token every gRPC call carries; none for an "
+        "emulator started without -grpc-use-token (a one-time setup's writable boot).",
+    )
     parser.add_argument("--forwarder-apk", required=True, help="The cached forwarder APK.")
-    return parser.parse_args()
+    return parser
 
 
-def _patch(args: argparse.Namespace) -> None:
+def enter_checkout(src: str) -> None:
+    """Make the checkout at *src* importable and the working directory, as AndroidWorld's runner expects."""
+    sys.path.insert(0, src)
+    os.chdir(src)
+
+
+def patch(args: argparse.Namespace) -> None:
+    """Patch android_env and AndroidWorld, at run time, as the module docstring lists."""
     found = importlib.metadata.version("android_env")
     if found != ANDROID_ENV:
         raise SystemExit(
@@ -496,6 +595,7 @@ def _patch(args: argparse.Namespace) -> None:
     from android_env.proto import emulator_controller_pb2_grpc, snapshot_service_pb2_grpc
     from android_env.wrappers import a11y_grpc_wrapper
     from android_world.env import (
+        actuation,
         adb_utils,
         android_world_controller,
         env_launcher,
@@ -552,6 +652,17 @@ def _patch(args: argparse.Namespace) -> None:
         exists=sqlite_utils.table_exists,
         launch=launch,
         warn=warn,
+    )
+
+    # A renamed function would be added, not replaced, and a stale index would
+    # fail an initialize again.
+    if not callable(getattr(actuation, "find_and_click_element", None)):
+        raise SystemExit(
+            "serve.py taps a button again when the screen changed under AndroidWorld by "
+            "replacing actuation.find_and_click_element, which this AndroidWorld does not define"
+        )
+    actuation.find_and_click_element = tap_on_a_settled_screen(
+        actuation.find_and_click_element, warn=warn
     )
 
     # A renamed method would be added, not replaced, and a page AndroidWorld
@@ -659,7 +770,11 @@ def _patch(args: argparse.Namespace) -> None:
             raise emulator_simulator.EmulatorBootError(
                 "Failed to connect to the emulator."
             ) from error
-        channel = grpc.intercept_channel(self._channel, Bearer(bearer_token()))
+        channel = (
+            grpc.intercept_channel(self._channel, Bearer(bearer_token()))
+            if args.grpc_token_file
+            else self._channel
+        )
         return (
             emulator_controller_pb2_grpc.EmulatorControllerStub(channel),
             snapshot_service_pb2_grpc.SnapshotServiceStub(channel),
@@ -696,16 +811,22 @@ def _patch(args: argparse.Namespace) -> None:
     env_launcher.load_and_setup_env = load_for_this_run
 
 
-def main() -> None:
-    args = _arguments()
-    sys.path.insert(0, args.src)
-    os.chdir(args.src)
-    _patch(args)
+def serve(android_server, port: int) -> None:
+    """Add the launcher's endpoints to AndroidWorld's app module *android_server*, and serve it on *port*."""
     import uvicorn
-    from server import android_server
 
     _add_episode_over(android_server)
-    uvicorn.run(android_server.app, host="127.0.0.1", port=args.port, log_level="warning")
+    _add_start_on_home_screen(android_server)
+    uvicorn.run(android_server.app, host="127.0.0.1", port=port, log_level="warning")
+
+
+def main() -> None:
+    args = argument_parser("Serve AndroidWorld's tasks for one run.").parse_args()
+    enter_checkout(args.src)
+    patch(args)
+    from server import android_server
+
+    serve(android_server, args.port)
 
 
 if __name__ == "__main__":

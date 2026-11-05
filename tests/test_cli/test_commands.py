@@ -481,7 +481,7 @@ def test_a_loaders_refusal_reaches_the_user_in_its_own_short_words(
     assert main(argv) == 2
     error = json.loads(capsys.readouterr().out)["error"]
     message = error["message"]
-    assert f"{listing} is not an AndroidWorld task list of format androidworld-tasks-2" in message
+    assert f"{listing} is not an AndroidWorld task list of format androidworld-tasks-3" in message
     assert "spectragent benchmark fetch androidworld" in message
     assert "\n" not in message and len(message) < 500
     if command[0] == "config":

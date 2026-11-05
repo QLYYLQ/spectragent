@@ -49,6 +49,7 @@ def test_each_benchmark_takes_its_own_loaders() -> None:
         "lexbench_browser": (["lexbench_browser"], ["lexbench_browser"]),
         "online_mind2web": (["online_mind2web"], ["online_mind2web"]),
         "trace_branches": (["trace_branches"], []),
+        "venusbench": (["venusbench"], []),
     }
     for key, (tasks, references) in owned.items():
         assert TaskLoaderRegistrar.get(tasks[0]) is not None, key
@@ -142,6 +143,7 @@ def test_each_benchmark_names_the_verifier_kinds_it_takes() -> None:
         "lexbench_browser": ["lexbench_browser"],
         "online_mind2web": ["online_mind2web"],
         "trace_branches": [],
+        "venusbench": ["venusbench"],
     }
 
 
@@ -240,6 +242,7 @@ def test_each_browser_benchmark_declares_its_own_judge_primary() -> None:
         "lexbench_browser": "lexbench_browser",
         "online_mind2web": "online_mind2web",
         "trace_branches": None,
+        "venusbench": "venusbench",
     }
 
 
@@ -348,3 +351,20 @@ def test_androidworld_counts_the_score_only_when_the_agent_declared_done(
     # MiniWoB++ task's page ended it, so its score still stands.
     unknown = score if family == "miniwob" else None
     assert AndroidWorldBenchmark().success(verdict, None) == unknown
+
+
+@pytest.mark.parametrize(
+    ("agent_done", "score", "success"),
+    [("done", 1.0, 1.0), ("done", 0.0, 0.0), ("max_steps", 1.0, 0.0), ("episode_over", 1.0, 0.0)],
+)
+def test_venusbench_counts_the_score_only_when_the_agent_declared_done(
+    agent_done: str, score: float, success: float
+) -> None:
+    """Its runner is AndroidWorld's (``task_successful if done else 0``), and it has no MiniWoB++."""
+    from spectragent.benchmarks.venusbench.benchmark import VenusBenchBenchmark
+    from tests._helpers.trace_builder import agent_result
+
+    verdict = _judged("venusbench", attachment="live", score=score, evidence={"family": "venus"})
+    result = agent_result(agent_done=agent_done, agent_reported_success=None)
+    assert VenusBenchBenchmark().success(verdict, result) == success
+    assert VenusBenchBenchmark().success(verdict, None) is None, "an unknown ending claims nothing"

@@ -1,0 +1,68 @@
+# VenusBench-Mobile's tasks on an emulated phone. Select it with --benchmark venusbench:
+#
+#   spectragent bench --config <your Android run configuration> --benchmark venusbench
+#
+# VenusBench-Mobile (github.com/inclusionAI/UI-Venus, branch VenusBench-Mobile, Apache-2.0) is a
+# fork of AndroidWorld with harder tasks. Install it, then make its task list
+# (docs/architecture_design.md §4.10.1, §11.2 "VenusBench-Mobile 的接入方案"):
+#
+#   spectragent benchmark setup venusbench    # its checkout, venv, AndroidWorld's service app,
+#                                             # its files on Google Drive, FitBook's arm64 build
+#   spectragent benchmark fetch venusbench    # its task list and open_app table
+#
+# setup installs into the shared cache (<data root>/android/venusbench/installation) unless
+# root says otherwise, and names what only you can install: ffmpeg, and the AVD below, which is
+# AndroidWorld's set-up AVD (spectragent benchmark setup androidworld names how to make it) with
+# VenusBench's apps added by its one-time setup. fetch runs AndroidWorld's task_list.py in that
+# installation, from the pinned commit, as VenusBench's own runner makes its suite: seed 30, one
+# instance of each task.
+#
+# VenusBench has no service of its own, so the setup component runs AndroidWorld's (the file at
+# the commit AndroidWorld's launcher is written against) on VenusBench's checkout, which prepares
+# each task on the device and keeps its state for the verifier.
+#
+# The first version runs 45 of its 189 tasks: the single-round ones scored on the device's state
+# or by a rule on the agent's answer. The loader leaves out the rest, each with its reason
+# (multi-round tasks, tasks scored by VenusBench's LLM judge, tasks that change the device before
+# each step, tasks scored through uiautomator2), and the setup component refuses them.
+#
+# Its verifier, venusbench, is each task's own success check: it needs the live device, so it
+# judges at the scoring point, after the agent's run and before the device goes, within
+# --verify-timeout, through the service the setup component started. The run's answer goes to
+# the service whenever it has one, as VenusBench's runner hands it over; the task decides whether
+# to read it. Its verdict is this benchmark's primary verdict; a run the agent does not end as
+# done counts as 0, as in VenusBench's runner.
+#
+# The benchmark's part of the Android capability's configuration is merged into the run
+# configuration's Android block (§4.10.1): the AVD and its runner's typing and scroll, below,
+# which are AndroidWorld's: the fork keeps AndroidWorld's typing and scroll code, except that its
+# env/actuation.py has no clear_text handling and its env/adb_utils.py types empty words (two
+# spaces in a row), which AndroidWorld's skips;
+# the open_app name table, read from beside the task list; and the longest wait for a still
+# screen, 6 s, computed in code.
+#
+# Each task boots its own emulator. With spectragent bench --reuse-environment the tasks of a
+# sweep share one: the setup resets the device between tasks, as VenusBench's runner does
+# (§4.10.1).
+#
+# VenusBench's runner bounds a task by its steps alone: int(10 * complexity), 10 to 100 steps on
+# the pinned commit, which the loader hands the Loop. bench's default --timeout of 300 s cut two of
+# four tasks of M3A's first run after 12 and 19 steps; give it one that covers the budget (that
+# run took about 25 s a step), such as --timeout 3600.
+benchmark:
+  - benchmark_id: venusbench
+    task_loader:
+      benchmark_name: venusbench
+      subset: All
+      data_dir: null             # null: the cache copy, <data root>/android/venusbench
+    setup:
+      setup_id: venusbench
+      root: null                 # null: <data root>/android/venusbench/installation
+    verifiers:
+      - verifier_id: venusbench
+    capability:
+      - capability_id: android
+        backend: {provider_id: local_emulator, avd: VenusBenchAvd}
+        typing_backend: {typing_id: key_events, fold_accents: true}
+        actions:
+          - {action_id: android.scroll, swipe_to: target_edge, duration_ms: 300}
