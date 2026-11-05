@@ -8,10 +8,35 @@ and other capabilities all consume the same protocol.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Protocol, runtime_checkable
+from dataclasses import dataclass
+from typing import ClassVar, Protocol, runtime_checkable
 
 from spectragent.schemas.data_version import DataVersion
 from spectragent.schemas.task import TaskContext, TaskDefinition
+
+
+@dataclass(frozen=True)
+class StepBudget:
+    """The step budget a benchmark's public protocol gives each of its tasks, and where it says so.
+
+    The official budget, as data: a task loader declares it
+    (``TaskLoaderBase.__step_budget__``) and ``config template`` names it
+    beside the Loop's ``max_steps``. What each task is handed as the Loop
+    input ``max_steps`` is the loader's: computed from the protocol
+    (AndroidWorld's), or what its benchmark YAML sets (Online-Mind2Web's
+    ``step_budget``). The configured ``max_steps`` stays the ceiling
+    (``docs/architecture_design.md`` §4.10.1 "基准的步数预算").
+    """
+
+    #: What each task gets, in a few words: ``25 steps``.
+    steps: str
+    #: Where the public protocol states it: a paper's section, or a file and lines at a pinned commit.
+    source: str
+    #: The budget as one number, when the protocol gives every task the same:
+    #: the benchmark YAML then sets the budget its tasks get in the task
+    #: loader's required ``step_budget``, which may differ from this.
+    #: ``None``: the loader computes each task's budget from the protocol.
+    value: int | None = None
 
 
 @runtime_checkable
@@ -21,6 +46,11 @@ class BaseTaskLoader(Protocol):
     Loaders normalize raw benchmark data files into ``TaskDefinition``
     instances at construction time, then serve queries by ``task_id``.
     """
+
+    #: The step budget its benchmark's public protocol gives each task;
+    #: ``None``: the protocol states none. What :meth:`get_task_context` hands
+    #: the Loop as ``max_steps`` follows it (:class:`StepBudget`).
+    __step_budget__: ClassVar[StepBudget | None]
 
     @property
     def benchmark_name(self) -> str: ...
@@ -57,9 +87,10 @@ class BaseTaskLoader(Protocol):
         typically ``{"start_url": ...}``; for ToolSandbox/tau-bench
         scenarios, per-task tool schemas. ``AgentRuntime`` routes it to the
         capabilities' ``setup()``. ``loop`` holds the inputs the run's Loop
-        declares (``checkpoint`` for a branch task) and ``branch`` the
-        provenance of a branch task; both are empty for an ordinary
-        benchmark task. An unknown ``task_id`` yields an empty
+        declares: a benchmark task's step budget ``max_steps`` when its
+        benchmark gives one (:attr:`__step_budget__`), a branch task's
+        ``checkpoint``. ``branch`` is the provenance of a branch task, empty
+        for a benchmark task. An unknown ``task_id`` yields an empty
         ``TaskContext()``.
         """
         ...

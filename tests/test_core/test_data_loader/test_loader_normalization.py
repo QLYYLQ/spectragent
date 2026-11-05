@@ -78,10 +78,11 @@ class TestOnlineMind2WebNormalization:
                 }
             ],
         )
+        assert isinstance(loader, OnlineMind2WebTaskLoader)
+        loader.step_budget = 25  # what its benchmark YAML sets (test_browser_step_budgets.py)
         context = loader.get_task_context("m2w_001")
         assert context.env == {"start_url": "https://example.com"}
-        # A dataset task feeds the environment only.
-        assert context.loop == {}
+        assert context.loop == {"max_steps": 25}
         assert context.branch is None
 
 

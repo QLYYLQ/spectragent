@@ -386,6 +386,7 @@ async def test_a_judge_that_reads_no_reference_judges_no_other_benchmarks_run(
             "benchmark_name": "online_mind2web",
             "subset": "All",
             "data_dir": str(data),
+            "step_budget": 25,
         },
         "verifiers": [judged],
     }

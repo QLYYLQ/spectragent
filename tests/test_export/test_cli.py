@@ -110,7 +110,8 @@ def test_the_named_benchmarks_loaders_are_read(
 
     def benchmark(name: str, loader: dict[str, str]) -> str:
         document = tmp_path / f"{name}.yaml"
-        block = {"benchmark_id": "online_mind2web", "task_loader": loader, "eval_loader": loader}
+        tasks = {**loader, "step_budget": 25}
+        block = {"benchmark_id": "online_mind2web", "task_loader": tasks, "eval_loader": loader}
         document.write_text(yaml.safe_dump({"benchmark": [block]}))
         return str(document)
 

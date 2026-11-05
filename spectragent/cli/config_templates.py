@@ -28,6 +28,7 @@ from conscribe.introspect import WiringSlot, wiring_slots
 from conscribe.wiring import expand_relative_keys
 from pydantic import BaseModel, JsonValue
 
+from spectragent.benchmarks import Benchmark
 from spectragent.benchmarks.operations import read_benchmark_with_data
 from spectragent.benchmarks.selection import run_root
 from spectragent.core.actions._registrar import ACTION_KEY_SEPARATOR
@@ -102,7 +103,11 @@ class _Starts:
 
 @dataclass(frozen=True)
 class _LeftOut:
-    """A setting the benchmark supplies: rendered as a comment where it would sit, never as YAML."""
+    """A value rendered as a comment where it would sit, never as YAML.
+
+    A setting the benchmark supplies, or an agent's starting value the
+    implementation the template chose has no field for.
+    """
 
     note: str
 
@@ -170,6 +175,10 @@ def render_config_template(
     )
     for setting in supplied:
         _leave_out(expanded, setting, comments)
+    _name_unwritable_starts(expanded, catalog)
+    _name_step_budgets(
+        expanded, list(zip(run.instances("benchmark"), benchmarks, strict=True)), catalog, comments
+    )
     # Full expansion can change the set of explicitly set fields (notably nested
     # provider options). Recompose the emitted values, not only the input skeleton.
     emitted = _without_left_out(expanded)
@@ -464,7 +473,8 @@ def _receptor_start(
     (*key*, else :func:`_starting_key`) and writes each value the chosen
     implementation has a field for, so an agent's sampling values reach
     whichever model provider is chosen and a field one provider lacks
-    (``frequency_penalty`` on Anthropic) is left out.
+    (``frequency_penalty`` on Anthropic) is left out, named in a comment
+    (:func:`_name_unwritable_starts`).
     """
     layer = receptor.spec.registry_name
     declared = _declared_block(owner).get(receptor.name)
@@ -1052,6 +1062,101 @@ def _without_left_out(value: Any) -> Any:
     if isinstance(value, list):
         return [_without_left_out(item) for item in value]
     return value
+
+
+# -- naming what a start or a benchmark decides -----------------------
+
+
+def _name_unwritable_starts(expanded: dict[str, Any], catalog: ConfigurationCatalog) -> None:
+    """Name each agent starting value its chosen implementation has no field for, where it would sit.
+
+    An agent's receptor block that names no implementation (its ``llm``
+    sampling values, ``__template_block__``) is written into whichever
+    implementation the run uses, where that one has the field
+    (:func:`_receptor_start`). A value it has no field for (``temperature`` on
+    ``ollama.default``) is not written, and a comment at the end of the block
+    says so (``docs/architecture_design.md`` §4.17 "agent 的模板起点").
+    """
+    for agent in expanded.get("agent") or []:
+        key = _named_key(catalog, "agent", agent) if isinstance(agent, dict) else None
+        if key is None:
+            continue
+        owner = catalog.components["agent"][key].implementation
+        slots = wiring_slots(owner)
+        for name, declared in _declared_block(owner).items():
+            block = agent.get(name)
+            if name not in slots or not isinstance(declared, dict) or not isinstance(block, dict):
+                continue
+            layer = slots[name].spec.registry_name
+            chosen = _named_key(catalog, layer, block)
+            if chosen is None or _named_key(catalog, layer, declared) is not None:
+                continue
+            for field_name, value in declared.items():
+                if field_name not in block:
+                    block[field_name] = _LeftOut(
+                        f"{field_name}: {_short(value)}, the agent {key}'s starting value, is "
+                        f"not written: the {layer} {chosen} has no {field_name} field."
+                    )
+
+
+def _name_step_budgets(
+    expanded: dict[str, Any],
+    benchmarks: Sequence[tuple[Benchmark, Mapping[str, Any]]],
+    catalog: ConfigurationCatalog,
+    comments: dict[TemplatePath, list[str]],
+) -> None:
+    """Under each agent's Loop ``max_steps``, the step budget the benchmark's tasks bring, or that none do.
+
+    *benchmarks* pairs each composed benchmark with the block its YAML wrote.
+    The official budget is the task loader's ``__step_budget__``; where the
+    benchmark YAML sets the budget itself (the task loader's ``step_budget``),
+    the comment names that value beside the official one and says when they
+    differ. Only for a Loop that takes a task's own budget (the Loop input
+    ``max_steps``; ``docs/architecture_design.md`` §4.10.1 "基准的步数预算").
+    """
+    lines: list[str] = []
+    for benchmark, block in benchmarks:
+        name = benchmark.benchmark_id
+        official = benchmark.task_loader.__step_budget__
+        loader = block.get("task_loader")
+        if official is None:
+            text = (
+                f"Step budget: the benchmark {name} has no official step budget, so every "
+                "task runs up to this max_steps, the agent's ceiling."
+            )
+        elif official.value is None:
+            text = (
+                f"Step budget: the benchmark {name} gives each task {official.steps}, handed "
+                f"to the Loop per task as the Loop input max_steps ({official.source}). This "
+                "max_steps stays the ceiling: a task runs at most the smaller of the two."
+            )
+        else:
+            given = loader.get("step_budget") if isinstance(loader, Mapping) else None
+            protocol = f"The protocol's own budget is {official.steps} ({official.source})"
+            text = (
+                f"Step budget: this benchmark YAML sets no step budget (the benchmark {name}'s "
+                "task_loader.step_budget is null), so every task runs up to this max_steps, the "
+                f"agent's ceiling. {protocol}."
+                if given is None
+                else f"Step budget: this benchmark YAML sets {given} steps for each task (the "
+                f"benchmark {name}'s task_loader.step_budget), handed to the Loop per task as "
+                f"the Loop input max_steps. {protocol}"
+                + (f"; the YAML's {given} differs from it. " if given != official.value else ". ")
+                + "This max_steps stays the ceiling: a task runs at most the smaller of the two."
+            )
+        lines += textwrap.wrap(text, width=88, break_long_words=False, break_on_hyphens=False)
+    if not lines:
+        return
+    for index, agent in enumerate(expanded.get("agent") or []):
+        loop = agent.get("agent_loop") if isinstance(agent, dict) else None
+        if not isinstance(loop, dict) or "max_steps" not in loop:
+            continue
+        key = _named_key(catalog, "agent_loop", loop)
+        takes = key is not None and "max_steps" in getattr(
+            catalog.components["agent_loop"][key].implementation, "__loop_inputs__", {}
+        )
+        if takes:
+            comments.setdefault(("agent", index, "agent_loop", "max_steps"), []).extend(lines)
 
 
 # -- rendering --------------------------------------------------------

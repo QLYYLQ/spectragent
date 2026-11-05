@@ -6,7 +6,8 @@ export --benchmark``, an alias or a path, §4.10.1) — each benchmark's task
 loader and its ``eval_loader`` block, composed with every knob (``data_dir``,
 ``subset``) — matched to a benchmark by ``benchmark_name``. A benchmark with no
 configured loader of a kind is read by its registered loader built with its
-defaults: the rule a benchmark resolves its own reference data by (its block
+defaults (a task loader through ``for_reading``, which gives it no setting only
+a run uses): the rule a benchmark resolves its own reference data by (its block
 first, then the registry). A configured loader is the only one read — never a
 default-built instance beside it, which would ignore the knobs its YAML set.
 """
@@ -90,6 +91,9 @@ class BenchmarkLoaders:
             loader_cls = _REGISTRARS[kind].get_or_none(benchmark) if benchmark else None
             if loader_cls is None:
                 self._defaults[key] = None
+            elif kind == "task":
+                # Built only to read its tasks: never given run settings (step_budget).
+                self._defaults[key] = loader_cls.for_reading(subset)
             else:
                 self._defaults[key] = loader_cls(subset=subset) if subset else loader_cls()
         return self._defaults[key]

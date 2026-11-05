@@ -91,7 +91,7 @@ uv run spectragent tui --root traces --run branch/RUN_KEY
 
 分叉页面直接显示 `source/restored` 历史策略与 `strict/warn` 恢复策略，时间线标出 checkpoint 和可测差异。Observation 中并排查看 Source record 与 Actual replay，包括截图、URL/DOM 校验、动作重定位、原结果与实际结果；通过恢复校验仍可能存在容差内的截图差异。Agent observation 默认按录制的 cursor 配置重建模型图片；Browser state 切回干净截图。cursor 开启但位置未知时保持原图并明确标注，精确发送的 prompt 图片在 Model calls 查看。
 
-恢复步骤的源动作、源结果和源模型回复与本次实际恢复执行分开展示。实时终端把 `max_steps` 标为配置上限，并单列 `continue_steps`，不把配置上限当成分叉的实际步数预算；任务自己的步数预算比上限低时（AndroidWorld 的任务），上限旁另写 `task budget`。回放日志页按原有读取器的折叠权重统计 hit/miss/exhausted/synthetic，包含 trailing 收尾决定；未记录日志、空日志和日志损坏分别显示。
+恢复步骤的源动作、源结果和源模型回复与本次实际恢复执行分开展示。实时终端把 `max_steps` 标为配置上限，并单列 `continue_steps`，不把配置上限当成分叉的实际步数预算；任务自己的步数预算比上限低时（AndroidWorld 的任务、Online-Mind2Web 基准 YAML 的 `step_budget`，发布的是 25，architecture §4.10.1 "基准的步数预算"），上限旁另写 `task budget`。回放日志页按原有读取器的折叠权重统计 hit/miss/exhausted/synthetic，包含 trailing 收尾决定；未记录日志、空日志和日志损坏分别显示。
 
 查看器只读本地目录，展示截图、步骤、模型请求/回复、每次失败与重试、观测、判定、配置和分叉来源。判定来自 run 的判定存放 `verdicts/`：运行列表的判定一列和运行摘要的"判定"一项列出每份判定的 slug、判出了什么、活体还是离线，总览的"已有判定"数的是至少有一份判定的 run；运行页的"判定 (N)"标签页逐份展开判分器、开始时间与用时、判分模型与版本、没判的原因、判定依据、证据和判分器设置。运行对比与实验组对比分开：实验组按配置摘要选择，按相同任务配对，必须明确选择一个判定 slug，即同一个判分器、同一组设置（命令行是 `spectragent runs compare-groups --left <摘要> --right <摘要> --verifier <slug>`）；重复尝试记为 ambiguous，不自动挑最好的一次。同一 slug 的判定版本不同时记为判分器设置不同，不合并统计。报告页读取同一根目录下的独立评测报告、飞轮、诊断、数据集和任务清单；可以把 `--root` 指向包含这些产物的共同父目录。
 

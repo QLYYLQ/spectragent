@@ -22,7 +22,7 @@ def online_mind2web_benchmark(
     (data / "data_info.json").write_text(json.dumps({"split": split}))
     for name, tasks in subsets.items():
         (data / split[name]).write_text(json.dumps(list(tasks)))
-    loader = {"benchmark_name": "online_mind2web", "data_dir": str(data)}
+    loader = {"benchmark_name": "online_mind2web", "data_dir": str(data), "step_budget": 25}
     path = directory / "benchmark.yaml"
     path.write_text(
         yaml.safe_dump({"benchmark": [{"benchmark_id": "online_mind2web", "task_loader": loader}]})
