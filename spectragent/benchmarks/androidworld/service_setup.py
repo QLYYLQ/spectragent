@@ -21,8 +21,11 @@ one device (below):
    and a fresh device whose changes are thrown away with the run): the
    service starts (``service.py``), then the task: the suite its seed makes, a
    check that the service built the task the list records,
-   ``/task/initialize`` and ``/reset``, then what the subclass does after the
-   reset (:meth:`AndroidWorldServiceSetup._after_reset`).
+   ``/task/initialize`` and ``/reset`` onto the home screen or not as the
+   initialized task says (``/task/start_on_home_screen``, which the launcher
+   adds: a task may change it in its initialize, and AndroidWorld's runner
+   reads it only then), then what the subclass does after the reset
+   (:meth:`AndroidWorldServiceSetup._after_reset`).
 2. **stop**, first at teardown: ``/task/tear_down`` (best effort, since the
    device's changes are thrown away with it; a failure is logged), then the
    service's process group.
@@ -236,9 +239,17 @@ class AndroidWorldServiceSetup(BenchmarkSetupBase):
                 )
         await service.call("POST", "/task/initialize", address, timeout_s=self.call_timeout_s)
         self._initialized = True
-        await service.call(
-            "POST", "/reset", {"go_home": task.start_on_home_screen}, timeout_s=self.call_timeout_s
+        # Where the episode starts, as the initialized task says: a task may
+        # change it in its initialize, and the runner reads it only then.
+        reply = await service.call(
+            "GET", "/task/start_on_home_screen", address, timeout_s=self.call_timeout_s
         )
+        go_home = reply.get("start_on_home_screen")
+        if not isinstance(go_home, bool):
+            raise AndroidWorldError(
+                f"GET /task/start_on_home_screen answered no start_on_home_screen: {reply!r}"
+            )
+        await service.call("POST", "/reset", {"go_home": go_home}, timeout_s=self.call_timeout_s)
         await self._after_reset(service, task)
 
     async def _after_reset(self, service: AndroidWorldService, task: AndroidWorldTask) -> None:

@@ -191,6 +191,7 @@ async def test_a_task_is_prepared_scored_and_ended_and_the_service_is_gone_after
         ("GET", "/suite/reinitialize", {"task_family": "android", "n_task_combinations": "1", "seed": "42"}),
         ("GET", "/task/goal", address),
         ("POST", "/task/initialize", address),
+        ("GET", "/task/start_on_home_screen", address),
         ("POST", "/reset", {"go_home": "true"}),
         ("GET", "/task/score", address),
         ("POST", "/task/tear_down", address),
@@ -265,7 +266,13 @@ def _miniwob_task() -> dict[str, JsonValue]:
 async def test_a_miniwob_task_reads_its_goal_after_initializing_and_that_goal_is_the_task_text(
     root: Path, tmp_path: Path
 ) -> None:
-    write_behaviour(root, {"/task/goal": {"json": {"goal": _MINIWOB_GOAL}}})
+    write_behaviour(
+        root,
+        {
+            "/task/goal": {"json": {"goal": _MINIWOB_GOAL}},
+            "/task/start_on_home_screen": {"json": {"start_on_home_screen": False}},
+        },
+    )
     setup = _setup(root)
     await setup.start(_device(tmp_path), _miniwob_task())
     try:
@@ -275,7 +282,13 @@ async def test_a_miniwob_task_reads_its_goal_after_initializing_and_that_goal_is
         await setup.stop()
 
     paths = [path for _, path, _ in _calls(root) if path != "/health"]
-    assert paths[:4] == ["/suite/reinitialize", "/task/initialize", "/reset", "/task/goal"]
+    assert paths[:5] == [
+        "/suite/reinitialize",
+        "/task/initialize",
+        "/task/start_on_home_screen",
+        "/reset",
+        "/task/goal",
+    ]
     assert ("POST", "/reset", {"go_home": "false"}) in _calls(root)
     assert made == _MINIWOB_GOAL, "as AndroidWorld hands it to an agent, unchanged"
     assert reading.evidence["goal"] == _MINIWOB_GOAL
@@ -326,10 +339,11 @@ async def test_a_goal_rewritten_at_initialize_is_checked_before_it_and_read_afte
         await setup.stop()
 
     paths = [path for _, path, _ in _calls(root) if path != "/health"]
-    assert paths[:5] == [
+    assert paths[:6] == [
         "/suite/reinitialize",
         "/task/goal",
         "/task/initialize",
+        "/task/start_on_home_screen",
         "/reset",
         "/task/goal",
     ]
@@ -559,6 +573,25 @@ class _Tables:
             poll_s=0.01,
         )
         wrapped(*_TABLE, self.env, "osmand")
+
+
+async def test_the_episode_starts_where_the_initialized_task_says(
+    root: Path, tmp_path: Path
+) -> None:
+    """A task may change start_on_home_screen in its initialize; the runner reads it only then."""
+    write_behaviour(root, {"/task/start_on_home_screen": {"json": {"start_on_home_screen": False}}})
+    setup = _setup(root)
+    await setup.start(_device(tmp_path), _task())  # the list says it starts on the home screen
+    await setup.stop()
+    assert ("POST", "/reset", {"go_home": "false"}) in _calls(root)
+
+
+async def test_a_start_the_service_does_not_say_is_refused(root: Path, tmp_path: Path) -> None:
+    write_behaviour(root, {"/task/start_on_home_screen": {"json": {}}})
+    setup = _setup(root)
+    with pytest.raises(AndroidWorldError, match="answered no start_on_home_screen"):
+        await setup.start(_device(tmp_path), _task())
+    await setup.stop()
 
 
 class _Taps:
@@ -1306,11 +1339,13 @@ async def test_a_kept_service_serves_the_next_task_after_androidworlds_reset(
         ("GET", "/suite/reinitialize", {"task_family": "android", "n_task_combinations": "1", "seed": "42"}),
         ("GET", "/task/goal", brightness),
         ("POST", "/task/initialize", brightness),
+        ("GET", "/task/start_on_home_screen", brightness),
         ("POST", "/reset", {"go_home": "true"}),
         ("POST", "/task/tear_down", brightness),
         ("GET", "/suite/reinitialize", {"task_family": "information_retrieval", "n_task_combinations": "1", "seed": "42"}),
         ("GET", "/task/goal", asks),
         ("POST", "/task/initialize", asks),
+        ("GET", "/task/start_on_home_screen", asks),
         ("POST", "/reset", {"go_home": "true"}),
         ("POST", "/task/tear_down", asks),
     ]  # fmt: skip

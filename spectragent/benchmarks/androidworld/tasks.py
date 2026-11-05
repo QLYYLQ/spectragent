@@ -91,8 +91,12 @@ class AndroidWorldTask(BaseModel):
             (``docs/architecture_design.md`` §11.2).
         complexity: AndroidWorld's estimate; its own runner gives a task
             ``int(10 * complexity)`` steps (:attr:`step_budget`).
-        start_on_home_screen: Whether the episode starts on the home screen
-            (``/reset?go_home=``); MiniWoB tasks start in their app.
+        start_on_home_screen: Whether the episode starts on the home screen,
+            as the task's class says; MiniWoB tasks start in their app. A task
+            may change it in its initialize (VenusBench's
+            VagueMarkorDeleteNewestTwoNotes starts in Markor), so the setup
+            component resets as the initialized task says
+            (``/task/start_on_home_screen``).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)

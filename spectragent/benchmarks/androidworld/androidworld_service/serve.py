@@ -62,11 +62,16 @@ it was cloned:
   instruction hands over an empty one. The reset waits for the page to load,
   and the read for its episode to start (:func:`wait_for_the_cover`).
 
-It also adds one endpoint the app lacks. AndroidWorld's runner ends a MiniWoB++
+It also adds two endpoints the app lacks. AndroidWorld's runner ends a MiniWoB++
 episode itself, when the page has reported a reward, and asks after every step
 (``miniwob_base.is_episode_terminated``); ``GET /task/episode_over`` answers
 that question for the setup component, which asks after each of the agent's
-steps (:func:`reward_ends_episode`).
+steps (:func:`reward_ends_episode`). The runner resets the agent onto the home
+screen or not as the task says once it is initialized
+(``agent.reset(task.start_on_home_screen)``), and a task may change that in its
+``initialize_task`` (VenusBench's VagueMarkorDeleteNewestTwoNotes starts in
+Markor); ``GET /task/start_on_home_screen`` reads it from the initialized task
+for the setup component's ``/reset``.
 
 The setup component starts it with a whitelisted environment: android_env logs its
 whole environment when its log level is INFO, which this file never sets.
@@ -534,6 +539,20 @@ def _add_episode_over(android_server) -> None:
         return {"over": reward_ends_episode(reward)}
 
 
+def _add_start_on_home_screen(android_server) -> None:
+    """Add ``GET /task/start_on_home_screen``: whether the addressed task's episode starts on the home screen.
+
+    Read from the task as it is now, so after ``/task/initialize`` it is what
+    AndroidWorld's runner hands its agent's reset.
+    """
+    app = android_server.app
+
+    @app.get("/task/start_on_home_screen")
+    async def start_on_home_screen(task_type: str, task_idx: int):
+        task = app.state.suite[task_type][task_idx]
+        return {"start_on_home_screen": bool(task.start_on_home_screen)}
+
+
 def argument_parser(description: str, *, serving: bool = True) -> argparse.ArgumentParser:
     """The arguments every launcher takes: the checkout and the run's device, and where to serve
     when *serving* (a one-time setup serves nothing)."""
@@ -793,10 +812,11 @@ def patch(args: argparse.Namespace) -> None:
 
 
 def serve(android_server, port: int) -> None:
-    """Add ``GET /task/episode_over`` to AndroidWorld's app module *android_server*, and serve it on *port*."""
+    """Add the launcher's endpoints to AndroidWorld's app module *android_server*, and serve it on *port*."""
     import uvicorn
 
     _add_episode_over(android_server)
+    _add_start_on_home_screen(android_server)
     uvicorn.run(android_server.app, host="127.0.0.1", port=port, log_level="warning")
 
 

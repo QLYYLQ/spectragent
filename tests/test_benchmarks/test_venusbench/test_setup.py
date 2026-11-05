@@ -115,6 +115,7 @@ async def test_a_task_is_prepared_on_venusbenchs_checkout_and_judged_with_its_an
         ),
         ("GET", "/task/goal", address, None),
         ("POST", "/task/initialize", address, None),
+        ("GET", "/task/start_on_home_screen", address, None),
         ("POST", "/reset", {"go_home": "true"}, None),
         ("POST", "/execute_action", {}, {"action_type": "answer", "text": "106.775"}),
         ("GET", "/task/score", address, None),
