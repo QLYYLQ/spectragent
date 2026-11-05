@@ -80,9 +80,10 @@ class BaseTaskLoader(Protocol):
         typically ``{"start_url": ...}``; for ToolSandbox/tau-bench
         scenarios, per-task tool schemas. ``AgentRuntime`` routes it to the
         capabilities' ``setup()``. ``loop`` holds the inputs the run's Loop
-        declares (``checkpoint`` for a branch task) and ``branch`` the
-        provenance of a branch task; both are empty for an ordinary
-        benchmark task. An unknown ``task_id`` yields an empty
+        declares: a benchmark task's step budget ``max_steps`` when its
+        benchmark gives one (:attr:`__step_budget__`), a branch task's
+        ``checkpoint``. ``branch`` is the provenance of a branch task, empty
+        for a benchmark task. An unknown ``task_id`` yields an empty
         ``TaskContext()``.
         """
         ...

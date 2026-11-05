@@ -112,9 +112,11 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
 
         The ``env`` part delegates to the task's own setup, so each domain
         carries its own context forward: a browser task surfaces
-        ``start_url``. A dataset task has no loop inputs and no branch
-        provenance. An unknown ``task_id``, or a task without a setup,
-        yields an empty ``TaskContext()``.
+        ``start_url``. A loader whose benchmark gives a step budget
+        (``__step_budget__``) adds it as the loop input ``max_steps`` in its
+        override; a dataset task never has branch provenance. An unknown
+        ``task_id``, or a task without a setup, yields an empty
+        ``TaskContext()`` here.
         """
         task = self._tasks.get(task_id)
         if task is None or task.setup is None:
