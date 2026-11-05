@@ -477,7 +477,7 @@ uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml \
   --replay-archive traces/recorded/<run>
 ```
 
-任务文本和 `start_url` 在源 run 的 `config.json` 里（`task`、`task_setup.context.start_url`）。`replay_archive` 可以写相对路径，按启动目录解析：`AgentRuntime.execute` 在记进 trace、交给浏览器之前把它变成绝对路径，`--replay-archive` 和 Python 里自己组的 `env_context` 都一样，回放 trace 里记的是绝对路径。与录制配置相比，回放配置的 capability 块改了两处：
+任务文本和 `start_url` 在源 run 的 `config.json` 里（`task`、`task_setup.context.start_url`）。回放是一个自由任务（`--task`），没有基准给它步数预算，配置的 `max_steps` 就是它的预算。Online-Mind2Web 的录制每个任务最多走 25 步（基准给的预算，[architecture_design.md](architecture_design.md) §4.10.1 "基准的步数预算"），提示里写的是 "Step: k/25"，源 `config.json` 的 `max_steps` 也是 25；回放这样的录制时把回放配置的 `max_steps` 设成 25，与源 run 一致，否则回放提示里写的是 /30。`replay_archive` 可以写相对路径，按启动目录解析：`AgentRuntime.execute` 在记进 trace、交给浏览器之前把它变成绝对路径，`--replay-archive` 和 Python 里自己组的 `env_context` 都一样，回放 trace 里记的是绝对路径。与录制配置相比，回放配置的 capability 块改了两处：
 
 ```yaml
 replayability: { replayability_id: pinned, random_seed: 7, base_time: from_archive }

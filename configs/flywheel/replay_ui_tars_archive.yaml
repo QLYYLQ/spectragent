@@ -22,6 +22,12 @@
 # Before Chrome starts, setup checks the source run's environment fingerprint
 # against this file (tier and parameters, shim, viewport, launch flags) and
 # refuses a mismatch naming both sides. docs/architecture_design.md §4.14.
+#
+# Steps: a replay runs as a task of its own (--task), so no benchmark hands it a
+# step budget and max_steps below is its budget. A recording of an Online-Mind2Web
+# task ran at most 25 steps, the budget that benchmark gives each task, and its
+# prompts said "Step: k/25"; to replay one as it ran, set max_steps: 25 here
+# (docs/architecture_design.md §4.10.1 "基准的步数预算").
 agent:
   - agent_id: ui_tars
     id: main
