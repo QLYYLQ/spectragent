@@ -645,6 +645,10 @@ def test_m3a_on_ollama_names_the_temperature_it_cannot_write(composer):
     llm = lines.index("    llm:")
     assert llm < lines.index(note) and lines[lines.index(note) + 1].startswith("# ")
     assert "temperature" not in yaml.safe_load(text)["agent"][0]["llm"]
+    # Expanding the template again with --from keeps the comment: it is
+    # judged on the block the template writes, not on how the block began.
+    again = render_config_template(TemplateChoices(), yaml.safe_load(text), composer=composer)
+    assert note in again.splitlines()
     assert "is not written" not in render_config_template(
         TemplateChoices(agent="m3a", model="m"), composer=composer
     )
