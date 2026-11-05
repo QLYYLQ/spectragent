@@ -13,6 +13,8 @@ back to the service in any case.
 A task list is one JSON document, ``{"format": "androidworld-tasks-2",
 "tasks": [<task>, ...]}``, written offline in AndroidWorld's own venv by
 ``androidworld_service/task_list.py`` (``docs/architecture_design.md`` §11.2).
+VenusBench's fork of AndroidWorld writes its lists in the same format, with
+the same program run in its own venv.
 The ``androidworld`` task loader reads it, and each task's record, unchanged,
 is the task's ``oracle_task``, which the ``androidworld`` setup component reads.
 Nothing here imports the setup component, so the loader reads a list without it.
@@ -136,8 +138,8 @@ class AndroidWorldTaskList(BaseModel):
     tasks: list[AndroidWorldTask]
 
 
-def read_task_list(path: Path) -> AndroidWorldTaskList:
-    """The task list at *path*, read strictly.
+def read_task_list(path: Path, *, benchmark: str = "androidworld") -> AndroidWorldTaskList:
+    """The task list at *path*, read strictly, for *benchmark* (the ``benchmark_id`` that fetches it).
 
     Raises:
         BenchmarkDataError: It cannot be read, is not JSON, or is not a task
@@ -151,5 +153,5 @@ def read_task_list(path: Path) -> AndroidWorldTaskList:
         raise BenchmarkDataError(
             f"{path} is not an AndroidWorld task list of format {TASK_LIST_FORMAT} "
             f"({validation_summary(exc)}): fetch it again with spectragent benchmark fetch "
-            f"androidworld"
+            f"{benchmark}"
         ) from exc

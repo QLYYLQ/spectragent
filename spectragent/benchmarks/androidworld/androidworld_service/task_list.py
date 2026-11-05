@@ -6,7 +6,8 @@ checkout the ``androidworld`` setup pins; like ``serve.py`` beside it, it is not
 Spectragent::
 
     <root>/.venv/bin/python -I task_list.py --src <root>/src --out <data dir> \\
-        [--family android_world] [--seed 42] [--n 1] [--tasks NAME,NAME] [--split All]
+        [--family android_world] [--seed 42] [--n 1] [--tasks NAME,NAME] [--split All] \\
+        [--holders android,information_retrieval,miniwob]
 
 It makes the suite AndroidWorld's own runner makes (``create_suite``: each
 task's instances, their seeds derived from the suite seed, the task and the
@@ -28,9 +29,13 @@ match, the first pattern first), so the table opens what AndroidWorld opens.
 The benchmark hands it to the Android capability's ``android.open_app``
 (``docs/architecture_design.md`` §11.2 "``open_app`` 的名称表").
 
-Each task records the narrowest family whose registry holds it
-(``android``, ``information_retrieval`` or ``miniwob``); asking for
-``android_world`` yields the first two. A parameter that is not JSON is written
+Each task records the narrowest family whose registry holds it, searched in
+the order ``--holders`` gives (``android``, ``information_retrieval`` or
+``miniwob``); asking for ``android_world`` yields the first two.
+VenusBench's fork, whose registry raises for ``information_retrieval`` and
+``miniwob``, keeps all its tasks in ``venus``: its fetch runs this file in its
+own venv against its own checkout with ``--holders venus`` and its runner's
+suite seed (``spectragent/benchmarks/venusbench/``). A parameter that is not JSON is written
 in a plain form: a dataclass as its fields, an image as its size, mode and the
 sha256 of its pixels.
 
@@ -61,8 +66,8 @@ if TYPE_CHECKING:
 
 FORMAT = "androidworld-tasks-2"
 OPEN_APP_FORMAT = "androidworld-open-app-1"
-#: Searched in this order for the family that holds a task.
-FAMILIES = ("android", "information_retrieval", "miniwob")
+#: Searched in this order for the family that holds a task, unless ``--holders`` says otherwise.
+FAMILIES = "android,information_retrieval,miniwob"
 
 
 def _arguments() -> argparse.Namespace:
@@ -74,6 +79,11 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--n", type=int, default=1, help="Instances of each task.")
     parser.add_argument("--tasks", default="", help="Comma-separated task keys; all by default.")
     parser.add_argument("--split", default="All", help="The split name (the loader's subset).")
+    parser.add_argument(
+        "--holders",
+        default=FAMILIES,
+        help="Comma-separated families searched in order for the narrowest one holding a task.",
+    )
     return parser.parse_args()
 
 
@@ -140,7 +150,9 @@ def main() -> None:
         ["git", "-C", args.src, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
     ).stdout.strip()
     registries = registry.TaskRegistry()
-    holders = {family: registries.get_registry(family) for family in FAMILIES}
+    holders = {
+        family: registries.get_registry(family) for family in args.holders.split(",") if family
+    }
     suite = suite_utils.create_suite(
         registries.get_registry(args.family),
         n_task_combinations=args.n,

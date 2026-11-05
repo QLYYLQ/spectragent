@@ -31,7 +31,8 @@ it was cloned:
 - the emulator's gRPC listens on loopback only behind a token
   (``-grpc-use-token``): every call carries ``authorization: Bearer <token>``,
   read from the emulator's discovery file, and goes to the exact address the
-  emulator reported;
+  emulator reported (with no discovery file given, for an emulator started
+  without a token, the calls carry none);
 - Android deletes AndroidWorld's per-app snapshots at every boot, so the app
   states tasks restore are taken again once the service is up;
 - AndroidWorld's one-time app setup gives Markor, Simple Gallery Pro and VLC
@@ -63,6 +64,14 @@ steps (:func:`reward_ends_episode`).
 
 The setup component starts it with a whitelisted environment: android_env logs its
 whole environment when its log level is INFO, which this file never sets.
+
+VenusBench's launcher (``spectragent/benchmarks/venusbench/venusbench_service/serve.py``)
+loads this file by its path, under VenusBench's interpreter, and runs the same
+steps on VenusBench's checkout: :func:`argument_parser`, :func:`enter_checkout`,
+:func:`patch` and :func:`serve`, with AndroidWorld's app file in between
+(VenusBench has no service of its own; ``docs/architecture_design.md`` §11.2
+"VenusBench-Mobile 的接入方案"). Every patch applies there too: the names it
+replaces are all in the fork.
 """
 
 from __future__ import annotations
@@ -468,20 +477,32 @@ def _add_episode_over(android_server) -> None:
         return {"over": reward_ends_episode(reward)}
 
 
-def _arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Serve AndroidWorld's tasks for one run.")
+def argument_parser(description: str) -> argparse.ArgumentParser:
+    """The arguments every launcher takes: where to serve, the checkout, and the run's device."""
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--port", type=int, required=True, help="Loopback port to serve on.")
-    parser.add_argument("--src", required=True, help="The AndroidWorld checkout.")
+    parser.add_argument("--src", required=True, help="The checkout of AndroidWorld's code.")
     parser.add_argument("--adb", required=True, help="The adb binary of the run's server.")
     parser.add_argument("--adb-server-port", type=int, required=True)
     parser.add_argument("--console-port", type=int, required=True)
     parser.add_argument("--grpc-target", required=True, help="host:port the emulator reported.")
-    parser.add_argument("--grpc-token-file", required=True, help="The emulator's discovery file.")
+    parser.add_argument(
+        "--grpc-token-file",
+        help="The emulator's discovery file, whose token every gRPC call carries; none for an "
+        "emulator started without -grpc-use-token (a one-time setup's writable boot).",
+    )
     parser.add_argument("--forwarder-apk", required=True, help="The cached forwarder APK.")
-    return parser.parse_args()
+    return parser
 
 
-def _patch(args: argparse.Namespace) -> None:
+def enter_checkout(src: str) -> None:
+    """Make the checkout at *src* importable and the working directory, as AndroidWorld's runner expects."""
+    sys.path.insert(0, src)
+    os.chdir(src)
+
+
+def patch(args: argparse.Namespace) -> None:
+    """Patch android_env and AndroidWorld, at run time, as the module docstring lists."""
     found = importlib.metadata.version("android_env")
     if found != ANDROID_ENV:
         raise SystemExit(
@@ -659,7 +680,11 @@ def _patch(args: argparse.Namespace) -> None:
             raise emulator_simulator.EmulatorBootError(
                 "Failed to connect to the emulator."
             ) from error
-        channel = grpc.intercept_channel(self._channel, Bearer(bearer_token()))
+        channel = (
+            grpc.intercept_channel(self._channel, Bearer(bearer_token()))
+            if args.grpc_token_file
+            else self._channel
+        )
         return (
             emulator_controller_pb2_grpc.EmulatorControllerStub(channel),
             snapshot_service_pb2_grpc.SnapshotServiceStub(channel),
@@ -696,16 +721,21 @@ def _patch(args: argparse.Namespace) -> None:
     env_launcher.load_and_setup_env = load_for_this_run
 
 
-def main() -> None:
-    args = _arguments()
-    sys.path.insert(0, args.src)
-    os.chdir(args.src)
-    _patch(args)
+def serve(android_server, port: int) -> None:
+    """Add ``GET /task/episode_over`` to AndroidWorld's app module *android_server*, and serve it on *port*."""
     import uvicorn
-    from server import android_server
 
     _add_episode_over(android_server)
-    uvicorn.run(android_server.app, host="127.0.0.1", port=args.port, log_level="warning")
+    uvicorn.run(android_server.app, host="127.0.0.1", port=port, log_level="warning")
+
+
+def main() -> None:
+    args = argument_parser("Serve AndroidWorld's tasks for one run.").parse_args()
+    enter_checkout(args.src)
+    patch(args)
+    from server import android_server
+
+    serve(android_server, args.port)
 
 
 if __name__ == "__main__":

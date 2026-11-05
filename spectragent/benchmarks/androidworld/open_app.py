@@ -9,6 +9,9 @@ every pattern with the component AndroidWorld starts for it, checked against
 AndroidWorld's own matcher, into ``open_app.json`` beside the task lists it
 writes. That is the table cached per pinned commit: the file records the
 commit it was read from, and a table from any other commit is refused.
+VenusBench's fork keeps AndroidWorld's table, and its fetch writes it the
+same way from its own checkout (:class:`~spectragent.benchmarks.androidworld.service.PinnedCode`
+names the commit to check).
 
 The AndroidWorld benchmark hands it to the Android capability as its part of
 the capability configuration (``AndroidWorldBenchmark.computed_capability``):
@@ -25,7 +28,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
+from spectragent.benchmarks.androidworld.service import ANDROIDWORLD, PinnedCode
 from spectragent.core.data_loader._common import BenchmarkDataError, validation_summary
 
 #: The file beside the task lists that holds the table.
@@ -51,8 +54,8 @@ class OpenAppTable(BaseModel):
     apps: dict[str, str] = Field(min_length=1)
 
 
-def read_open_app_table(data_dir: Path) -> dict[str, str]:
-    """The table in *data_dir*, read from the pinned commit: name → component.
+def read_open_app_table(data_dir: Path, code: PinnedCode = ANDROIDWORLD) -> dict[str, str]:
+    """The table in *data_dir*, read from *code*'s pinned commit: name → component.
 
     Raises:
         BenchmarkDataError: There is none, it cannot be read, it is not the
@@ -62,7 +65,7 @@ def read_open_app_table(data_dir: Path) -> dict[str, str]:
     path = data_dir / OPEN_APP_FILE
     rewrite = (
         "task_list.py writes it beside the task lists; fetch them again with spectragent "
-        "benchmark fetch androidworld"
+        f"benchmark fetch {code.benchmark}"
     )
     try:
         table = OpenAppTable.model_validate_json(path.read_bytes())
@@ -79,10 +82,10 @@ def read_open_app_table(data_dir: Path) -> dict[str, str]:
             f"{path} is not an AndroidWorld open_app table of format {OPEN_APP_FORMAT} "
             f"({validation_summary(exc)}): {rewrite}"
         ) from None
-    if table.commit != PINNED_COMMIT:
+    if table.commit != code.commit:
         raise BenchmarkDataError(
-            f"{path} was read from AndroidWorld {table.commit}, and the benchmark runs "
-            f"{PINNED_COMMIT}: {rewrite}"
+            f"{path} was read from {code.name} {table.commit}, and the benchmark runs "
+            f"{code.commit}: {rewrite}"
         )
     return dict(table.apps)
 

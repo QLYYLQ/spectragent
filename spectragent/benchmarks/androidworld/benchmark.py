@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, JsonValue
 
 from spectragent.benchmarks._registrar import BenchmarkBase
-from spectragent.benchmarks.androidworld.data import AndroidWorldData
+from spectragent.benchmarks.androidworld.data import HOLDERS, SUBSETS, TaskLists
 from spectragent.benchmarks.androidworld.install import AndroidWorldInstallation, named_emulator
 from spectragent.benchmarks.androidworld.open_app import read_open_app_table
 from spectragent.benchmarks.androidworld.service import Installation
@@ -93,9 +93,9 @@ class AndroidWorldBenchmark(BenchmarkBase):
         ]
 
     @classmethod
-    def pinned_data(cls, config: BaseModel) -> AndroidWorldData:
+    def pinned_data(cls, config: BaseModel) -> TaskLists:
         """Its task lists and ``open_app`` table, made from the pinned commit in its installation (``data.py``)."""
-        return AndroidWorldData(_installation(config))
+        return TaskLists(_installation(config), SUBSETS, HOLDERS)
 
     @classmethod
     def installation(cls, config: BaseModel) -> AndroidWorldInstallation:

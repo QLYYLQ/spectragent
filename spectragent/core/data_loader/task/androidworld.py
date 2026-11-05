@@ -32,6 +32,11 @@ which the Runtime hands over at the scoring point (§4.2).
 The list's model is the AndroidWorld benchmark's, imported where the file is
 read: every run imports this loader with the framework, and a run that names
 neither the benchmark nor Android imports neither (§4.2.1).
+
+VenusBench's loader (``spectragent/benchmarks/venusbench/loader.py``) is a
+subclass registered in VenusBench's package: its lists have the same format,
+its data directory follows its key, and it leaves out the tasks its first
+version does not run (:meth:`AndroidWorldTaskLoader._left_out`).
 """
 
 from __future__ import annotations
@@ -81,12 +86,20 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
             context.loop["max_steps"] = self._step_budgets[task_id]
         return context
 
-    def _load(self) -> None:
-        from spectragent.benchmarks.androidworld.tasks import UNREPRODUCIBLE, read_task_list
+    def _left_out(self) -> Mapping[str, str]:
+        """The listed tasks this loader leaves out, by task key, and why: AndroidWorld's ``UNREPRODUCIBLE``."""
+        from spectragent.benchmarks.androidworld.tasks import UNREPRODUCIBLE
 
-        root = resolve_data_dir(self.env_type, self.__registry_key__, self.data_dir)
+        return UNREPRODUCIBLE
+
+    def _load(self) -> None:
+        from spectragent.benchmarks.androidworld.tasks import read_task_list
+
+        benchmark = self.__registry_key__
+        root = resolve_data_dir(self.env_type, benchmark, self.data_dir)
         path = resolve_split_file(root, self.subset)
-        listing = read_task_list(path)
+        listing = read_task_list(path, benchmark=benchmark)
+        left_out = self._left_out()
         setup_type = setup_class_for_env(self.env_type).__registry_key__
         tasks: dict[str, TaskDefinition] = {}
         step_budgets: dict[str, int] = {}
@@ -95,13 +108,13 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
             task_id = f"{task.task}/{task.suite_seed}/{task.index}"
             if task_id in tasks or task_id in skipped:
                 raise BenchmarkDataError(f"{path} lists {task_id} more than once")
-            if task.task in UNREPRODUCIBLE:
-                skipped[task_id] = UNREPRODUCIBLE[task.task]
+            if task.task in left_out:
+                skipped[task_id] = left_out[task.task]
                 continue
             tasks[task_id] = TaskDefinition.model_validate(
                 {
                     "task_id": task_id,
-                    "benchmark": self.__registry_key__,
+                    "benchmark": benchmark,
                     "env_type": self.env_type,
                     "task_text": task.goal,
                     "setup": {
@@ -120,8 +133,8 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
             )
         if skipped:
             logger.info(
-                "androidworld: left out %d of the %d listed tasks; the reasons are in the "
-                "loader's skipped",
+                "%s: left out %d of the %d listed tasks; the reasons are in the loader's skipped",
+                benchmark,
                 len(skipped),
                 len(listing.tasks),
             )
