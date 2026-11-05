@@ -344,9 +344,11 @@ recording-failure stop rule. Replace them with the current behavior contract.
 `loop_input_refusal` refuses (a step budget below 1), with `IncompatibleLoopInputError`.
 Validated values reach the closure as `ctx["loop_inputs"]`. A benchmark whose public
 protocol states a step budget supplies it per task as the input `max_steps` from its task
-loader (AndroidWorld's `int(10 x complexity)`; Online-Mind2Web's required `step_budget` in
-its benchmark YAML, 25 in the shipped one). The loader declares the official budget, as data,
-in `__step_budget__`; the configured `max_steps` stays the ceiling (architecture §4.10.1
+loader (AndroidWorld's `int(10 x complexity)`, and VenusBench's, whose loader subclasses
+AndroidWorld's and declares its own range and source; Online-Mind2Web's required `step_budget`
+in its benchmark YAML, 25 in the shipped one). The loader declares the official budget, as data,
+in `__step_budget__`; a subclass of another benchmark's loader declares its own, or it states
+the other benchmark's; the configured `max_steps` stays the ceiling (architecture §4.10.1
 "基准的步数预算").
 `TaskContext.env`, `.loop` and `.branch` remain separate channels: setup, execution inputs
 and trace provenance respectively.
