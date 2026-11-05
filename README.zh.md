@@ -40,14 +40,19 @@ YAML ─▶ ConfigComposer ─▶ AgentRuntime.prepare() ─▶ execute ─▶ R
 
 ## 当前实现
 
-浏览器是唯一已实现的环境。下表是 2026-10-25 `spectragent components list` 的输出：
+浏览器和 Android 是已实现的环境。下表是 2026-11-05 `spectragent components list` 的输出：
 
 | 维度 | 已注册 |
 |---|---|
-| Agent | `browser_use.dom`、`browser_use.dom_vision`、`skyvern.dom`、`skyvern.dom_vision`、`ui_tars` |
+| Agent | `browser_use.dom`、`browser_use.dom_vision`、`skyvern.dom`、`skyvern.dom_vision`、`ui_tars`、`m3a`（AndroidWorld 的 agent） |
 | Loop | `react`；`branch`（在检查点续跑录制的 run），恢复器 `prefix_replay` |
-| Environment 与 capability | `browser` |
+| Environment 与 capability | `browser`、`android` |
 | 浏览器后端 | `local_chrome`；云端：`lexmount`、`browser_use`、`hyperbrowser`、`agentbay`、`airtop`、`skyvern` |
+| Android provider | `local_emulator`（官方模拟器，从 AVD 无界面启动） |
+| Android 输入 | 点按注入器 `accessibility_gesture`、`shell_injection`；键入后端 `set_text`、`commit_text`、`key_events` |
+| Android 界面树 | 来源 `accessibility_service`；清洗器 `androidworld`；序列化器 `m3a`、`t3a` |
+| Android 动作（10 个） | `click`、`click_coordinate`、`long_press`、`type`、`type_coordinate`、`scroll`、`drag`、`press_key`、`open_app`、`wait` |
+| Android observation fragment | `android.screenshot`、`android.ui_tree`、`android.foreground_app`、`android.platform`、`android.capture_state` |
 | 浏览器动作（16 个） | `navigate`、`click`、`type`、`scroll`、`wait`、`send_keys`、`select_dropdown`、`drag`、`screenshot`、`extract_content`、`switch_tab`、`go_back`、`go_forward`、`click_coordinate`、`type_coordinate`、`done` |
 | Observation fragment | `browser.dom`、`browser.screenshot`、`browser.browser_meta`、`browser.platform`、`browser.capture_state`；loop 侧：`loop.task`、`loop.step_info`、`loop.history`、`loop.action_result` |
 | DOM 管线 | cleaner `browser_use`、`skyvern`、`skyvern_hit_test`；serializer `text`、`html` |
@@ -56,14 +61,17 @@ YAML ─▶ ConfigComposer ─▶ AgentRuntime.prepare() ─▶ execute ─▶ R
 | Decision 模型 | `typesafe.direct`、`typesafe.openrouter`（回放审查使用） |
 | Memory | `simple`、`sliding_window`、`token_budget` |
 | Hook | `trace_writer`、`live_monitor`、`prompt_contribution`、`omit_source_replies`、`ui_navigation_guard` |
-| 归档器 | `browser.network`（WARC）、`browser.storage`、`browser.dom_raw`、`browser.frames`、`browser.replay_log` |
+| 归档器 | `browser.network`（WARC）、`browser.storage`、`browser.dom_raw`、`browser.frames`、`browser.replay_log`；Android：`android.ui_tree_raw` |
 | 回放 | replayability `none`、`pinned`；网络来源 `live`、`archive`；miss 策略 `strict` |
-| 基准 | `online_mind2web`、`browsecomp`、`lexbench_browser`、`androidworld`，以及 `trace_branches`（分叉 sweep 的任务来源，从录制的 run 生成任务）；每个基准持有同名的任务加载器；发布在 `configs/benchmarks/<别名>.yaml`，用 `--benchmark <别名或路径>` 选；选步器 `explicit`、`every_k`、`all`、`last` |
-| 判分器 | `exact_match`、`online_mind2web`、`browsecomp`、`lexbench_browser`；写在基准块的 `verifiers:` 列表里（发布的基准 YAML 一个也不列） |
+| 基准 | `online_mind2web`、`browsecomp`、`lexbench_browser`、`androidworld`、`venusbench`（VenusBench-Mobile），以及 `trace_branches`（分叉 sweep 的任务来源，从录制的 run 生成任务）；每个基准持有同名的任务加载器；发布在 `configs/benchmarks/<别名>.yaml`，用 `--benchmark <别名或路径>` 选；选步器 `explicit`、`every_k`、`all`、`last` |
+| 基准 setup | `androidworld`、`venusbench`：各自在设备上准备并结束任务，跑在自己 venv 的独立进程里（`spectragent benchmark setup <alias>` 安装） |
+| 判分器 | `exact_match`、`online_mind2web`、`browsecomp`、`lexbench_browser`；在评分时间点于设备上判分的：`androidworld`、`venusbench`；写在基准块的 `verifiers:` 列表里（发布的浏览器基准 YAML 不列，Android 的列了自己的） |
 | 导出 | 导出器 `openai_messages`；翻译器 `identity`、`index_to_coordinate` |
 | 回放审查器 | `jev` |
 
 “已注册”表示可以选；一次运行只启用 YAML 里写到的实现。注册表键按层区分，所以 `browser_use` 可以同时是 agent 家族、云后端和 DOM cleaner 的名字。
+
+我们的 AndroidWorld 和 VenusBench-Mobile 集成复现了各基准自己的 runner：用同一个 M3A agent 和 DeepSeek v4.1 flash，AndroidWorld 在 115 个任务上得 77，对照 76；VenusBench-Mobile 在 45 个任务上得 21，对照 19（各跑一次 pass@1）。
 
 值得知道的浏览器行为：
 
@@ -72,7 +80,14 @@ YAML ─▶ ConfigComposer ─▶ AgentRuntime.prepare() ─▶ execute ─▶ R
 - **浏览器快捷键。** `send_keys` 按实测的平台执行浏览器自己的后退、前进、重新加载、关闭标签页和切换标签页快捷键（例如 macOS 的 `Meta+[`、Linux 的 `Alt+ArrowLeft`），这些键不发给页面。
 - **动作失败。** 在 `react` 里，一步中第一个失败的动作结束这一步。其后的动作记为跳过，下一步的提示告诉模型它们没有执行。没有文本框获得焦点时，`type` 和 `type_coordinate` 不输入任何文字，直接失败。
 
-尚未实现：Docker/SWE、tool sandbox、desktop、Android 和 GPU profiling capability。注册表机制已经就位，`docker.terminal` 和 `tool_sandbox.tool_result` 两个 fragment schema 也存在，但没有 capability 提供它们。
+值得知道的 Android 行为：
+
+- **设备。** `local_emulator` 用官方模拟器从 AVD 无界面启动，带本次 run 自己的 adb server 和密钥，不碰你的其他 adb server。
+- **设备端服务。** 我们自己的无障碍服务每个 run 装一次，提供完整界面树、元素和手势动作与截图；同一个 APK 里的 shell 身份助手负责注入按键和触摸。
+- **静止等待。** 每次采集前，capability 等界面静下来，最多等 `settle_max_wait_s`；`settle_min_after_action_ms` 设动作之后的最短等待（M3A 的配置用 2000）。
+- **基准安装。** `spectragent benchmark setup androidworld|venusbench` 在数据旁装好基准的检出、venv 和服务，并点名只有你能装的东西（ffmpeg、AVD）；`benchmark fetch` 再生成任务列表。
+
+尚未实现：Docker/SWE、tool sandbox、desktop 和 GPU profiling capability。注册表机制已经就位，`docker.terminal` 和 `tool_sandbox.tool_result` 两个 fragment schema 也存在，但没有 capability 提供它们。
 
 ## 快速开始
 
@@ -98,9 +113,9 @@ uv run spectragent runs list
 uv run spectragent view --open
 ```
 
-`run`、`eval` 和 `replay-review` 还会读取工作目录下的 `.env`；`bench` 和 `flywheel` 只读 shell 环境（`set -a; . ./.env; set +a`）。Benchmark 数据不随仓库发布：`spectragent benchmark fetch <alias>` 把基准钉住的数据下载到共用缓存（`$SPECTRAGENT_BENCHMARK_DATA`，没设时是 `~/.cache/spectragent/benchmarks`），`spectragent benchmark setup <alias>` 装它在数据之外需要的东西（AndroidWorld）；缺了数据，run 会拒绝，带 `--fetch` 时先下载。见 [Benchmark data](configs/README.md#benchmark-data)。
+`run`、`eval` 和 `replay-review` 还会读取工作目录下的 `.env`；`bench` 和 `flywheel` 只读 shell 环境（`set -a; . ./.env; set +a`）。Benchmark 数据不随仓库发布：`spectragent benchmark fetch <alias>` 把基准钉住的数据下载到共用缓存（`$SPECTRAGENT_BENCHMARK_DATA`，没设时是 `~/.cache/spectragent/benchmarks`），`spectragent benchmark setup <alias>` 装它在数据之外需要的东西（AndroidWorld、VenusBench-Mobile）；缺了数据，run 会拒绝，带 `--fetch` 时先下载。见 [Benchmark data](configs/README.md#benchmark-data)。
 
-发布的入口配置：`configs/browser_use_local.yaml`、`configs/skyvern_agent_local.yaml`、`configs/ui_tars_local.yaml`、`configs/browser_use_skyvern.yaml`（Skyvern 云浏览器）和 `configs/browser_use_shared.yaml`（共享一个 Chrome，每个任务一个新 context）。切换后端只改 `environment[0].capabilities[0].backend`。登录态、共享 Chrome 与排错见 [浏览器 agent 运行手册](docs/browser_agent_runbook.md)。
+发布的入口配置：`configs/browser_use_local.yaml`、`configs/skyvern_agent_local.yaml`、`configs/ui_tars_local.yaml`、`configs/browser_use_skyvern.yaml`（Skyvern 云浏览器）和 `configs/browser_use_shared.yaml`（共享一个 Chrome，每个任务一个新 context）。Android 用 `uv run spectragent config template --agent m3a --environment android --model <模型> --benchmark androidworld` 生成起始配置（`run` 有 `--start-app`；`bench --reuse-environment` 让多个任务共用一台设备）。切换后端只改 `environment[0].capabilities[0].backend`。登录态、共享 Chrome 与排错见 [浏览器 agent 运行手册](docs/browser_agent_runbook.md)。
 
 ## 配置
 
@@ -133,6 +148,7 @@ hook:
 - YAML 选择组件。任务文本和起始 URL 来自 CLI 或 task loader，所以一份文件可以服务多个任务。
 - 默认是关闭或中立的策略块可以不写，就像上面没写 `mouse_trajectory`、`typing_rhythm`、`replayability` 和 `network_source`（默认依次是 `instant`、`instant`、`none`、`live`）；trace 照样记下这个默认，与写出来一样（`docs/architecture_design.md` §4.2.1）。`dom_cleaner` 和 `dom_serializer` 决定 agent 看到什么，每个 capability 块都要写。“关闭”写作 `none`。
 - 上面省略了 `actions:`，于是构建全部 16 个动作。写成列表时只构建、广告并允许列出的动作，`[]` 一个也不构建。Agent 需要的动作被去掉时，协商在运行前失败。
+- 基准可以按步数限制任务：它的 task loader 声明步数预算（Online-Mind2Web 的 YAML 必须写 `step_budget`，发布值 25），交给 Loop 作 `max_steps`；运行配置里的 `max_steps` 仍是上限。`config template` 把预算写在 `max_steps` 旁边。
 - YAML 和 trace 里的键都是全限定的（`browser.click`）。Agent 声明相对名（`click`），协商把它绑定到唯一提供它的 capability。
 - 改动 `__wiring__` 条目或 `Annotated[...]` 构造参数后，运行 `uv run spectragent config generate`。`spectragent/generated/` 是构建产物。
 
@@ -246,13 +262,14 @@ uv run spectragent view --annotations labels/ --annotator alice
 | 命令 | 用途 |
 |---|---|
 | `run` | 跑一个任务；`--dry-run`、`--replay-archive`、`--tui` |
-| `bench` | 跑 benchmark 或分叉任务；`--list`、`--task-id`、`--limit`、`--no-eval`、`--token-limit`、`--tui` |
+| `bench` | 跑 benchmark 或分叉任务；`--list`、`--task-id`、`--limit`、`--no-eval`、`--reuse-environment`、`--token-limit`、`--tui` |
 | `eval` | 用基准的离线判分器判已保存的 trace，每份判定写进 run 的 `verdicts/` |
 | `export` | 从已保存的 trace 导出训练数据 |
 | `flywheel` | `run`、`report`、`diagnose` |
 | `replay-review` | 独立审查回放对 |
 | `runs` | `list`、`show`、`compare`、`compare-groups` |
 | `tui`、`view` | 终端与网页界面 |
+| `benchmark` | `fetch` 下载基准钉住的数据，`setup` 安装它在数据旁需要的东西 |
 | `config` | `check`、`explain`、`template`、`generate` |
 | `components` | `list` 列出已注册的实现 |
 
@@ -306,7 +323,7 @@ uv run pyright spectragent tests
 
 ## 状态与限制
 
-- 浏览器是唯一的环境。集成按抽样的端到端运行验收，没有跑完整的 agent × benchmark 矩阵。几个真实 agent 各自操作多个标签页的工作流还没有验证。
+- 浏览器和 Android 是已实现的环境。集成按抽样的端到端运行验收，没有跑完整的 agent × benchmark 矩阵。几个真实 agent 各自操作多个标签页的工作流还没有验证。
 - 离线判分器作为独立阶段运行（`spectragent eval`，或 `spectragent bench` 跑完之后），只读已提交的 trace，把任务正确性与回放保真分开；每份判定写进 run 的 `verdicts/`。发布的基准 YAML 不列判分器，因为 LLM judge 的型号要先自己验证过。飞轮的任何阶段都不需要判定结果。
 - 录制完整不代表任务成功。trace 完整性、恢复校验和截图一致是不同的证据，任何一项都不能证明任务或登录成功。
 - 云后端不能录制或回放。不支持 WebSocket 回放。

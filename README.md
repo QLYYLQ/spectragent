@@ -40,14 +40,19 @@ YAML ─▶ ConfigComposer ─▶ AgentRuntime.prepare() ─▶ execute ─▶ R
 
 ## What is implemented
 
-The browser is the only implemented environment. Output of `spectragent components list` on 2026-10-25:
+The browser and Android are the implemented environments. Output of `spectragent components list` on 2026-11-05:
 
 | Axis | Registered |
 |---|---|
-| Agents | `browser_use.dom`, `browser_use.dom_vision`, `skyvern.dom`, `skyvern.dom_vision`, `ui_tars` |
+| Agents | `browser_use.dom`, `browser_use.dom_vision`, `skyvern.dom`, `skyvern.dom_vision`, `ui_tars`, `m3a` (AndroidWorld's agent) |
 | Loops | `react`; `branch` (resume a recorded run at a checkpoint) with restorer `prefix_replay` |
-| Environment and capability | `browser` |
+| Environment and capability | `browser`, `android` |
 | Browser backends | `local_chrome`; cloud: `lexmount`, `browser_use`, `hyperbrowser`, `agentbay`, `airtop`, `skyvern` |
+| Android provider | `local_emulator` (the official emulator booted headless from an AVD) |
+| Android input | tap injectors `accessibility_gesture`, `shell_injection`; typing backends `set_text`, `commit_text`, `key_events` |
+| Android UI tree | source `accessibility_service`; cleaner `androidworld`; serializers `m3a`, `t3a` |
+| Android actions (10) | `click`, `click_coordinate`, `long_press`, `type`, `type_coordinate`, `scroll`, `drag`, `press_key`, `open_app`, `wait` |
+| Android observation fragments | `android.screenshot`, `android.ui_tree`, `android.foreground_app`, `android.platform`, `android.capture_state` |
 | Browser actions (16) | `navigate`, `click`, `type`, `scroll`, `wait`, `send_keys`, `select_dropdown`, `drag`, `screenshot`, `extract_content`, `switch_tab`, `go_back`, `go_forward`, `click_coordinate`, `type_coordinate`, `done` |
 | Observation fragments | `browser.dom`, `browser.screenshot`, `browser.browser_meta`, `browser.platform`, `browser.capture_state`; loop side: `loop.task`, `loop.step_info`, `loop.history`, `loop.action_result` |
 | DOM pipeline | cleaners `browser_use`, `skyvern`, `skyvern_hit_test`; serializers `text`, `html` |
@@ -56,14 +61,17 @@ The browser is the only implemented environment. Output of `spectragent componen
 | Decision models | `typesafe.direct`, `typesafe.openrouter` (used by replay review) |
 | Memory | `simple`, `sliding_window`, `token_budget` |
 | Hooks | `trace_writer`, `live_monitor`, `prompt_contribution`, `omit_source_replies`, `ui_navigation_guard` |
-| Archivers | `browser.network` (WARC), `browser.storage`, `browser.dom_raw`, `browser.frames`, `browser.replay_log` |
+| Archivers | `browser.network` (WARC), `browser.storage`, `browser.dom_raw`, `browser.frames`, `browser.replay_log`; Android: `android.ui_tree_raw` |
 | Replay | replayability `none`, `pinned`; network source `live`, `archive`; miss policy `strict` |
-| Benchmarks | `online_mind2web`, `browsecomp`, `lexbench_browser`, `androidworld`, and `trace_branches` (the branch sweep's tasks from recorded runs); each holds its task loader of the same name; shipped as `configs/benchmarks/<alias>.yaml` and selected with `--benchmark <alias or path>`; step selectors `explicit`, `every_k`, `all`, `last` |
-| Verifiers | `exact_match`, `online_mind2web`, `browsecomp`, `lexbench_browser`; written in a benchmark block's `verifiers:` list (the shipped benchmark YAMLs list none) |
+| Benchmarks | `online_mind2web`, `browsecomp`, `lexbench_browser`, `androidworld`, `venusbench` (VenusBench-Mobile) and `trace_branches` (the branch sweep's tasks from recorded runs); each holds its task loader of the same name; shipped as `configs/benchmarks/<alias>.yaml` and selected with `--benchmark <alias or path>`; step selectors `explicit`, `every_k`, `all`, `last` |
+| Benchmark setup | `androidworld`, `venusbench`: each prepares and ends its tasks on the device, out of process in its own venv (`spectragent benchmark setup <alias>` installs it) |
+| Verifiers | `exact_match`, `online_mind2web`, `browsecomp`, `lexbench_browser`; on the device at the scoring point: `androidworld`, `venusbench`; written in a benchmark block's `verifiers:` list (the shipped browser benchmark YAMLs list none; the Android ones list theirs) |
 | Export | exporter `openai_messages`; translators `identity`, `index_to_coordinate` |
 | Replay reviewer | `jev` |
 
 Registered means available to select; a run enables only what its YAML names. Keys are scoped by layer, so `browser_use` can name an agent family, a cloud backend and a DOM cleaner at once.
+
+Our AndroidWorld and VenusBench-Mobile integrations reproduce each benchmark's own runner: with the same M3A agent and DeepSeek v4.1 flash, AndroidWorld scored 77 against 76 of 115 tasks and VenusBench-Mobile 21 against 19 of 45 (one pass@1 run each).
 
 Browser behaviour worth knowing:
 
@@ -72,7 +80,14 @@ Browser behaviour worth knowing:
 - **Browser shortcuts.** `send_keys` runs the browser's own Back, Forward, Reload, Close tab and tab-switch shortcuts for the measured platform (for example `Meta+[` on macOS, `Alt+ArrowLeft` on Linux) instead of sending the keys to the page.
 - **Failed actions.** In `react`, the first failed action ends its step. The remaining actions are recorded as skipped, and the next prompt tells the model they were not executed. `type` and `type_coordinate` fail without typing when no text field has focus.
 
-Not implemented: Docker/SWE, tool sandbox, desktop, Android and GPU profiling capabilities. The registrar mechanism is in place, and the `docker.terminal` and `tool_sandbox.tool_result` fragment schemas exist, but no capability provides them.
+Android behaviour worth knowing:
+
+- **Device.** `local_emulator` boots the official emulator headless from an AVD, with the run's own adb server and key; it never touches your other adb server.
+- **Device-side service.** An accessibility service of ours, installed once per run, supplies the full UI tree, element and gesture actions and screenshots; a shell-identity helper in the same APK injects keys and touches.
+- **Settle wait.** Before each capture the capability waits for the screen to go quiet, up to `settle_max_wait_s`; `settle_min_after_action_ms` sets a minimum wait after an action (M3A's configuration uses 2000).
+- **Benchmark install.** `spectragent benchmark setup androidworld|venusbench` installs a benchmark's checkout, venv and service beside its data and names what only you can install (ffmpeg, the AVD); `benchmark fetch` then makes its task list.
+
+Not implemented: Docker/SWE, tool sandbox, desktop and GPU profiling capabilities. The registrar mechanism is in place, and the `docker.terminal` and `tool_sandbox.tool_result` fragment schemas exist, but no capability provides them.
 
 ## Getting started
 
@@ -98,9 +113,9 @@ uv run spectragent runs list
 uv run spectragent view --open
 ```
 
-`run`, `eval` and `replay-review` also read `.env` from the working directory; `bench` and `flywheel` read only the shell environment (`set -a; . ./.env; set +a`). Benchmark data is not shipped: `spectragent benchmark fetch <alias>` downloads a benchmark's pinned data into the shared cache (`$SPECTRAGENT_BENCHMARK_DATA`, else `~/.cache/spectragent/benchmarks`), and `spectragent benchmark setup <alias>` installs what it needs beside it (AndroidWorld); a run refuses missing data, or fetches it with `--fetch`. See [Benchmark data](configs/README.md#benchmark-data).
+`run`, `eval` and `replay-review` also read `.env` from the working directory; `bench` and `flywheel` read only the shell environment (`set -a; . ./.env; set +a`). Benchmark data is not shipped: `spectragent benchmark fetch <alias>` downloads a benchmark's pinned data into the shared cache (`$SPECTRAGENT_BENCHMARK_DATA`, else `~/.cache/spectragent/benchmarks`), and `spectragent benchmark setup <alias>` installs what it needs beside it (AndroidWorld, VenusBench-Mobile); a run refuses missing data, or fetches it with `--fetch`. See [Benchmark data](configs/README.md#benchmark-data).
 
-Shipped entry points: `configs/browser_use_local.yaml`, `configs/skyvern_agent_local.yaml`, `configs/ui_tars_local.yaml`, `configs/browser_use_skyvern.yaml` (Skyvern cloud browser) and `configs/browser_use_shared.yaml` (one shared Chrome, a fresh context per task). Switching backends changes only `environment[0].capabilities[0].backend`. The [browser agent runbook](docs/browser_agent_runbook.md) (Chinese) covers logins, shared Chrome and troubleshooting.
+Shipped entry points: `configs/browser_use_local.yaml`, `configs/skyvern_agent_local.yaml`, `configs/ui_tars_local.yaml`, `configs/browser_use_skyvern.yaml` (Skyvern cloud browser) and `configs/browser_use_shared.yaml` (one shared Chrome, a fresh context per task). For Android, `uv run spectragent config template --agent m3a --environment android --model <model> --benchmark androidworld` writes a starting configuration (`run` takes `--start-app`; `bench --reuse-environment` keeps one device across tasks). Switching backends changes only `environment[0].capabilities[0].backend`. The [browser agent runbook](docs/browser_agent_runbook.md) (Chinese) covers logins, shared Chrome and troubleshooting.
 
 ## Configuration
 
@@ -133,6 +148,7 @@ hook:
 - YAML selects components. Task text and start URL come from the CLI or a task loader, so one file serves many tasks.
 - A strategy block whose default is off or neutral may be left out, as `mouse_trajectory`, `typing_rhythm`, `replayability` and `network_source` are above (`instant`, `instant`, `none`, `live`); the trace records the default as if the block were written (`docs/architecture_design.md` §4.2.1). `dom_cleaner` and `dom_serializer` decide what the agent sees, so every capability block names them. "Off" is spelled `none`.
 - `actions:` is omitted above, which builds all 16. A list builds, advertises and allows only those actions, and `[]` builds none. An agent that requires a dropped action fails negotiation before the run.
+- A benchmark can bound its tasks by steps: its task loader declares a step budget (Online-Mind2Web's YAML requires `step_budget`, shipped as 25) and hands it to the Loop as `max_steps`; the run configuration's `max_steps` stays the ceiling. `config template` names the budget beside `max_steps`.
 - Keys in YAML and in the trace are fully qualified (`browser.click`). Agents declare relative names (`click`), and negotiation binds each to the one capability that offers it.
 - After changing a `__wiring__` entry or an `Annotated[...]` constructor field, run `uv run spectragent config generate`. `spectragent/generated/` is build output.
 
@@ -246,13 +262,14 @@ All of these share one read side and never start an agent or a model. The viewer
 | Command | Purpose |
 |---|---|
 | `run` | One task; `--dry-run`, `--replay-archive`, `--tui` |
-| `bench` | Benchmark or branch tasks; `--list`, `--task-id`, `--limit`, `--no-eval`, `--token-limit`, `--tui` |
+| `bench` | Benchmark or branch tasks; `--list`, `--task-id`, `--limit`, `--no-eval`, `--reuse-environment`, `--token-limit`, `--tui` |
 | `eval` | Judge saved traces with a benchmark's offline verifiers; each verdict goes into the run's `verdicts/` |
 | `export` | Training data from saved traces |
 | `flywheel` | `run`, `report`, `diagnose` |
 | `replay-review` | Independent review of replay pairs |
 | `runs` | `list`, `show`, `compare`, `compare-groups` |
 | `tui`, `view` | Terminal and web interfaces |
+| `benchmark` | `fetch` a benchmark's pinned data, `setup` what it installs beside it |
 | `config` | `check`, `explain`, `template`, `generate` |
 | `components` | `list` registered implementations |
 
@@ -306,7 +323,7 @@ uv run pyright spectragent tests
 
 ## Status and limits
 
-- The browser is the only environment. Integration was accepted on sampled end-to-end runs; no full agent-by-benchmark matrix was run. Workflows with several real agents each driving multiple tabs have not been verified.
+- The browser and Android are the implemented environments. Integration was accepted on sampled end-to-end runs; no full agent-by-benchmark matrix was run. Workflows with several real agents each driving multiple tabs have not been verified.
 - Offline verifiers run as a separate stage (`spectragent eval`, or `spectragent bench` after its sweep) that reads committed traces and keeps task correctness apart from replay fidelity; every verdict goes into the run's `verdicts/`. The shipped benchmark YAMLs list no verifier, because an LLM judge's model must be one you verified first. No flywheel stage needs a verdict.
 - A complete recording does not mean the task succeeded. Trace completeness, restoration checks and matching screenshots are separate evidence; none of them proves a task or a login succeeded.
 - Cloud backends cannot record or replay. WebSocket replay is not supported.
