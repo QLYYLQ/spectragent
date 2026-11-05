@@ -9,7 +9,7 @@ executes actions in its scope) + **Resolver** (provides observation fragments on
 hierarchy. `docs/architecture_design.md` §4.9 (line 1352) is the source of truth;
 `docs/execution_dag.md` M06 (line 390) has the six-capability table and the priorities.
 
-Today there is exactly one: `browser`. Five are planned and unbuilt:
+Two are shipped, `browser` and `android` (the latter hosts AndroidWorld and VenusBench-Mobile). Four are planned and unbuilt:
 
 | capability_id | module | priority | benchmarks |
 |---|---|---|---|
@@ -17,10 +17,11 @@ Today there is exactly one: `browser`. Five are planned and unbuilt:
 | `docker` | M19 | P2 | SWE-bench, Terminal-Bench |
 | `tool_sandbox` | M23 | P3 | τ-bench, ToolBench |
 | `gpu_profiling` | M25 | P3 | KernelBench |
-| `desktop_vm` / `android` | M26 | P3 | OSWorld, AndroidWorld |
+| `android` | M26 | shipped | AndroidWorld, VenusBench-Mobile |
+| `desktop_vm` | M26 | P3 | OSWorld |
 
 That ratio is the whole problem this skill exists for. Every framework rule currently has
-exactly one witness, so **browser-specific accidents and framework contracts look
+few witnesses (browser, android), so **browser-specific accidents and framework contracts look
 identical from the inside**. The contract test is how you tell them apart.
 
 **Sibling skills** — this one covers the capability as a unit. For the pieces inside it:
