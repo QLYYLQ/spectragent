@@ -104,7 +104,11 @@ class _Starts:
 
 @dataclass(frozen=True)
 class _LeftOut:
-    """A setting the benchmark supplies: rendered as a comment where it would sit, never as YAML."""
+    """A value rendered as a comment where it would sit, never as YAML.
+
+    A setting the benchmark supplies, or an agent's starting value the
+    implementation the template chose has no field for.
+    """
 
     note: str
 
@@ -172,6 +176,7 @@ def render_config_template(
     )
     for setting in supplied:
         _leave_out(expanded, setting, comments)
+    _name_unwritable_starts(expanded, catalog)
     _name_step_budgets(expanded, run.instances("benchmark"), catalog, comments)
     # Full expansion can change the set of explicitly set fields (notably nested
     # provider options). Recompose the emitted values, not only the input skeleton.
@@ -467,7 +472,8 @@ def _receptor_start(
     (*key*, else :func:`_starting_key`) and writes each value the chosen
     implementation has a field for, so an agent's sampling values reach
     whichever model provider is chosen and a field one provider lacks
-    (``frequency_penalty`` on Anthropic) is left out.
+    (``frequency_penalty`` on Anthropic) is left out, named in a comment
+    (:func:`_name_unwritable_starts`).
     """
     layer = receptor.spec.registry_name
     declared = _declared_block(owner).get(receptor.name)
@@ -1058,6 +1064,38 @@ def _without_left_out(value: Any) -> Any:
 
 
 # -- naming what a start or a benchmark decides -----------------------
+
+
+def _name_unwritable_starts(expanded: dict[str, Any], catalog: ConfigurationCatalog) -> None:
+    """Name each agent starting value its chosen implementation has no field for, where it would sit.
+
+    An agent's receptor block that names no implementation (its ``llm``
+    sampling values, ``__template_block__``) is written into whichever
+    implementation the run uses, where that one has the field
+    (:func:`_receptor_start`). A value it has no field for (``temperature`` on
+    ``ollama.default``) is not written, and a comment at the end of the block
+    says so (``docs/architecture_design.md`` §4.17 "agent 的模板起点").
+    """
+    for agent in expanded.get("agent") or []:
+        key = _named_key(catalog, "agent", agent) if isinstance(agent, dict) else None
+        if key is None:
+            continue
+        owner = catalog.components["agent"][key].implementation
+        slots = wiring_slots(owner)
+        for name, declared in _declared_block(owner).items():
+            block = agent.get(name)
+            if name not in slots or not isinstance(declared, dict) or not isinstance(block, dict):
+                continue
+            layer = slots[name].spec.registry_name
+            chosen = _named_key(catalog, layer, block)
+            if chosen is None or _named_key(catalog, layer, declared) is not None:
+                continue
+            for field_name, value in declared.items():
+                if field_name not in block:
+                    block[field_name] = _LeftOut(
+                        f"{field_name}: {_short(value)}, the agent {key}'s starting value, is "
+                        f"not written: the {layer} {chosen} has no {field_name} field."
+                    )
 
 
 def _name_step_budgets(

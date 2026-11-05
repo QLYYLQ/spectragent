@@ -605,18 +605,49 @@ def test_each_agent_starts_from_its_upstream_settings(composer, agent_id, enviro
 def test_an_agents_sampling_values_go_into_the_provider_chosen_where_it_has_the_field(
     composer, llm, written
 ):
-    """The values name no provider: each lands only where the chosen provider has the field."""
-    raw = yaml.safe_load(
-        render_config_template(
-            TemplateChoices(agent="browser_use.dom", llm=llm, model="m"), composer=composer
-        )
+    """The values name no provider: each lands only where the chosen provider has the field.
+
+    One the provider has no field for is named in a comment instead, so the
+    template never drops an agent's start without a word.
+    """
+    text = render_config_template(
+        TemplateChoices(agent="browser_use.dom", llm=llm, model="m"), composer=composer
     )
+    raw = yaml.safe_load(text)
     block = raw["agent"][0]["llm"]
     fields = set(composer.catalog.components["llm"][llm].config_model.model_fields)
     for name in {"temperature", "frequency_penalty"} & fields - set(written):
         assert block[name] is None, name
     assert {name: block[name] for name in written} == written
+    declared = BrowserUseDomAgent.__template_block__["llm"]
+    assert isinstance(declared, dict)
+    for name, value in declared.items():
+        note = (
+            f"# {name}: {value}, the agent browser_use.dom's starting value, is not written: "
+            f"the llm {llm} has no {name} field."
+        )
+        assert (note in text) is (name not in written), name
     composer.compose(raw)
+
+
+def test_m3a_on_ollama_names_the_temperature_it_cannot_write(composer):
+    """Ollama has no temperature field: M3A's 0.0 is named where the field would be."""
+    text = render_config_template(
+        TemplateChoices(agent="m3a", llm="ollama.default", model="m"), composer=composer
+    )
+    note = (
+        "      # temperature: 0.0, the agent m3a's starting value, is not written: "
+        "the llm ollama.default has no temperature field."
+    )
+    lines = text.splitlines()
+    assert note in lines
+    # In the llm block, after its last field.
+    llm = lines.index("    llm:")
+    assert llm < lines.index(note) and lines[lines.index(note) + 1].startswith("# ")
+    assert "temperature" not in yaml.safe_load(text)["agent"][0]["llm"]
+    assert "is not written" not in render_config_template(
+        TemplateChoices(agent="m3a", model="m"), composer=composer
+    )
 
 
 # ── an agent's start for its capability blocks (user ruling 2026-11-04) ──
