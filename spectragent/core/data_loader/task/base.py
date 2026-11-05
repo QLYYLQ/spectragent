@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import ClassVar, Protocol, runtime_checkable
 
 from spectragent.schemas.data_version import DataVersion
 from spectragent.schemas.task import TaskContext, TaskDefinition
@@ -39,6 +39,11 @@ class BaseTaskLoader(Protocol):
     Loaders normalize raw benchmark data files into ``TaskDefinition``
     instances at construction time, then serve queries by ``task_id``.
     """
+
+    #: The step budget its benchmark's public protocol gives each task, which
+    #: :meth:`get_task_context` hands the Loop as ``max_steps``; ``None``: the
+    #: protocol states none, and the configured ``max_steps`` applies.
+    __step_budget__: ClassVar[StepBudget | None]
 
     @property
     def benchmark_name(self) -> str: ...

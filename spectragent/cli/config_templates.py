@@ -43,7 +43,6 @@ from spectragent.core.capability_merge import (
 )
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.configuration_catalog import ComponentDefinition, ConfigurationCatalog
-from spectragent.core.data_loader.task.base import StepBudget
 from spectragent.core.negotiation._base import extract_wiring
 from spectragent.core.negotiation.action import loop_actions
 from spectragent.core.negotiation.observation import loop_fragments
@@ -1112,7 +1111,7 @@ def _name_step_budgets(
     """
     lines: list[str] = []
     for benchmark in benchmarks:
-        budget: StepBudget | None = getattr(type(benchmark.task_loader), "__step_budget__", None)
+        budget = benchmark.task_loader.__step_budget__
         text = (
             f"Step budget: the benchmark {benchmark.benchmark_id} gives each task {budget.steps}, "
             f"handed to the Loop per task as the Loop input max_steps ({budget.source}). This "
