@@ -11,8 +11,14 @@
 # below; for a data directory of your own, copy this file and pass its path:
 # --benchmark ./my_online_mind2web.yaml.
 #
-# Each task gets 25 steps, the budget Online-Mind2Web's authors gave every open-source
-# agent (its paper, Appendix E: https://arxiv.org/abs/2504.01382v4). The task loader hands
+# Each task gets 25 steps. Its paper (Appendix E, https://arxiv.org/abs/2504.01382v4) says:
+#   "The open-source agents, including SeeAct, Browser Use, and Agent-E, are evaluated
+#   online using Playwright, with a maximum step limit of 25 to control the cost of
+#   repeated actions."
+# The 50 it gives Claude Computer Use 3.7 is a cost choice too: "To reduce cost, we set
+# the maximum step limit to 50 for Claude Computer Use 3.7 and disable the thinking mode."
+# The paper ran only SeeAct, Browser Use and Agent-E at 25; Skyvern, UI-TARS and the other
+# agents here get it by extension, not because the paper ran them. The task loader hands
 # it to the Loop as max_steps; the run configuration's max_steps stays the ceiling, so a
 # smaller one caps it (docs/architecture_design.md §4.10.1).
 benchmark:
