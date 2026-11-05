@@ -561,6 +561,48 @@ class _Tables:
         wrapped(*_TABLE, self.env, "osmand")
 
 
+class _Taps:
+    """AndroidWorld's find-and-tap, failing with each of *failures* in turn, then tapping."""
+
+    def __init__(self, *failures: Exception) -> None:
+        self.failures = list(failures)
+        self.calls: list[tuple[object, ...]] = []
+        self.notes: list[str] = []
+        self.slept: list[float] = []
+
+    def find_and_click(self, *arguments: object) -> None:
+        self.calls.append(arguments)
+        if self.failures:
+            raise self.failures.pop(0)
+
+    def tap(self, tries: int = 3) -> None:
+        wrapped = _launcher().tap_on_a_settled_screen(
+            self.find_and_click, warn=self.notes.append, tries=tries, sleep=self.slept.append
+        )
+        wrapped("SAVE", "env")
+
+
+_STALE = ValueError("Invalid element index: 15, must be between 0 and 12.")
+
+
+def test_the_launcher_taps_again_when_the_index_went_stale_between_androidworlds_reads() -> None:
+    taps = _Taps(_STALE)
+    taps.tap()
+    assert taps.calls == [("SAVE", "env"), ("SAVE", "env")]
+    assert taps.slept == [1.0] and len(taps.notes) == 1 and "tapping again" in taps.notes[0]
+
+
+def test_the_launcher_raises_the_last_stale_index_and_any_other_failure() -> None:
+    taps = _Taps(_STALE, _STALE, _STALE)
+    with pytest.raises(ValueError, match="Invalid element index"):
+        taps.tap()
+    assert len(taps.calls) == 3
+    other = _Taps(ValueError("Element with text 'SAVE' not found"))
+    with pytest.raises(ValueError, match="not found"):
+        other.tap()
+    assert len(other.calls) == 1 and other.notes == []
+
+
 def test_the_launcher_clears_a_table_that_is_there_without_launching_the_app() -> None:
     tables = _Tables(looks=[True])
 
