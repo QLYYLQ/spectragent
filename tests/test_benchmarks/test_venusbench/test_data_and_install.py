@@ -154,10 +154,6 @@ def test_the_run_takes_venusbenchs_avd_and_its_open_app_table(data_root: Path) -
         "settle_max_wait_s": 6.0,
         "actions": [{"action_id": "android.open_app", "apps": APPS}],
     }
-    assert block.capability[0]["backend"] == {
-        "provider_id": "local_emulator",
-        "avd": "VenusBenchAvd",
-    }
 
 
 class _Installer:

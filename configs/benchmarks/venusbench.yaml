@@ -42,6 +42,11 @@
 # Each task boots its own emulator. With spectragent bench --reuse-environment the tasks of a
 # sweep share one: the setup resets the device between tasks, as VenusBench's runner does
 # (§4.10.1).
+#
+# VenusBench's runner bounds a task by its steps alone: int(10 * complexity), 10 to 100 steps on
+# the pinned commit, which the loader hands the Loop. bench's default --timeout of 300 s cut two of
+# four tasks of M3A's first run after 12 and 19 steps; give it one that covers the budget (that
+# run took about 25 s a step), such as --timeout 3600.
 benchmark:
   - benchmark_id: venusbench
     task_loader:
