@@ -71,7 +71,7 @@ YAML ─▶ ConfigComposer ─▶ AgentRuntime.prepare() ─▶ execute ─▶ R
 
 “已注册”表示可以选；一次运行只启用 YAML 里写到的实现。注册表键按层区分，所以 `browser_use` 可以同时是 agent 家族、云后端和 DOM cleaner 的名字。
 
-我们的 AndroidWorld 和 VenusBench-Mobile 集成复现了各基准自己的 runner：用同一个 M3A agent 和 DeepSeek v4.1 flash，AndroidWorld 在 115 个任务上得 77，对照 76；VenusBench-Mobile 在 45 个任务上得 21，对照 19（各跑一次 pass@1）。
+我们接入的 AndroidWorld 和 VenusBench-Mobile 与各自官方 runner 的结果一致：两边用同一个 M3A agent 和同一个模型 DeepSeek v4.1 flash，AndroidWorld 115 题我们 77、官方 runner 76，VenusBench-Mobile 45 题我们 21、官方 runner 19（各跑一次 pass@1）。
 
 值得知道的浏览器行为：
 

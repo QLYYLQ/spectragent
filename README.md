@@ -71,7 +71,7 @@ The browser and Android are the implemented environments. Output of `spectragent
 
 Registered means available to select; a run enables only what its YAML names. Keys are scoped by layer, so `browser_use` can name an agent family, a cloud backend and a DOM cleaner at once.
 
-Our AndroidWorld and VenusBench-Mobile integrations reproduce each benchmark's own runner: with the same M3A agent and DeepSeek v4.1 flash, AndroidWorld scored 77 against 76 of 115 tasks and VenusBench-Mobile 21 against 19 of 45 (one pass@1 run each).
+Our AndroidWorld and VenusBench-Mobile integrations reproduce each benchmark's own runner: with the same M3A agent and DeepSeek v4.1 flash on both sides, ours scored 77 of 115 AndroidWorld tasks to the official runner's 76, and 21 of 45 VenusBench-Mobile tasks to its 19 (one pass@1 run each).
 
 Browser behaviour worth knowing:
 
