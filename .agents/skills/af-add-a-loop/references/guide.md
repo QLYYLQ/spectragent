@@ -342,7 +342,11 @@ recording-failure stop rule. Replace them with the current behavior contract.
 `__loop_inputs__: Mapping[str, LoopInput]` declares per-task Loop inputs. Runtime and
 `weave` both refuse unknown, missing or mistyped values, and values the Loop's
 `loop_input_refusal` refuses (a step budget below 1), with `IncompatibleLoopInputError`.
-Validated values reach the closure as `ctx["loop_inputs"]`.
+Validated values reach the closure as `ctx["loop_inputs"]`. A benchmark whose public
+protocol states a step budget supplies it per task as the input `max_steps` from its task
+loader (AndroidWorld's `int(10 x complexity)`, Online-Mind2Web's 25; the loader declares it
+in `__step_budget__`); the configured `max_steps` stays the ceiling (architecture §4.10.1
+"基准的步数预算").
 `TaskContext.env`, `.loop` and `.branch` remain separate channels: setup, execution inputs
 and trace provenance respectively.
 

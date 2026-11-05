@@ -1,4 +1,17 @@
-"""LexBench-Browser benchmark task loader."""
+"""LexBench-Browser benchmark task loader.
+
+**No step budget.** LexBench-Browser's public protocol states none for the
+benchmark, so a task hands the Loop no ``max_steps`` and the configured
+``max_steps`` applies (``docs/architecture_design.md`` §4.10.1 "基准的步数预算").
+Looked at: lexmount/browseruse-agent-bench v1.0.0 (commit
+313b0cf7f75b3a61f9be9041612b7873ac6354cc) gives each agent integration its own
+default, the same on every benchmark that harness runs: browser-use 40
+(``config.example.yaml:149``, ``browseruse_bench/agents/browser_use.py:171``),
+skyvern 50 in the example config (``config.example.yaml:216``) and 25 in its
+code (``browseruse_bench/agents/skyvern.py:764``), deepbrowse 50
+(``config.example.yaml:280``), claude-code 50 turns (``config.example.yaml:245``).
+An agent's own default is the agent's, not the benchmark's.
+"""
 
 import re
 from dataclasses import dataclass

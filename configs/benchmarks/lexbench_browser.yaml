@@ -3,6 +3,8 @@
 # Its data is the public Lexmount/LexBench-Browser v1.0 on Hugging Face, pinned at a
 # commit: fetch it into the shared cache with spectragent benchmark fetch lexbench_browser
 # (or run and bench with --fetch).
+# It has no official step budget: each task runs up to the run configuration's max_steps
+# (its public harness gives each agent its own default instead).
 benchmark:
   - benchmark_id: lexbench_browser
     task_loader:

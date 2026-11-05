@@ -6,7 +6,7 @@ the ``TaskLoaderRegistrar`` metaclass.
 """
 
 from dataclasses import dataclass, field
-from typing import Annotated, Any
+from typing import Annotated, Any, ClassVar
 
 from conscribe import create_registrar
 from pydantic import Field
@@ -19,7 +19,7 @@ from spectragent.core.data_loader._common import (
     resolve_split_file,
     resolve_task_id,
 )
-from spectragent.core.data_loader.task.base import BaseTaskLoader
+from spectragent.core.data_loader.task.base import BaseTaskLoader, StepBudget
 from spectragent.core.registries import setup_class_for_env
 from spectragent.schemas.data_version import DataVersion
 from spectragent.schemas.task import TaskContext, TaskDefinition
@@ -49,6 +49,11 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
 
     __abstract__ = True
     __config_annotated_only__ = True
+    #: The step budget its benchmark's public protocol gives each task, which
+    #: the loader's ``get_task_context`` hands the Loop as ``max_steps``.
+    #: ``None``: the protocol states none, and the configured ``max_steps``
+    #: applies (``docs/architecture_design.md`` §4.10.1 "基准的步数预算").
+    __step_budget__: ClassVar[StepBudget | None] = None
 
     subset: Annotated[str, Field("All", description="Data subset")] = "All"
     data_dir: Annotated[

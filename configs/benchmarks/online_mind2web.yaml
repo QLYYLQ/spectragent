@@ -10,6 +10,11 @@
 # For another subset add --subset Hard, which is written into the task loader
 # below; for a data directory of your own, copy this file and pass its path:
 # --benchmark ./my_online_mind2web.yaml.
+#
+# Each task gets 25 steps, the budget Online-Mind2Web's authors gave every open-source
+# agent (its paper, Appendix E: https://arxiv.org/abs/2504.01382v4). The task loader hands
+# it to the Loop as max_steps; the run configuration's max_steps stays the ceiling, so a
+# smaller one caps it (docs/architecture_design.md §4.10.1).
 benchmark:
   - benchmark_id: online_mind2web
     task_loader:

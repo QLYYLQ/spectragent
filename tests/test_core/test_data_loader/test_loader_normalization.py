@@ -80,8 +80,8 @@ class TestOnlineMind2WebNormalization:
         )
         context = loader.get_task_context("m2w_001")
         assert context.env == {"start_url": "https://example.com"}
-        # A dataset task feeds the environment only.
-        assert context.loop == {}
+        # The step budget Online-Mind2Web's authors gave (test_browser_step_budgets.py).
+        assert context.loop == {"max_steps": 25}
         assert context.branch is None
 
 

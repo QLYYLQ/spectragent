@@ -13,11 +13,13 @@ the step-info fragment to the source run's, and a seed cannot be pinned.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
 
 from spectragent.core.capabilities._registrar import CapabilityBase
+from spectragent.core.data_loader.task import OnlineMind2WebTaskLoader
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.loops import BranchLoop, ReactLoop
@@ -228,6 +230,24 @@ class TestARun:
         assert (short.config.max_steps, long.config.max_steps) == (1, 2)
         assert short.manifest is not None and long.manifest is not None
         assert short.manifest.config_hash == long.manifest.config_hash
+
+    @pytest.mark.parametrize(("configured", "steps"), [(30, 25), (4, 4)])
+    async def test_an_online_mind2web_task_runs_its_25_steps_within_the_ceiling(
+        self, tmp_path: Any, configured: int, steps: int
+    ) -> None:
+        """The budget its task loader hands over (§4.10.1 "基准的步数预算"), as a run sees it."""
+        data = tmp_path / "data"
+        data.mkdir()
+        (data / "data_info.json").write_text(json.dumps({"split": {"All": "All.json"}}))
+        task = {"task_id": "m2w-1", "task_text": "Find a flight", "start_url": "https://a.test"}
+        (data / "All.json").write_text(json.dumps([task]))
+        context = OnlineMind2WebTaskLoader(data_dir=str(data)).get_task_context("m2w-1")
+
+        result, agent, trace = await _run(tmp_path, configured=configured, loop_inputs=context.loop)
+        assert result.agent_done == AgentDoneStatus.MAX_STEPS
+        assert result.metrics.steps == steps
+        assert agent.told[-1] == (steps, steps)
+        assert trace.config.max_steps == steps
 
     @pytest.mark.parametrize("budget", [0, -1, True, "12"])
     async def test_prepare_refuses_a_bad_budget_before_any_trace(

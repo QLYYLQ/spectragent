@@ -8,10 +8,28 @@ and other capabilities all consume the same protocol.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from spectragent.schemas.data_version import DataVersion
 from spectragent.schemas.task import TaskContext, TaskDefinition
+
+
+@dataclass(frozen=True)
+class StepBudget:
+    """The step budget a benchmark's public protocol gives each of its tasks, and where it says so.
+
+    A task loader that declares one (``TaskLoaderBase.__step_budget__``) hands
+    each task's budget to the Loop as the Loop input ``max_steps``; the
+    configured ``max_steps`` stays the ceiling. ``config template`` names it
+    beside the Loop's ``max_steps`` (``docs/architecture_design.md`` §4.10.1
+    "基准的步数预算").
+    """
+
+    #: What each task gets, in a few words: ``25 steps``.
+    steps: str
+    #: Where the public protocol states it: a paper's section, or a file and lines at a pinned commit.
+    source: str
 
 
 @runtime_checkable

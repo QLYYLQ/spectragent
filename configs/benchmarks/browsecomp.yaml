@@ -2,6 +2,7 @@
 # Select it with --benchmark browsecomp (docs/architecture_design.md §4.10.1).
 # Its data is OpenAI's file, pinned by its SHA-256: fetch it into the shared cache
 # with spectragent benchmark fetch browsecomp (or run and bench with --fetch).
+# It has no official step budget: each task runs up to the run configuration's max_steps.
 benchmark:
   - benchmark_id: browsecomp
     task_loader:
