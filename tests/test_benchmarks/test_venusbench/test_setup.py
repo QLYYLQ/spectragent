@@ -20,7 +20,7 @@ from spectragent.benchmarks.androidworld.setup import AndroidWorldSetup
 from spectragent.benchmarks.androidworld.tasks import instance_seed
 from spectragent.benchmarks.venusbench.service import LAUNCHER, VenusBenchInstallation
 from spectragent.benchmarks.venusbench.setup import VenusBenchSetup
-from spectragent.benchmarks.venusbench.tasks import FIRST_VERSION, UNSUPPORTED, VENUSBENCH
+from spectragent.benchmarks.venusbench.tasks import UNSUPPORTED, VENUSBENCH
 from spectragent.benchmarks.venusbench.verifier import VenusBenchVerifier
 from spectragent.core.capabilities.android.backends.base import (
     AdbEndpoint,
@@ -155,9 +155,18 @@ def test_a_task_the_first_version_does_not_run_is_refused_with_its_reason(
     )
 
 
-def test_every_task_of_the_pinned_commit_is_run_or_left_out_with_a_reason() -> None:
-    assert len(FIRST_VERSION) == 45 and len(UNSUPPORTED) == 144
-    assert not set(FIRST_VERSION) & set(UNSUPPORTED)
+@pytest.mark.requires_benchmark_data("android/venusbench")
+def test_the_pinned_commits_tasks_are_45_run_and_144_left_out_with_a_reason() -> None:
+    """Against the task list fetched from the pinned commit (``spectragent benchmark fetch venusbench``)."""
+    from spectragent.benchmarks.androidworld.tasks import read_task_list
+    from spectragent.core.data_loader._common import resolve_data_dir, resolve_split_file
+
+    data = resolve_data_dir("android", "venusbench", None)
+    listed = {task.task for task in read_task_list(resolve_split_file(data, "All")).tasks}
+    assert len(listed) == 189
+    assert set(UNSUPPORTED) <= listed, "every task left out is one the pinned commit lists"
+    assert len(UNSUPPORTED) == 144 and len(listed - set(UNSUPPORTED)) == 45
+    assert all(reason.strip() for reason in UNSUPPORTED.values())
 
 
 def test_a_task_listed_from_androidworld_is_refused(root: Path) -> None:

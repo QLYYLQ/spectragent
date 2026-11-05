@@ -9,8 +9,8 @@ the suite with seed 30 and one instance of each task, as the task lists do
 (:data:`SUITE_SEED`).
 
 The first version runs the 45 single-round tasks scored on the device's state
-or by a rule on the answer (:data:`FIRST_VERSION`). The other 144 are in
-:data:`UNSUPPORTED`, each with why: the loader leaves them out with that
+or by a rule on the answer: every task the pinned commit lists that is not in
+:data:`UNSUPPORTED`. The other 144 are there, each with why: the loader leaves them out with that
 reason in its ``skipped``, and the setup component refuses them in
 ``prepare()`` with the same words. The tables were read off the pinned code,
 each class's ``max_round``, the judge its ``is_successful`` reaches, its
@@ -60,54 +60,6 @@ _UIAUTOMATOR2_WHY = (
     "default server on port 5037 instead of the run's own"
 )
 
-#: The 45 single-round tasks scored on the device's state or by a rule on the answer.
-FIRST_VERSION = (
-    "GSATimingAudioRecorderRecordAudioTime",
-    "GSATimingAudioRecorderRecordAudioTimeCHS",
-    "GSATimingAudioRecorderRecordAudioTimeENGVariation",
-    "GSATrackingBlacklistBlockAndSendSms",
-    "GSATrackingPhoneCall",
-    "GSATrackingPhoneCallCHS",
-    "GSATrackingPhoneCallENGVariation",
-    "GSATrackingSMSHandleIncomingKeywords",
-    "GSATrackingSimpleSmsHandleFiveIncomingHard",
-    "GSATrackingSimpleSmsNotifyDelivery",
-    "GSATrackingWhitelistCallAnswer",
-    "GUIBrowsingBrowserRandomButtons1",
-    "GUIBrowsingBrowserRandomButtons2",
-    "GUIBrowsingBrowserRandomButtons2CHS",
-    "GUIBrowsingBrowserRandomButtons2Variation",
-    "GUIBrowsingBrowserRandomButtons3",
-    "GUIBrowsingBrowserRandomButtons4",
-    "GUIBrowsingBrowserRandomButtons5",
-    "GUIBrowsingMarkorFindCommonPackage",
-    "GUIBrowsingMarkorFindFilesPath",
-    "GUIBrowsingMarkorFindFilesPathHard",
-    "GUIBrowsingWatchVideo1",
-    "GUIBrowsingWatchVideo3",
-    "RefusalExpenseDeleteMultipleConflictMultipleCHS",
-    "RefusalExpenseDeleteMultipleConflictMultipleVariation",
-    "RefusalFilesDeleteFileConflict1",
-    "RefusalSystemBluetoothTurnOnAlreadyOnCHS",
-    "RefusalSystemBluetoothTurnOnAlreadyOnVariation",
-    "VagueBluetoothTurnOn1",
-    "VagueBluetoothTurnOn2",
-    "VagueCalculator",
-    "VagueCalendarDateOffset",
-    "VagueCurrencyExchange",
-    "VagueDailyExpenseRecordTask",
-    "VagueFoodCalorieCheck",
-    "VagueMarkorCreateNotewithCalculation",
-    "VagueMarkorDeleteNewestTwoNotes",
-    "VagueMarkorDeleteNewestTwoNotesCHS",
-    "VagueMarkorDeleteNewestTwoNotesVariation",
-    "VagueSaveBatteryWithoutLosingInternet",
-    "VagueSystemBrightnessMax",
-    "VagueSystemBrightnessMaxCHS",
-    "VagueSystemBrightnessMaxVariation",
-    "VagueZenModeTaskEvalUI",
-    "VagueZipxtractExtractFile",
-)
 #: Changes the goal between rounds.
 _MULTI_ROUND = (
     "MultiRoundExpense1Add2Add3Delete",
@@ -275,4 +227,4 @@ UNSUPPORTED: Mapping[str, str] = MappingProxyType(
     }
 )
 
-__all__ = ["FAMILY", "FIRST_VERSION", "SUITE_SEED", "UNSUPPORTED", "VENUSBENCH"]
+__all__ = ["FAMILY", "SUITE_SEED", "UNSUPPORTED", "VENUSBENCH"]
