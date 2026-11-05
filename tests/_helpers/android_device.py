@@ -179,6 +179,9 @@ class ScriptedPhone:
             front, URI → component: the device's default app for it. ``am``
             resolves a URI it lacks to nothing, as the emulator's does: exit 0,
             the error on stderr (API 33, 2026-11-06).
+        viewed: The words after ``-d`` of every ``VIEW`` intent ``am`` was
+            asked to start, split as ``sh`` splits them (``;``, ``&``, ``(``
+            and ``)`` end a word unless quoted): a quoted URI is one word.
         launcher_delay_s: How long the service takes to answer
             ``launcher_apps``: a cold device's package manager can be slow.
         helper_screenshots: Whether the helper takes screenshots (API 31-33);
@@ -259,6 +262,7 @@ class ScriptedPhone:
     labels: dict[str, str] = field(default_factory=lambda: {"com.android.settings": "Settings"})
     more_launcher_apps: list[JsonValue] = field(default_factory=list)
     default_apps: dict[str, str] = field(default_factory=dict)
+    viewed: list[list[str]] = field(default_factory=list)
     launcher_delay_s: float = 0.0
     helper_screenshots: bool = True
     screenshot_fails: bool = False
@@ -569,7 +573,11 @@ class ScriptedPhone:
                 stdout=f"Starting: Intent {{ cmp={self.focused} }}\nStatus: ok\n".encode()
             )
         if words[:5] == ["am", "start", "-a", "android.intent.action.VIEW", "-d"]:
-            uri = shlex.split(command)[5]
+            lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+            lexer.whitespace_split = True  # words end at blanks and at sh's operators alone
+            said = list(lexer)
+            self.viewed.append(said[5:])
+            uri = said[5]
             intent = f"act=android.intent.action.VIEW dat={uri}"
             starting = f"Starting: Intent {{ {intent} }}\n".encode()
             if uri not in self.default_apps:
