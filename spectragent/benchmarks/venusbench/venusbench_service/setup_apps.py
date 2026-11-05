@@ -49,10 +49,9 @@ def main() -> None:
     venusbench = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(venusbench)
     launcher = venusbench.load("androidworld_launcher", venusbench.ANDROIDWORLD_LAUNCHER)
-    parser = launcher.argument_parser("Set VenusBench's apps up in its AVD, once.")
+    parser = launcher.argument_parser("Set VenusBench's apps up in its AVD, once.", serving=False)
     venusbench.add_arguments(parser)
     parser.add_argument("--fitbook-apk", required=True, help="FitBook's arm64 build.")
-    parser.set_defaults(port=0)
     args = parser.parse_args()
     venusbench.prepare(launcher, args)
 

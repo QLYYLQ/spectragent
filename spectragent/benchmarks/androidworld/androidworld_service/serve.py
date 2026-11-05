@@ -477,10 +477,12 @@ def _add_episode_over(android_server) -> None:
         return {"over": reward_ends_episode(reward)}
 
 
-def argument_parser(description: str) -> argparse.ArgumentParser:
-    """The arguments every launcher takes: where to serve, the checkout, and the run's device."""
+def argument_parser(description: str, *, serving: bool = True) -> argparse.ArgumentParser:
+    """The arguments every launcher takes: the checkout and the run's device, and where to serve
+    when *serving* (a one-time setup serves nothing)."""
     parser = argparse.ArgumentParser(description=description)
-    parser.add_argument("--port", type=int, required=True, help="Loopback port to serve on.")
+    if serving:
+        parser.add_argument("--port", type=int, required=True, help="Loopback port to serve on.")
     parser.add_argument("--src", required=True, help="The checkout of AndroidWorld's code.")
     parser.add_argument("--adb", required=True, help="The adb binary of the run's server.")
     parser.add_argument("--adb-server-port", type=int, required=True)
