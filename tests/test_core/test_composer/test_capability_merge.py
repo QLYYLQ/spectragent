@@ -617,7 +617,7 @@ def _browser_run(part_matcher: JsonValue) -> dict[str, JsonValue]:
     }
     benchmark: Block = {
         "benchmark_id": "online_mind2web",
-        "task_loader": {"benchmark_name": "online_mind2web"},
+        "task_loader": {"benchmark_name": "online_mind2web", "step_budget": 25},
         "capability": [part],
     }
     return {

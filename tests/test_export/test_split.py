@@ -303,7 +303,8 @@ class TestDecontamination:
                 "subset": subset,
                 "data_dir": str(directory),
             }
-            return {"benchmark_id": "online_mind2web", "task_loader": loader, "eval_loader": loader}
+            tasks = {**loader, "step_budget": 25}
+            return {"benchmark_id": "online_mind2web", "task_loader": tasks, "eval_loader": loader}
 
         against = {"against": [{"benchmark": "online_mind2web", "subset": "Hard"}]}
         entry = exporter_entry(sources, tmp_path / "out", decontamination=against)

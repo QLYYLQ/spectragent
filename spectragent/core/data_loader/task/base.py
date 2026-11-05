@@ -19,17 +19,24 @@ from spectragent.schemas.task import TaskContext, TaskDefinition
 class StepBudget:
     """The step budget a benchmark's public protocol gives each of its tasks, and where it says so.
 
-    A task loader that declares one (``TaskLoaderBase.__step_budget__``) hands
-    each task's budget to the Loop as the Loop input ``max_steps``; the
-    configured ``max_steps`` stays the ceiling. ``config template`` names it
-    beside the Loop's ``max_steps`` (``docs/architecture_design.md`` §4.10.1
-    "基准的步数预算").
+    The official budget, as data: a task loader declares it
+    (``TaskLoaderBase.__step_budget__``) and ``config template`` names it
+    beside the Loop's ``max_steps``. What each task is handed as the Loop
+    input ``max_steps`` is the loader's: computed from the protocol
+    (AndroidWorld's), or what its benchmark YAML sets (Online-Mind2Web's
+    ``step_budget``). The configured ``max_steps`` stays the ceiling
+    (``docs/architecture_design.md`` §4.10.1 "基准的步数预算").
     """
 
     #: What each task gets, in a few words: ``25 steps``.
     steps: str
     #: Where the public protocol states it: a paper's section, or a file and lines at a pinned commit.
     source: str
+    #: The budget as one number, when the protocol gives every task the same:
+    #: the benchmark YAML then sets the budget its tasks get in the task
+    #: loader's required ``step_budget``, which may differ from this.
+    #: ``None``: the loader computes each task's budget from the protocol.
+    value: int | None = None
 
 
 @runtime_checkable
@@ -40,9 +47,9 @@ class BaseTaskLoader(Protocol):
     instances at construction time, then serve queries by ``task_id``.
     """
 
-    #: The step budget its benchmark's public protocol gives each task, which
-    #: :meth:`get_task_context` hands the Loop as ``max_steps``; ``None``: the
-    #: protocol states none, and the configured ``max_steps`` applies.
+    #: The step budget its benchmark's public protocol gives each task;
+    #: ``None``: the protocol states none. What :meth:`get_task_context` hands
+    #: the Loop as ``max_steps`` follows it (:class:`StepBudget`).
     __step_budget__: ClassVar[StepBudget | None]
 
     @property

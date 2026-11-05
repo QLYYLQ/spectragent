@@ -10,23 +10,26 @@
 # For another subset add --subset Hard, which is written into the task loader
 # below; for a data directory of your own, copy this file and pass its path:
 # --benchmark ./my_online_mind2web.yaml.
-#
-# Each task gets 25 steps. Its paper (Appendix E, https://arxiv.org/abs/2504.01382v4) says:
-#   "The open-source agents, including SeeAct, Browser Use, and Agent-E, are evaluated
-#   online using Playwright, with a maximum step limit of 25 to control the cost of
-#   repeated actions."
-# The 50 it gives Claude Computer Use 3.7 is a cost choice too: "To reduce cost, we set
-# the maximum step limit to 50 for Claude Computer Use 3.7 and disable the thinking mode."
-# The paper ran only SeeAct, Browser Use and Agent-E at 25; Skyvern, UI-TARS and the other
-# agents here get it by extension, not because the paper ran them. The task loader hands
-# it to the Loop as max_steps; the run configuration's max_steps stays the ceiling, so a
-# smaller one caps it (docs/architecture_design.md §4.10.1).
 benchmark:
   - benchmark_id: online_mind2web
     task_loader:
       benchmark_name: online_mind2web
       subset: All                # All | Hard
       data_dir: null             # null: the cache copy, <data root>/browser/online_mind2web
+      # step_budget: the steps each task gets, handed to the Loop as max_steps; the run
+      # configuration's max_steps stays the ceiling, so a smaller one caps it. Required:
+      # null gives none. 25 is the paper's (Appendix E, https://arxiv.org/abs/2504.01382v4):
+      #   "The open-source agents, including SeeAct, Browser Use, and Agent-E, are
+      #   evaluated online using Playwright, with a maximum step limit of 25 to control
+      #   the cost of repeated actions."
+      # The paper ran only SeeAct, Browser Use and Agent-E at 25. Every agent here gets it,
+      # UI-TARS and Skyvern included, by extension: the benchmark holds only what is the
+      # same for every agent, never a per-agent number. The 50 the paper gave Claude
+      # Computer Use 3.7 was a cost choice too ("To reduce cost, we set the maximum step
+      # limit to 50 for Claude Computer Use 3.7 and disable the thinking mode."); for that
+      # setting, copy this file, set step_budget: 50 and pass its path to --benchmark
+      # (docs/architecture_design.md §4.10.1).
+      step_budget: 25
     # eval_loader: the reference answers verdicts are scored against. Left out,
     # it is the registered online_mind2web eval loader for the task loader's
     # subset; write it to point at other data:

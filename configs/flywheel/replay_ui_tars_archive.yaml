@@ -25,8 +25,9 @@
 #
 # Steps: a replay runs as a task of its own (--task), so no benchmark hands it a
 # step budget and max_steps below is its budget. A recording of an Online-Mind2Web
-# task ran at most 25 steps, the budget that benchmark gives each task, and its
-# prompts said "Step: k/25"; to replay one as it ran, set max_steps: 25 here
+# task ran at most the step_budget its benchmark YAML set (25 in the shipped one),
+# recorded as max_steps in its config.json, and its prompts said "Step: k/25"; to
+# replay one as it ran, set max_steps here to that number
 # (docs/architecture_design.md §4.10.1 "基准的步数预算").
 agent:
   - agent_id: ui_tars

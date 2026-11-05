@@ -176,7 +176,9 @@ def render_config_template(
     for setting in supplied:
         _leave_out(expanded, setting, comments)
     _name_unwritable_starts(expanded, catalog)
-    _name_step_budgets(expanded, run.instances("benchmark"), catalog, comments)
+    _name_step_budgets(
+        expanded, list(zip(run.instances("benchmark"), benchmarks, strict=True)), catalog, comments
+    )
     # Full expansion can change the set of explicitly set fields (notably nested
     # provider options). Recompose the emitted values, not only the input skeleton.
     emitted = _without_left_out(expanded)
@@ -1099,27 +1101,49 @@ def _name_unwritable_starts(expanded: dict[str, Any], catalog: ConfigurationCata
 
 def _name_step_budgets(
     expanded: dict[str, Any],
-    benchmarks: Sequence[Benchmark],
+    benchmarks: Sequence[tuple[Benchmark, Mapping[str, Any]]],
     catalog: ConfigurationCatalog,
     comments: dict[TemplatePath, list[str]],
 ) -> None:
     """Under each agent's Loop ``max_steps``, the step budget the benchmark's tasks bring, or that none do.
 
-    Only for a Loop that takes a task's own budget (the Loop input
-    ``max_steps``): the budget comes from the benchmark's task loader
-    (``__step_budget__``, ``docs/architecture_design.md`` §4.10.1 "基准的步数预算").
+    *benchmarks* pairs each composed benchmark with the block its YAML wrote.
+    The official budget is the task loader's ``__step_budget__``; where the
+    benchmark YAML sets the budget itself (the task loader's ``step_budget``),
+    the comment names that value beside the official one and says when they
+    differ. Only for a Loop that takes a task's own budget (the Loop input
+    ``max_steps``; ``docs/architecture_design.md`` §4.10.1 "基准的步数预算").
     """
     lines: list[str] = []
-    for benchmark in benchmarks:
-        budget = benchmark.task_loader.__step_budget__
-        text = (
-            f"Step budget: the benchmark {benchmark.benchmark_id} gives each task {budget.steps}, "
-            f"handed to the Loop per task as the Loop input max_steps ({budget.source}). This "
-            "max_steps stays the ceiling: a task runs at most the smaller of the two."
-            if budget is not None
-            else f"Step budget: the benchmark {benchmark.benchmark_id} has no official step "
-            "budget, so every task runs up to this max_steps, the agent's ceiling."
-        )
+    for benchmark, block in benchmarks:
+        name = benchmark.benchmark_id
+        official = benchmark.task_loader.__step_budget__
+        loader = block.get("task_loader")
+        if official is None:
+            text = (
+                f"Step budget: the benchmark {name} has no official step budget, so every "
+                "task runs up to this max_steps, the agent's ceiling."
+            )
+        elif official.value is None:
+            text = (
+                f"Step budget: the benchmark {name} gives each task {official.steps}, handed "
+                f"to the Loop per task as the Loop input max_steps ({official.source}). This "
+                "max_steps stays the ceiling: a task runs at most the smaller of the two."
+            )
+        else:
+            given = loader.get("step_budget") if isinstance(loader, Mapping) else None
+            protocol = f"The protocol's own budget is {official.steps} ({official.source})"
+            text = (
+                f"Step budget: this benchmark YAML sets no step budget (the benchmark {name}'s "
+                "task_loader.step_budget is null), so every task runs up to this max_steps, the "
+                f"agent's ceiling. {protocol}."
+                if given is None
+                else f"Step budget: this benchmark YAML sets {given} steps for each task (the "
+                f"benchmark {name}'s task_loader.step_budget), handed to the Loop per task as "
+                f"the Loop input max_steps. {protocol}"
+                + (f"; the YAML's {given} differs from it. " if given != official.value else ". ")
+                + "This max_steps stays the ceiling: a task runs at most the smaller of the two."
+            )
         lines += textwrap.wrap(text, width=88, break_long_words=False, break_on_hyphens=False)
     if not lines:
         return

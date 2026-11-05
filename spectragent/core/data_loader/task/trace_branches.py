@@ -820,9 +820,7 @@ class _Scan:
         if key not in self._source_loaders:
             try:
                 loader_cls = TaskLoaderRegistrar.get(config.benchmark)
-                self._source_loaders[key] = (
-                    loader_cls(subset=config.subset) if config.subset else loader_cls()
-                )
+                self._source_loaders[key] = loader_cls.for_reading(config.subset)
             except Exception as exc:  # the source benchmark or its data is not here
                 self._source_loaders[key] = exc
         source = self._source_loaders[key]

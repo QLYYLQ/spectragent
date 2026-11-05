@@ -1117,13 +1117,15 @@ def test_a_skeleton_holding_a_benchmark_is_refused_with_one_selected(composer, t
 # ── with a benchmark: the step budget its tasks bring (§4.10.1 "基准的步数预算") ──
 
 
-def _browser_benchmark(root: Path, benchmark_id: str, record: dict[str, str]) -> str:
-    """A benchmark YAML over one task in a data directory of its own."""
+def _browser_benchmark(
+    root: Path, benchmark_id: str, record: dict[str, str], **settings: int | None
+) -> str:
+    """A benchmark YAML over one task in a data directory of its own, its task loader given *settings*."""
     data = root / "data"
     data.mkdir(parents=True)
     (data / "data_info.json").write_text(json.dumps({"split": {"All": "All.json"}}))
     (data / "All.json").write_text(json.dumps([record]))
-    loader = {"benchmark_name": benchmark_id, "data_dir": str(data)}
+    loader = {"benchmark_name": benchmark_id, "data_dir": str(data), **settings}
     path = root / f"{benchmark_id}.yaml"
     path.write_text(
         yaml.safe_dump({"benchmark": [{"benchmark_id": benchmark_id, "task_loader": loader}]})
@@ -1143,25 +1145,60 @@ def _max_steps_comment(text: str) -> str:
     return " ".join(above)
 
 
-def test_a_benchmark_with_a_step_budget_names_it_its_source_and_the_ceiling(composer, tmp_path):
-    record = {"task_id": "m2w-1", "task_text": "Find a flight", "start_url": "https://a.test"}
-    benchmark = _browser_benchmark(tmp_path, "online_mind2web", record)
+_M2W_TASK = {"task_id": "m2w-1", "task_text": "Find a flight", "start_url": "https://a.test"}
+#: How the comment names Online-Mind2Web's own budget and its source.
+_M2W_PROTOCOL = (
+    "The protocol's own budget is 25 steps (the Online-Mind2Web paper, Appendix E, for "
+    "open-source agents: https://arxiv.org/abs/2504.01382v4)"
+)
+
+
+def test_the_budget_the_benchmark_yaml_sets_is_named_with_the_protocols_own(composer, tmp_path):
+    benchmark = _browser_benchmark(tmp_path, "online_mind2web", _M2W_TASK, step_budget=25)
     text = render_config_template(
         TemplateChoices(model="m", benchmark=benchmark), composer=composer
     )
     comment = _max_steps_comment(text)
     assert (
-        "Step budget: the benchmark online_mind2web gives each task 25 steps, handed to the "
-        "Loop per task as the Loop input max_steps (the Online-Mind2Web paper, Appendix E, for "
-        "open-source agents: https://arxiv.org/abs/2504.01382v4). This max_steps stays the "
-        "ceiling: a task runs at most the smaller of the two."
+        "Step budget: this benchmark YAML sets 25 steps for each task (the benchmark "
+        "online_mind2web's task_loader.step_budget), handed to the Loop per task as the Loop "
+        f"input max_steps. {_M2W_PROTOCOL}. This max_steps stays the ceiling: a task runs at "
+        "most the smaller of the two."
     ) in comment
+    assert "differs" not in comment
     # The URL is never broken across lines.
-    assert "      # open-source agents: https://arxiv.org/abs/2504.01382v4). This" in text
+    assert any(
+        line.strip().startswith("# ") and "https://arxiv.org/abs/2504.01382v4)" in line
+        for line in text.splitlines()
+    )
     # The agent's ceiling stays what the agent starts from: BrowserUse's 500.
     raw = yaml.safe_load(text)
     assert raw["agent"][0]["agent_loop"]["max_steps"] == 500
     composer.compose(run_root(raw, read_benchmark(benchmark)))
+
+
+def test_a_configured_budget_other_than_the_protocols_is_pointed_out(composer, tmp_path):
+    """The paper's 50-step computer-use setting, from a copy of the benchmark YAML."""
+    benchmark = _browser_benchmark(tmp_path, "online_mind2web", _M2W_TASK, step_budget=50)
+    text = render_config_template(
+        TemplateChoices(agent="ui_tars", environment="browser", model="m", benchmark=benchmark),
+        composer=composer,
+    )
+    comment = _max_steps_comment(text)
+    assert "this benchmark YAML sets 50 steps for each task" in comment
+    assert f"{_M2W_PROTOCOL}; the YAML's 50 differs from it." in comment
+
+
+def test_a_benchmark_yaml_that_sets_no_budget_says_so_and_names_the_protocols(composer, tmp_path):
+    benchmark = _browser_benchmark(tmp_path, "online_mind2web", _M2W_TASK, step_budget=None)
+    text = render_config_template(
+        TemplateChoices(model="m", benchmark=benchmark), composer=composer
+    )
+    assert (
+        "Step budget: this benchmark YAML sets no step budget (the benchmark online_mind2web's "
+        "task_loader.step_budget is null), so every task runs up to this max_steps, the "
+        f"agent's ceiling. {_M2W_PROTOCOL}."
+    ) in _max_steps_comment(text)
 
 
 @pytest.mark.parametrize(
@@ -1210,8 +1247,7 @@ def test_without_a_benchmark_no_step_budget_is_named(composer):
 
 def test_a_loop_that_takes_no_task_budget_is_told_none(composer, tmp_path):
     """A branch runs ``1 + continue_steps`` and refuses a task's ``max_steps`` (§4.1 "Loop 输入")."""
-    record = {"task_id": "m2w-1", "task_text": "Find a flight", "start_url": "https://a.test"}
-    benchmark = _browser_benchmark(tmp_path, "online_mind2web", record)
+    benchmark = _browser_benchmark(tmp_path, "online_mind2web", _M2W_TASK, step_budget=25)
     text = render_config_template(
         TemplateChoices(loop="branch", model="m", benchmark=benchmark), composer=composer
     )

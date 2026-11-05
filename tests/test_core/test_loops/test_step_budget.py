@@ -241,7 +241,9 @@ class TestARun:
         (data / "data_info.json").write_text(json.dumps({"split": {"All": "All.json"}}))
         task = {"task_id": "m2w-1", "task_text": "Find a flight", "start_url": "https://a.test"}
         (data / "All.json").write_text(json.dumps([task]))
-        context = OnlineMind2WebTaskLoader(data_dir=str(data)).get_task_context("m2w-1")
+        context = OnlineMind2WebTaskLoader(data_dir=str(data), step_budget=25).get_task_context(
+            "m2w-1"
+        )
 
         result, agent, trace = await _run(tmp_path, configured=configured, loop_inputs=context.loop)
         assert result.agent_done == AgentDoneStatus.MAX_STEPS

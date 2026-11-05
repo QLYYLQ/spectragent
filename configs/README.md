@@ -616,7 +616,7 @@ exporter:
 # a benchmark YAML named with `spectragent export --config ... --benchmark my_om2w.yaml`
 benchmark:
   - benchmark_id: online_mind2web
-    task_loader: { benchmark_name: online_mind2web, subset: All, data_dir: ~/agent-data/browser/online_mind2web }
+    task_loader: { benchmark_name: online_mind2web, subset: All, data_dir: ~/agent-data/browser/online_mind2web, step_budget: 25 }
     eval_loader: { benchmark_name: online_mind2web, subset: All, data_dir: ~/agent-data/browser/online_mind2web }
 ```
 
@@ -874,6 +874,7 @@ benchmark:
       benchmark_name: online_mind2web
       subset: All                # All | Hard; --subset Hard picks the other one
       data_dir: null             # null: $SPECTRAGENT_BENCHMARK_DATA/browser/online_mind2web
+      step_budget: 25            # required: each task's steps, the paper's own; null gives none
     # eval_loader left out: the registered online_mind2web eval loader for the task loader's subset
 ```
 
@@ -916,7 +917,7 @@ select your copy:
 # my_online_mind2web.yaml, selected with --benchmark ./my_online_mind2web.yaml
 benchmark:
   - benchmark_id: online_mind2web
-    task_loader: { benchmark_name: online_mind2web, subset: All, data_dir: null }
+    task_loader: { benchmark_name: online_mind2web, subset: All, data_dir: null, step_budget: 25 }
     verifiers:
       - verifier_id: online_mind2web
         require_screenshots: true      # a trace with no screenshot is an error, not a text-only verdict
