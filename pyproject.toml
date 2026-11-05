@@ -108,6 +108,8 @@ include-package-data = false
 # directory is deliberately not a package, so discovery never imports them
 # (they import android_world), and this glob is what ships them, with the
 # dependency lock `spectragent benchmark setup androidworld` installs from.
+# `benchmarks/venusbench/venusbench_service/` is the same for VenusBench, and
+# `files_gui_browsing.tsv` the manifest pinning its files on Google Drive.
 #
 # No benchmark data is here. Globbing a data directory made the wheel a
 # function of the build machine's disk: a checkout without the data emits a
@@ -122,6 +124,9 @@ include-package-data = false
     "viewer/static/**/*",
     "benchmarks/androidworld/androidworld_service/*.py",
     "benchmarks/androidworld/androidworld_service/requirements.lock.txt",
+    "benchmarks/venusbench/venusbench_service/*.py",
+    "benchmarks/venusbench/venusbench_service/requirements.lock.txt",
+    "benchmarks/venusbench/files_gui_browsing.tsv",
 ]
 
 [tool.setuptools.exclude-package-data]

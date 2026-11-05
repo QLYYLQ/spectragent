@@ -43,7 +43,7 @@ def test_registrar_is_keyed_on_verifier_id_and_written_only_inline():
 
 def test_every_verifier_is_registered():
     keys = set(VerifierRegistrar.keys())
-    assert keys == {"exact_match", "androidworld", *_BENCHMARK_VERIFIERS}
+    assert keys == {"exact_match", "androidworld", "venusbench", *_BENCHMARK_VERIFIERS}
 
 
 def test_androidworlds_verifier_judges_live_hosted_by_the_android_capability():
@@ -54,6 +54,17 @@ def test_androidworlds_verifier_judges_live_hosted_by_the_android_capability():
     assert verifier.capability_id == "android"
     assert AndroidWorldVerifier.__module__ == "spectragent.benchmarks.androidworld.verifier"
     assert "androidworld" in set(TaskLoaderRegistrar.keys())
+
+
+def test_venusbenchs_verifier_judges_live_hosted_by_the_android_capability():
+    """AndroidWorld's code, registered under VenusBench's key in VenusBench's package."""
+    from spectragent.benchmarks.venusbench.verifier import VenusBenchVerifier
+
+    verifier = VenusBenchVerifier()
+    assert isinstance(verifier, LiveVerifier) and attachment_of(verifier) == "live"
+    assert verifier.capability_id == "android"
+    assert VenusBenchVerifier.__module__ == "spectragent.benchmarks.venusbench.verifier"
+    assert "venusbench" in set(TaskLoaderRegistrar.keys())
 
 
 @pytest.mark.parametrize("key", sorted(VerifierRegistrar.keys()))

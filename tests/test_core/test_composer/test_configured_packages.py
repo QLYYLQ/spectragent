@@ -375,6 +375,28 @@ def test_a_run_imports_only_the_benchmark_it_names() -> None:
     assert _run(code) == ["online_mind2web"]
 
 
+def test_a_venusbench_run_registers_none_of_androidworlds_components() -> None:
+    """VenusBench imports AndroidWorld's modules that register nothing, never its components (§11.2)."""
+    code = textwrap.dedent(
+        """
+        import json, sys
+        from spectragent.benchmarks.selection import read_benchmark, run_root
+        from spectragent.core.composer import ConfigComposer
+
+        raw = run_root({}, read_benchmark("venusbench"))
+        ConfigComposer.for_config(raw).validate(raw)
+        print(json.dumps(sorted(
+            name for name in sys.modules
+            if name.startswith("spectragent.benchmarks.androidworld.")
+        )))
+        """
+    )
+    imported = _run(code)
+    assert isinstance(imported, list)
+    assert not {"benchmark", "setup", "verifier"} & {name.rsplit(".", 1)[-1] for name in imported}
+    assert "spectragent.benchmarks.androidworld.service_setup" in imported
+
+
 def test_an_agent_composes_with_a_capability_lacking_some_of_its_actions(
     probe_root: Path,
 ) -> None:

@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import signal
 import stat
 import subprocess
@@ -105,6 +106,40 @@ def fake_installation(
     (root / "cache" / "a11y" / FORWARDER_APK).write_bytes(b"apk")
     (root / "record").mkdir()
     write_behaviour(root, behaviour or {})
+    return root
+
+
+def fake_venusbench_installation(
+    root: Path, monkeypatch: pytest.MonkeyPatch, behaviour: dict[str, JsonValue] | None = None
+) -> Path:
+    """A VenusBench installation at *root* whose service is this file, behaving as *behaviour* says.
+
+    Laid out as :func:`fake_installation`, with the checkout at VenusBench's
+    pinned commit, AndroidWorld's app file beside it (its pinned SHA-256
+    replaced with the placeholder's until the test ends) and one external
+    file, the only one the manifest pins until the test ends.
+    """
+    from spectragent.benchmarks.androidworld.service import FORWARDER_APK
+    from spectragent.benchmarks.data import file_sha256
+    from spectragent.benchmarks.venusbench import service as venusbench
+    from spectragent.benchmarks.venusbench.tasks import VENUSBENCH
+
+    fake_installation(root, monkeypatch, behaviour)
+    shutil.rmtree(root / "src" / "server")
+    (root / "src" / "android_world").mkdir()
+    (root / "src" / "android_world" / "registry.py").write_text("")
+    (root / "src" / ".git" / "HEAD").write_text(f"{VENUSBENCH.commit}\n")
+    (root / "server").mkdir()
+    (root / "server" / "android_server.py").write_text("app = None\n")
+    monkeypatch.setattr(
+        venusbench, "SERVICE_APP_SHA256", file_sha256(root / "server" / "android_server.py")
+    )
+    files = root / "files" / venusbench.FILES_FOLDER
+    (files / "zip").mkdir(parents=True)
+    (files / "zip" / "a.zip").write_bytes(b"zip")
+    pinned = venusbench.DriveFile(file_sha256(files / "zip" / "a.zip"), 3, "drive-id", "zip/a.zip")
+    monkeypatch.setattr(venusbench, "drive_files", lambda: [pinned])
+    assert (root / "cache" / "a11y" / FORWARDER_APK).is_file()
     return root
 
 
