@@ -270,8 +270,11 @@ def stage_configs(
     (block,) = benchmark["benchmark"]
     block["task_loader"]["data_dir"] = str(data_dir)
     # The leak scan reads the tasks' references through this benchmark's eval loader:
-    # the fixture's tasks, not the packaged split.
-    block["eval_loader"] = {**block["task_loader"]}
+    # the fixture's tasks, not the packaged split. The step budget is the task
+    # loader's alone; the eval loader takes no such field.
+    block["eval_loader"] = {
+        key: value for key, value in block["task_loader"].items() if key != "step_budget"
+    }
     record = _shipped("record_ui_tars_pinned.yaml")
     _point_llm(record, llms["record"])
     _capability(record)["backend"]["extra_args"] = site.chrome_args(hermetic=True)
