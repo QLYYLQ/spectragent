@@ -182,6 +182,7 @@ from spectragent.core.capabilities.android.device.clients import (
     TreeCapture,
 )
 from spectragent.core.capabilities.android.device.lifecycle import DeviceSide, DeviceSideError
+from spectragent.core.capabilities.android.effects import AndroidOpenAppEffect
 from spectragent.core.capabilities.android.input import tap, text  # noqa: F401 — registration
 from spectragent.core.capabilities.android.input._registrar import (
     AndroidTapInjector,
@@ -1029,32 +1030,43 @@ class AndroidCapability(_AndroidReceptors, CapabilityBase):
         return apps
 
     @property
+    def _open_app_action(self) -> AndroidOpenAppAction | None:
+        """The run's ``open_app``; ``None`` when its actions leave it out."""
+        action = self._actions_by_name.get(OPEN_APP)
+        return action if isinstance(action, AndroidOpenAppAction) else None
+
+    @property
     def _configured_apps(self) -> Mapping[str, str] | None:
         """The run's ``open_app`` table, as configured or given by a benchmark; ``None`` without one."""
-        action = self._actions_by_name.get(OPEN_APP)
-        return action.apps if isinstance(action, AndroidOpenAppAction) else None
+        action = self._open_app_action
+        return None if action is None else action.apps
 
     async def _open_start_app(self, device: DeviceSession, start_app: str) -> None:
         """Open *start_app*, as ``open_app`` would, before the agent's first step.
+
+        The run's ``open_app`` default-app names count as there; a run whose
+        actions leave ``open_app`` out has none.
 
         Raises:
             ValueError: No app has that name, and no installed package either.
         """
         apps = self._configured_apps
         names = apps if apps is not None else self.launcher_apps
+        action = self._open_app_action
+        uris = None if action is None else action.default_app_uris
 
-        async def job() -> str | None:
+        async def job() -> AndroidOpenAppEffect | str:
             await self._keep_service()
-            return await open_app(self, names, start_app)
+            return await open_app(self, names, start_app, uris)
 
-        refused = await device.run(
+        started = await device.run(
             job,
             what=f"opening the start app {start_app!r}",
             wait_s=self.queue_wait_s,
             run_s=self.action_timeout_s,
         )
-        if refused is not None:
-            raise ValueError(f"the task starts in {start_app!r}, and {refused}")
+        if isinstance(started, str):
+            raise ValueError(f"the task starts in {start_app!r}, and {started}")
 
     async def teardown(self) -> None:
         """Stop the setup component, drain the device's queue, stop the device side, release the

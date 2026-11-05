@@ -324,6 +324,59 @@ async def test_a_component_reaches_am_quoted_so_its_dollar_stays_a_dollar() -> N
     )
 
 
+async def test_a_data_uri_reaches_am_as_androidworld_sends_it() -> None:
+    """``adb_utils._launch_default_app``: ``am start -a android.intent.action.VIEW -d <uri>``."""
+    phone = ScriptedPhone(default_apps={"content://contacts/people/": "com.example/.People"})
+    async with FakeAdbServer({SERIAL: phone}) as adb:
+        await AdbQueries(AdbClient(adb.host, adb.port), SERIAL).view("content://contacts/people/")
+
+    assert adb.requests[-1].service == (
+        "shell,v2:am start -a android.intent.action.VIEW -d content://contacts/people/"
+    )
+    assert phone.focused == "com.example/.People"
+
+
+@pytest.mark.parametrize(
+    "uri", ["mailto:a@b?subject=x&body=y;z", "x:;reboot", "a:$(reboot)", "a:(x)"]
+)
+async def test_a_data_uri_reaches_am_single_quoted_as_one_word(uri: str) -> None:
+    """A URI may hold ``;``, ``&``, ``$``, ``(`` and ``)``: the quoting alone keeps them one word.
+
+    adbd runs as root on AndroidWorld's AVD, so a URI read as more than one
+    word would run the rest as a command of its own. The fake phone splits
+    the command as ``sh`` does, so a URI sent unquoted arrives in pieces.
+    """
+    phone = ScriptedPhone(default_apps={uri: "com.example/.Viewer"})
+    async with FakeAdbServer({SERIAL: phone}) as adb:
+        await AdbQueries(AdbClient(adb.host, adb.port), SERIAL).view(uri)
+
+    assert adb.requests[-1].service == (
+        f"shell,v2:am start -a android.intent.action.VIEW -d '{uri}'"
+    )
+    assert phone.viewed == [[uri]]
+    assert phone.focused == "com.example/.Viewer"
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        pytest.param("mailto: reboot", id="a space"),
+        pytest.param("http://a b", id="a space in the path"),
+        pytest.param("mailto:'x'", id="a quote"),
+        pytest.param("$(reboot)", id="no scheme"),
+        pytest.param("people", id="no colon"),
+        pytest.param("", id="empty"),
+    ],
+)
+async def test_only_a_data_uri_reaches_a_command_line(uri: str) -> None:
+    async with FakeAdbServer({SERIAL: ScriptedPhone()}) as adb:
+        queries = AdbQueries(AdbClient(adb.host, adb.port), SERIAL)
+        with pytest.raises(ValueError, match="not a data URI"):
+            await queries.view(uri)
+
+    assert adb.requests == []
+
+
 async def test_an_activity_started_without_root_that_is_not_exported_fails_saying_so() -> None:
     """``am`` writes a header before the exception that says why; the error carries the reason."""
     started = "am start -W -n org.videolan.vlc/.gui.MainActivity"

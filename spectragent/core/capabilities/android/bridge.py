@@ -66,10 +66,16 @@ from spectragent.core.capabilities.android.input._registrar import (
 #: and its name within the package (``.gui.MainActivity``), ``$`` joining a nested class.
 PACKAGE_PATTERN = r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+"
 ACTIVITY_PATTERN = r"\.?[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*"
+#: A data URI ``open_app`` hands the device's default app for it, as AndroidWorld's
+#: ``_DEFAULT_URIS`` write them (``mailto:``, ``content://contacts/people/``): a scheme,
+#: ``:`` and URI characters (RFC 3986), no quote and no space.
+DATA_URI_PATTERN = r"[A-Za-z][A-Za-z0-9+.\-]*:[A-Za-z0-9\-._~:/?#\[\]@!$&()*+,;=%]*"
 #: What reaches a command line, and nothing else: a package, an app's (with a dot) or the
-#: system's own, ``android``, which owns the "Open with" chooser and has none; an activity.
+#: system's own, ``android``, which owns the "Open with" chooser and has none; an activity;
+#: a data URI.
 _PACKAGE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*")
 _ACTIVITY = re.compile(ACTIVITY_PATTERN)
+_DATA_URI = re.compile(DATA_URI_PATTERN)
 _KEYCODE = re.compile(r"KEYCODE_[A-Z0-9_]+")
 #: ``mFocusedApp=ActivityRecord{6dbdd1 u0 com.android.settings/.Settings t9}``.
 _FOCUSED_APP = re.compile(r"mFocusedApp=ActivityRecord\{\S+ u\d+ (?P<component>[^\s}]+)")
@@ -223,14 +229,21 @@ class ForegroundApps(Protocol):
 
 @runtime_checkable
 class AppLauncher(Protocol):
-    """Starting an app by its package."""
+    """Starting an app by its package, or the device's default app for a data URI."""
 
     async def installed_packages(self) -> frozenset[str]:
         """Every package installed on the device."""
         ...
 
-    async def launch(self, package: str, activity: str | None = None) -> None:
-        """Start *activity* of *package* (its launcher activity when ``None``); wait until it is shown."""
+    async def launch(self, package: str, activity: str | None = None) -> str:
+        """Start *activity* of *package* (its launcher activity when ``None``); wait until it is shown.
+
+        Returns the component started, ``package/activity``.
+        """
+        ...
+
+    async def view(self, uri: str) -> None:
+        """Ask the device's default app for *uri* to show it, as AndroidWorld opens its default apps."""
         ...
 
 
@@ -371,7 +384,7 @@ class AdbQueries:
             if line.startswith("package:")
         )
 
-    async def launch(self, package: str, activity: str | None = None) -> None:
+    async def launch(self, package: str, activity: str | None = None) -> str:
         if activity is None:
             resolved = await self._check(
                 "cmd package resolve-activity --brief -a android.intent.action.MAIN "
@@ -387,6 +400,22 @@ class AdbQueries:
         refused = any(line.startswith("Error") for line in started.splitlines())
         if refused or "Status: ok" not in started:
             raise BridgeError(f"am start of {component} did not succeed: {started.strip()}")
+        return component
+
+    async def view(self, uri: str) -> None:
+        # AndroidWorld's own command (adb_utils._launch_default_app), without -W as there:
+        # the still-screen wait after the action waits for what opens. am says on stderr
+        # that nothing resolves the intent.
+        result = await self._run(
+            f"am start -a android.intent.action.VIEW -d {shlex.quote(_data_uri(uri))}"
+        )
+        said = (result.stderr + result.stdout).decode(errors="replace").splitlines()
+        error = next((line.strip() for line in said if line.startswith("Error")), None)
+        if result.exit_code != 0 or error is not None:
+            raise BridgeError(
+                f"am start of the default app for {uri} did not succeed: "
+                f"{error or _first_line(result)}"
+            )
 
     async def screen_size(self) -> tuple[int, int]:
         report = (await self._check("wm size")).decode()
@@ -517,6 +546,12 @@ def _activity(activity: str) -> str:
     if not _ACTIVITY.fullmatch(activity):
         raise ValueError(f"not an Android activity name: {activity!r}")
     return activity
+
+
+def _data_uri(uri: str) -> str:
+    if not _DATA_URI.fullmatch(uri):
+        raise ValueError(f"not a data URI open_app takes: {uri!r}")
+    return uri
 
 
 def _first_line(result: ShellResult) -> str:

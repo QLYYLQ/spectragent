@@ -29,13 +29,12 @@ from spectragent.benchmarks.androidworld.service import (
 from spectragent.benchmarks.data import BenchmarkSetupError, Say
 from spectragent.benchmarks.operations import fetch_benchmark, set_up_benchmark
 from spectragent.core.data_loader._common import BenchmarkDataError, read_data_version
-from tests._helpers.benchmark_data import ANDROIDWORLD_APPS, androidworld_task
+from tests._helpers.benchmark_data import androidworld_task, open_app_table
 from tests._helpers.fake_androidworld import fake_installation
 
 
 def _task_list(commit: str = PINNED_COMMIT):
     """A stand-in for ``task_list.py``: it writes what the real one writes, from *commit*."""
-    from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FORMAT
     from spectragent.benchmarks.androidworld.tasks import TASK_LIST_FORMAT
 
     ran: list[list[str]] = []
@@ -53,8 +52,7 @@ def _task_list(commit: str = PINNED_COMMIT):
         listed = json.loads(info.read_text()) if info.exists() else {}
         listed.setdefault("split", {})[split] = f"{split}.json"
         info.write_text(json.dumps(listed))
-        table = {"format": OPEN_APP_FORMAT, "commit": commit, "apps": ANDROIDWORLD_APPS}
-        (out / "open_app.json").write_text(json.dumps(table))
+        (out / "open_app.json").write_text(json.dumps(open_app_table(commit)))
 
     return run, ran
 

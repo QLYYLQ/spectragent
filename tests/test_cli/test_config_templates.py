@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, JsonValue, ValidationError
 
 from spectragent.agents.browser_use.dom import BrowserUseDomAgent
 from spectragent.agents.m3a.agent import M3AAgent
-from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FILE, OPEN_APP_FORMAT
+from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FILE
 from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
 from spectragent.benchmarks.androidworld.tasks import instance_seed
 from spectragent.benchmarks.selection import BenchmarkSelectionError, read_benchmark, run_root
@@ -36,6 +36,7 @@ from spectragent.core.registries import (
 )
 from spectragent.core.runtime import AgentRuntime
 from tests._helpers.android_device import fake_service_apk
+from tests._helpers.benchmark_data import open_app_table
 
 #: A two-name ``open_app`` table, as AndroidWorld's task list writer would read it.
 TABLE = {
@@ -904,9 +905,7 @@ def _androidworld_data(root: Path) -> Path:
     """A small AndroidWorld data directory: one task, a two-name table."""
     data = root / "data"
     data.mkdir(parents=True)
-    (data / OPEN_APP_FILE).write_text(
-        json.dumps({"format": OPEN_APP_FORMAT, "commit": PINNED_COMMIT, "apps": TABLE})
-    )
+    (data / OPEN_APP_FILE).write_text(json.dumps(open_app_table(PINNED_COMMIT, TABLE)))
     (data / "data_info.json").write_text(json.dumps({"split": {"All": "All.json"}}))
     task = {
         "commit": PINNED_COMMIT,
@@ -1164,7 +1163,7 @@ def test_the_budget_the_benchmark_yaml_sets_is_named_with_the_protocols_own(comp
         f"input max_steps. {_M2W_PROTOCOL}. This max_steps stays the ceiling: a task runs at "
         "most the smaller of the two."
     ) in comment
-    assert "differs" not in comment
+    assert "differs" not in comment and "is below" not in comment  # BrowserUse's 500
     # The URL is never broken across lines.
     assert any(
         line.strip().startswith("# ") and "https://arxiv.org/abs/2504.01382v4)" in line
@@ -1174,6 +1173,21 @@ def test_the_budget_the_benchmark_yaml_sets_is_named_with_the_protocols_own(comp
     raw = yaml.safe_load(text)
     assert raw["agent"][0]["agent_loop"]["max_steps"] == 500
     composer.compose(run_root(raw, read_benchmark(benchmark)))
+
+
+def test_an_agents_ceiling_below_the_budget_each_task_gets_is_pointed_out(composer, tmp_path):
+    """Skyvern starts from its upstream 10 steps; Online-Mind2Web gives each task 25."""
+    benchmark = _browser_benchmark(tmp_path, "online_mind2web", _M2W_TASK, step_budget=25)
+    text = render_config_template(
+        TemplateChoices(agent="skyvern.dom", model="m", benchmark=benchmark), composer=composer
+    )
+
+    assert _max_steps_comment(text).endswith(
+        "This max_steps stays the ceiling: a task runs at most the smaller of the two. This "
+        "max_steps, 10, is below the 25 steps the benchmark online_mind2web gives each task, so "
+        "its tasks run 10 steps unless max_steps is raised."
+    )
+    assert yaml.safe_load(text)["agent"][0]["agent_loop"]["max_steps"] == 10
 
 
 def test_a_configured_budget_other_than_the_protocols_is_pointed_out(composer, tmp_path):
@@ -1245,9 +1259,7 @@ def test_venusbenchs_per_task_budget_and_its_own_source_are_named(composer, tmp_
 
     data = tmp_path / "data"
     data.mkdir()
-    (data / OPEN_APP_FILE).write_text(
-        json.dumps({"format": OPEN_APP_FORMAT, "commit": VENUSBENCH.commit, "apps": TABLE})
-    )
+    (data / OPEN_APP_FILE).write_text(json.dumps(open_app_table(VENUSBENCH.commit, TABLE)))
     (data / "data_info.json").write_text(json.dumps({"split": {"All": "All.json"}}))
     task = {
         "commit": VENUSBENCH.commit,

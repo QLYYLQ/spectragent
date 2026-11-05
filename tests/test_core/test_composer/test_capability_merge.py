@@ -34,7 +34,7 @@ import yaml
 from pydantic import JsonValue, ValidationError
 from rich.console import Console
 
-from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FILE, OPEN_APP_FORMAT
+from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FILE
 from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
 from spectragent.benchmarks.androidworld.tasks import instance_seed
 from spectragent.cli.configuration import explain_config
@@ -52,7 +52,11 @@ from spectragent.core.composer import ComposeError, ConfigComposer
 from spectragent.core.data_loader._common import BenchmarkDataError
 from spectragent.core.trace.models import TraceConfig
 from spectragent.core.trace.redaction import redact_config
-from tests._helpers.benchmark_data import androidworld_data
+from tests._helpers.benchmark_data import (
+    ANDROIDWORLD_DEFAULT_APP_URIS,
+    androidworld_data,
+    open_app_table,
+)
 
 Block = dict[str, JsonValue]
 
@@ -81,8 +85,7 @@ def _android(**written: JsonValue) -> Block:
 def _table(data: Path, apps: Mapping[str, JsonValue] = TABLE, commit: str = PINNED_COMMIT) -> Path:
     """AndroidWorld's data in *data* (one task, whose subset the benchmark reads its wait from), this table."""
     androidworld_data(data)
-    table = {"format": OPEN_APP_FORMAT, "commit": commit, "apps": dict(apps)}
-    (data / OPEN_APP_FILE).write_text(json.dumps(table))
+    (data / OPEN_APP_FILE).write_text(json.dumps(open_app_table(commit, apps)))
     return data
 
 
@@ -168,7 +171,11 @@ def test_the_computed_table_sets_open_app_and_every_action_stays(tmp_path: Path)
         AndroidCapability.__wiring__["actions"][1]
     ), "left out by the run configuration: the whole default list"
     (open_app,) = [action for action in actions if action["action_id"] == "android.open_app"]
-    assert open_app == {"action_id": "android.open_app", "apps": TABLE}
+    assert open_app == {
+        "action_id": "android.open_app",
+        "apps": TABLE,
+        "default_app_uris": ANDROIDWORLD_DEFAULT_APP_URIS,
+    }
 
 
 def test_the_table_sets_open_app_in_the_run_configurations_own_list(tmp_path: Path) -> None:
@@ -181,7 +188,11 @@ def test_the_table_sets_open_app_in_the_run_configurations_own_list(tmp_path: Pa
 
     assert merged["actions"] == [
         {"action_id": "android.click_coordinate"},
-        {"action_id": "android.open_app", "apps": TABLE},
+        {
+            "action_id": "android.open_app",
+            "apps": TABLE,
+            "default_app_uris": ANDROIDWORLD_DEFAULT_APP_URIS,
+        },
         {"action_id": "android.scroll", "duration_ms": 300},
     ]
 
@@ -211,8 +222,9 @@ def test_options_on_entries_the_runs_list_leaves_out_are_not_used(tmp_path: Path
         ),
         UnusedOptions(
             f"{entry}[android.open_app]",
-            f"the benchmark androidworld, computed in code (benchmark[0]) sets apps on "
-            f"android.open_app, which this run's actions list ({entry}) leaves out",
+            f"the benchmark androidworld, computed in code (benchmark[0]) sets apps, "
+            f"default_app_uris on android.open_app, which this run's actions list ({entry}) "
+            "leaves out",
         ),
     ), "android.wait sets no options, so nothing of it goes unused"
 
@@ -241,9 +253,9 @@ def test_config_explain_shows_the_options_the_merge_left_unused(tmp_path: Path) 
     provenance = explain_config(run, benchmark=str(benchmark))["provenance"]
 
     note = (
-        "the benchmark androidworld, computed in code (benchmark[0]) sets apps on "
-        "android.open_app, which this run's actions list (environment[0].capabilities[0].actions) "
-        "leaves out"
+        "the benchmark androidworld, computed in code (benchmark[0]) sets apps, default_app_uris "
+        "on android.open_app, which this run's actions list "
+        "(environment[0].capabilities[0].actions) leaves out"
     )
     assert provenance["unused_options"] == [
         {"path": "environment[0].capabilities[0].actions[android.open_app]", "message": note}
@@ -282,6 +294,7 @@ def test_the_merged_block_is_what_the_run_builds_and_records(tmp_path: Path) -> 
     assert capability.backend.avd == "AW"  # type: ignore[attr-defined]
     open_app = next(a for a in capability.actions if a.action_id == "android.open_app")
     assert open_app.apps == TABLE  # type: ignore[attr-defined]
+    assert open_app.default_app_uris == ANDROIDWORLD_DEFAULT_APP_URIS  # type: ignore[attr-defined]
     assert run.top_level_cfg is not None
     resolved = run.top_level_cfg.model_dump(mode="json")
     (environment,) = resolved["environment"]
@@ -304,9 +317,14 @@ def test_what_a_part_supplies_is_recorded_field_by_field(tmp_path: Path) -> None
         (block, "backend.avd", "the benchmark androidworld"),
         (block, "settle_max_wait_s", "the benchmark androidworld, computed in code"),
         (block, "actions[android.open_app].apps", "the benchmark androidworld, computed in code"),
+        (
+            block,
+            "actions[android.open_app].default_app_uris",
+            "the benchmark androidworld, computed in code",
+        ),
     ]
-    assert supplied[-1].path == ("actions", ("action_id", "android.open_app"), "apps")
-    assert supplied[-1].value == TABLE, "a free-form map is one setting"
+    assert supplied[-2].path == ("actions", ("action_id", "android.open_app"), "apps")
+    assert supplied[-2].value == TABLE, "a free-form map is one setting"
 
 
 def test_a_value_the_run_writes_too_is_not_recorded_as_supplied(tmp_path: Path) -> None:
@@ -321,6 +339,7 @@ def test_a_value_the_run_writes_too_is_not_recorded_as_supplied(tmp_path: Path) 
         "backend.avd",
         "settle_max_wait_s",
         "actions[android.open_app].apps",
+        "actions[android.open_app].default_app_uris",
     ]
 
 

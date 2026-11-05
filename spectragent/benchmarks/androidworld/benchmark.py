@@ -22,9 +22,8 @@ from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.verdict import Verdict
 
-#: The Android capability and the action whose name table the benchmark gives.
+#: The Android capability, whose ``open_app`` name table the benchmark gives.
 _ANDROID = "android"
-_OPEN_APP = "android.open_app"
 #: The longest wait for a still screen before each capture, as AndroidWorld's
 #: runner waits for every agent: up to 6 s at the start of each step
 #: (``_get_stable_state``'s ``timeout``, https://github.com/google-research/android_world/blob/55ddaf5edc6f6c25673aed343907d5b9dca66f84/android_world/env/interface.py#L247,
@@ -64,10 +63,13 @@ class AndroidWorldBenchmark(BenchmarkBase):
     def computed_capability(cls, config: BaseModel) -> list[dict[str, JsonValue]]:
         """AndroidWorld's ``open_app`` name table, and how long its runner waits for a still screen.
 
-        The table, as ``android.open_app``'s ``apps``, is read from beside the
-        task lists of the block's task loader (``open_app.json``, which
-        ``task_list.py`` writes from the pinned checkout), so ``open_app``
-        opens the activity AndroidWorld opens for each of its names.
+        The table, as ``android.open_app``'s ``apps`` and
+        ``default_app_uris``, is read from beside the task lists of the
+        block's task loader (``open_app.json``, which ``task_list.py`` writes
+        from the pinned checkout), so ``open_app`` opens what AndroidWorld
+        opens for each of its names: the activity of its table, or, for a
+        name of its ``_DEFAULT_URIS`` written exactly so, the device's
+        default app for that URI.
 
         The wait, ``settle_max_wait_s``, follows the subset the run takes
         (``--subset`` is written into the block's task loader before it is
@@ -80,7 +82,7 @@ class AndroidWorldBenchmark(BenchmarkBase):
                 the pinned commit, or the subset's task list cannot be read.
         """
         directory = cls.data_directory(config)
-        table: dict[str, JsonValue] = dict(read_open_app_table(directory))
+        table = read_open_app_table(directory)
         subset = getattr(getattr(config, "task_loader", None), "subset", None)
         if not isinstance(subset, str):
             raise TypeError(f"the androidworld block's task loader has no subset: {config!r}")
@@ -92,7 +94,7 @@ class AndroidWorldBenchmark(BenchmarkBase):
                 "settle_max_wait_s": _MINIWOB_STILL_SCREEN_WAIT_S
                 if miniwob
                 else _STILL_SCREEN_WAIT_S,
-                "actions": [{"action_id": _OPEN_APP, "apps": table}],
+                "actions": [table.action_entry()],
             }
         ]
 

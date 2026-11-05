@@ -35,6 +35,30 @@ ANDROIDWORLD_APPS = {
     "clock": "com.google.android.deskclock/com.android.deskclock.DeskClock",
     "markor": "net.gsantner.markor/net.gsantner.markor.activity.MainActivity",
 }
+#: AndroidWorld's default-app names at the pinned commit (``adb_utils._DEFAULT_URIS``).
+ANDROIDWORLD_DEFAULT_APP_URIS = {
+    "calendar": "content://com.android.calendar",
+    "browser": "http://",
+    "contacts": "content://contacts/people/",
+    "email": "mailto:",
+    "gallery": "content://media/external/images/media/",
+}
+
+
+def open_app_table(
+    commit: str,
+    apps: Mapping[str, object] = ANDROIDWORLD_APPS,
+    default_app_uris: Mapping[str, object] = ANDROIDWORLD_DEFAULT_APP_URIS,
+) -> dict[str, object]:
+    """The ``open_app.json`` document ``task_list.py`` writes from *commit*; any values, to refuse."""
+    from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FORMAT
+
+    return {
+        "format": OPEN_APP_FORMAT,
+        "commit": commit,
+        "apps": dict(apps),
+        "default_app_uris": dict(default_app_uris),
+    }
 
 
 def androidworld_task(
@@ -71,11 +95,12 @@ def androidworld_data(
 
     *tasks* (``SystemBrightnessMax`` alone when none are given) form the subset
     ``All``, and *miniwob*, when given, the subset ``miniwob``; ``open_app.json``
-    holds :data:`ANDROIDWORLD_APPS`; ``data_version.json`` names the pinned
+    holds :data:`ANDROIDWORLD_APPS` and :data:`ANDROIDWORLD_DEFAULT_APP_URIS`;
+    ``data_version.json`` names the pinned
     commit, as ``spectragent benchmark fetch androidworld`` records it.
     """
     from spectragent.benchmarks.androidworld.data import DATA
-    from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FILE, OPEN_APP_FORMAT
+    from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FILE
     from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
     from spectragent.benchmarks.androidworld.tasks import TASK_LIST_FORMAT
     from spectragent.core.data_loader._common import write_data_version
@@ -89,7 +114,6 @@ def androidworld_data(
         (directory / "miniwob.json").write_text(json.dumps(payload))
         split["miniwob"] = "miniwob.json"
     (directory / "data_info.json").write_text(json.dumps({"split": split}))
-    table = {"format": OPEN_APP_FORMAT, "commit": PINNED_COMMIT, "apps": ANDROIDWORLD_APPS}
-    (directory / OPEN_APP_FILE).write_text(json.dumps(table))
+    (directory / OPEN_APP_FILE).write_text(json.dumps(open_app_table(PINNED_COMMIT)))
     write_data_version(directory, DATA)
     return directory

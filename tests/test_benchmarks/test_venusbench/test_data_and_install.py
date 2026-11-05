@@ -17,7 +17,7 @@ import pytest
 from spectragent.benchmarks.androidworld import data as androidworld_data
 from spectragent.benchmarks.androidworld import install as androidworld_install
 from spectragent.benchmarks.androidworld.data import TASK_LIST
-from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FILE, OPEN_APP_FORMAT
+from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FILE
 from spectragent.benchmarks.androidworld.service import FORWARDER_APK, checkout_commit
 from spectragent.benchmarks.androidworld.tasks import TASK_LIST_FORMAT, instance_seed
 from spectragent.benchmarks.data import BenchmarkSetupError, Say
@@ -29,6 +29,7 @@ from spectragent.benchmarks.venusbench.service import VenusBenchInstallation
 from spectragent.benchmarks.venusbench.tasks import UNSUPPORTED, VENUSBENCH
 from spectragent.core.data_loader._common import read_data_version, write_data_version
 from spectragent.schemas.data_version import DataVersion
+from tests._helpers.benchmark_data import ANDROIDWORLD_DEFAULT_APP_URIS, open_app_table
 
 APPS = {"markor": "net.gsantner.markor/net.gsantner.markor.activity.MainActivity"}
 VERSION = DataVersion(source="git", repository=VENUSBENCH.repository, revision=VENUSBENCH.commit)
@@ -56,8 +57,7 @@ def _write_lists(out: Path, split: str, commit: str = VENUSBENCH.commit) -> None
     ]
     (out / f"{split}.json").write_text(json.dumps({"format": TASK_LIST_FORMAT, "tasks": tasks}))
     (out / "data_info.json").write_text(json.dumps({"split": {split: f"{split}.json"}}))
-    table = {"format": OPEN_APP_FORMAT, "commit": commit, "apps": APPS}
-    (out / OPEN_APP_FILE).write_text(json.dumps(table))
+    (out / OPEN_APP_FILE).write_text(json.dumps(open_app_table(commit, APPS)))
 
 
 @pytest.fixture
@@ -151,7 +151,13 @@ def test_the_run_takes_venusbenchs_avd_and_its_open_app_table(data_root: Path) -
     assert part == {
         "capability_id": "android",
         "settle_max_wait_s": 6.0,
-        "actions": [{"action_id": "android.open_app", "apps": APPS}],
+        "actions": [
+            {
+                "action_id": "android.open_app",
+                "apps": APPS,
+                "default_app_uris": ANDROIDWORLD_DEFAULT_APP_URIS,
+            }
+        ],
     }
 
 

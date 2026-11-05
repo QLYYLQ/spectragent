@@ -45,10 +45,15 @@ from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.actions.params import AddressesElement, PointAxis
-from spectragent.core.capabilities.android.bridge import ACTIVITY_PATTERN, PACKAGE_PATTERN
+from spectragent.core.capabilities.android.bridge import (
+    ACTIVITY_PATTERN,
+    DATA_URI_PATTERN,
+    PACKAGE_PATTERN,
+)
 from spectragent.core.capabilities.android.device.channel import RemoteError
 from spectragent.core.capabilities.android.device.clients import TAP_MS, FocusedNode, Stroke
 from spectragent.core.capabilities.android.effects import (
+    AndroidOpenAppEffect,
     AndroidTextEffect,
     AndroidTouchEffect,
     Gesture,
@@ -799,6 +804,8 @@ class AndroidPressKeyAction(AndroidWords, ActionBase):
 #: What a name in ``open_app``'s table opens: a package, or a component
 #: (``package/activity``).
 AppTarget = Annotated[str, PydanticField(pattern=rf"^{PACKAGE_PATTERN}(?:/{ACTIVITY_PATTERN})?$")]
+#: The data URI a default-app name of ``open_app`` hands the device's default app for it.
+DataUri = Annotated[str, PydanticField(pattern=rf"^{DATA_URI_PATTERN}$")]
 
 
 def app_target(apps: Mapping[str, str], app_name: str) -> tuple[str, str | None] | None:
@@ -816,29 +823,49 @@ def app_target(apps: Mapping[str, str], app_name: str) -> tuple[str, str | None]
 
 
 async def open_app(
-    capability: AndroidCapability, apps: Mapping[str, str], app_name: str
-) -> str | None:
-    """Open the app *app_name* names in *apps*, or the installed package of that name.
+    capability: AndroidCapability,
+    apps: Mapping[str, str],
+    app_name: str,
+    default_app_uris: Mapping[str, str] | None = None,
+) -> AndroidOpenAppEffect | str:
+    """Open what *app_name* names, in the order AndroidWorld's ``adb_utils.launch_app`` takes.
 
-    Only the table names an activity: a name of one's own is a package or
-    nothing. Returns why nothing opened, or ``None`` once the app is shown.
-    What is installed is asked of the device once, so no text of the agent's
-    reaches a command line unless it names an installed package. The reason
-    lists only the names in *apps* whose app is installed: a benchmark's table
-    also names apps its device lacks (AndroidWorld's holds 117 names), and an
-    agent keeps the error in its history.
+    First a name of *default_app_uris*, only as written (AndroidWorld checks
+    ``app_name in _DEFAULT_URIS``): the device's default app for its URI.
+    Then a name of *apps*, ignoring case and extra spaces, then an installed
+    package of that name; only the table names an activity, so a name of
+    one's own is a package or nothing (``docs/architecture_design.md`` §11.2
+    "``open_app`` 的名称表"). Returns what was started, or why nothing
+    opened. What is installed is asked of the device once, so no text of the
+    agent's reaches a command line unless it names an installed package. The
+    reason lists only the names in *apps* whose app is installed: a
+    benchmark's table also names apps its device lacks (AndroidWorld's holds
+    117 names), and an agent keeps the error in its history.
     """
-    package, activity = app_target(apps, app_name) or (app_name.strip(), None)
     launcher = capability.bridge.launcher
+    effect_id = AndroidOpenAppAction.__registry_key__
+    uris = default_app_uris or {}
+    uri = uris.get(app_name)
+    if uri is not None:
+        await launcher.view(uri)
+        return AndroidOpenAppEffect(effect_id=effect_id, uri=uri)
+    package, activity = app_target(apps, app_name) or (app_name.strip(), None)
     packages = await launcher.installed_packages()
     if package not in packages:
-        names = sorted(name for name, target in apps.items() if target.split("/")[0] in packages)
-        return (
-            f"no app {app_name!r} is installed; installed apps by name: "
-            f"{', '.join(names) or 'none'}, or an installed package name"
+        names = ", ".join(
+            sorted(name for name, target in apps.items() if target.split("/")[0] in packages)
         )
-    await launcher.launch(package, activity)
-    return None
+        defaults = (
+            f"; the device's default apps by name, written exactly so: {', '.join(sorted(uris))};"
+            if uris
+            else ","
+        )
+        return (
+            f"no app {app_name!r} is installed; installed apps by name: {names or 'none'}"
+            f"{defaults} or an installed package name"
+        )
+    started = await launcher.launch(package, activity)
+    return AndroidOpenAppEffect(effect_id=effect_id, activity=started)
 
 
 @dataclass
@@ -847,6 +874,7 @@ class AndroidOpenAppAction(AndroidWords, ActionBase):
 
     person_verb: ClassVar[str] = "打开应用"
     __registry_key__ = "android.open_app"
+    Effect = AndroidOpenAppEffect
 
     apps: Annotated[
         dict[str, AppTarget] | None,
@@ -863,6 +891,20 @@ class AndroidOpenAppAction(AndroidWords, ActionBase):
             ),
         ),
     ] = None
+    default_app_uris: Annotated[
+        dict[str, DataUri] | None,
+        trace_safe(
+            "app names and the data URIs they open, not credentials",
+            description=(
+                "Names that open the device's default app for a data URI: name -> URI, "
+                "started as AndroidWorld starts its default apps (am start -a "
+                "android.intent.action.VIEW -d <URI>). A name matches only as written, case "
+                "and spaces included, and before any name of apps, as AndroidWorld's "
+                "launch_app checks its _DEFAULT_URIS before its table. None (the default): no "
+                "such names. A benchmark may give them (AndroidWorld gives its five)."
+            ),
+        ),
+    ] = None
 
     class Params(BaseModel):
         model_config = ConfigDict(extra="forbid")
@@ -870,21 +912,29 @@ class AndroidOpenAppAction(AndroidWords, ActionBase):
         app_name: str
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return self.describe(
+        text = (
             "Open an app by its name on the home screen (for example Settings or Clock), or by "
-            "its package name.",
-            **context,
+            "its package name."
         )
+        if self.default_app_uris:
+            *rest, last = sorted(self.default_app_uris)
+            text += (
+                f" The names {', '.join(rest)} and {last}, written exactly so, open the device's "
+                "default app for each."
+                if rest
+                else f" The name {last}, written exactly so, opens the device's default app for it."
+            )
+        return self.describe(text, **context)
 
     async def execute(
         self, params: dict[str, Any], *, capability: AndroidCapability
     ) -> ActionResult:
         app_name = self.Params.model_validate(params).app_name
         apps = self.apps if self.apps is not None else capability.launcher_apps
-        refused = await open_app(capability, apps, app_name)
-        if refused is not None:
-            return ActionResult(success=False, error=refused)
-        return ActionResult(success=True)
+        started = await open_app(capability, apps, app_name, self.default_app_uris)
+        if isinstance(started, str):
+            return ActionResult(success=False, error=started)
+        return ActionResult(success=True, effect=started)
 
 
 @dataclass

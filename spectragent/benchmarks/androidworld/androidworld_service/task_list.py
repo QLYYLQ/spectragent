@@ -20,14 +20,18 @@ directory; run it by hand for a list of your own, and point the loader's
 ``data_dir`` there.
 
 Beside the lists it writes ``<data dir>/open_app.json``, format
-``androidworld-open-app-1`` (``spectragent/benchmarks/androidworld/open_app.py``):
+``androidworld-open-app-2`` (``spectragent/benchmarks/androidworld/open_app.py``):
 AndroidWorld's app name table, every name of each pattern of
 ``adb_utils._PATTERN_TO_ACTIVITY`` with the component AndroidWorld starts for
-it, read off the same checkout. Each name is checked to open its own pattern's
-component under AndroidWorld's own matcher (``get_adb_activity``: a prefix
-match, the first pattern first), so the table opens what AndroidWorld opens.
-The benchmark hands it to the Android capability's ``android.open_app``
-(``docs/architecture_design.md`` §11.2 "``open_app`` 的名称表").
+it (``apps``), and every name of ``adb_utils._DEFAULT_URIS`` with the data URI
+AndroidWorld hands the device's default app for it (``default_app_uris``),
+both read off the same checkout. Each name of ``apps`` is checked to open its
+own pattern's component under AndroidWorld's own matcher
+(``get_adb_activity``: a prefix match, the first pattern first), so the table
+opens what AndroidWorld opens; ``launch_app`` checks the default-app names
+before that matcher, only as written. The benchmark hands both to the Android
+capability's ``android.open_app`` (``docs/architecture_design.md`` §11.2
+"``open_app`` 的名称表").
 
 Each task records the narrowest family whose registry holds it, searched in
 the order ``--holders`` gives (``android``, ``information_retrieval`` or
@@ -65,7 +69,7 @@ if TYPE_CHECKING:
     from android_world.task_evals.task_eval import TaskEval
 
 FORMAT = "androidworld-tasks-3"
-OPEN_APP_FORMAT = "androidworld-open-app-1"
+OPEN_APP_FORMAT = "androidworld-open-app-2"
 #: Searched in this order for the family that holds a task, unless ``--holders`` says otherwise.
 FAMILIES = "android,information_retrieval,miniwob"
 
@@ -141,6 +145,19 @@ def _open_app_table() -> dict[str, str]:
     return apps
 
 
+def _default_app_uris() -> dict[str, str]:
+    """AndroidWorld's default-app names, each with the data URI its ``launch_app`` opens for it.
+
+    ``launch_app`` checks ``app_name in _DEFAULT_URIS`` before its table and
+    then sends ``am start -a android.intent.action.VIEW -d <uri>``
+    (``_launch_default_app``), so the device's default app for the URI opens.
+    The reader (``open_app.py``) checks what is written.
+    """
+    from android_world.env import adb_utils
+
+    return dict(adb_utils._DEFAULT_URIS)
+
+
 def main() -> None:
     args = _arguments()
     sys.path.insert(0, args.src)
@@ -189,13 +206,13 @@ def main() -> None:
     info = json.loads(info_path.read_text()) if info_path.exists() else {}
     info.setdefault("split", {})[args.split] = listing.name
     info_path.write_text(json.dumps(info, indent=2) + "\n")
-    apps = _open_app_table()
-    table = {"format": OPEN_APP_FORMAT, "commit": commit, "apps": apps}
+    apps, uris = _open_app_table(), _default_app_uris()
+    table = {"format": OPEN_APP_FORMAT, "commit": commit, "apps": apps, "default_app_uris": uris}
     (out / "open_app.json").write_text(json.dumps(table, indent=1, sort_keys=True) + "\n")
     families = Counter(task["family"] for task in tasks)
     print(
         f"wrote {len(tasks)} tasks to {listing} ({dict(families)}) and {len(apps)} app names "
-        f"to {out / 'open_app.json'}, commit {commit}"
+        f"and {len(uris)} default-app names to {out / 'open_app.json'}, commit {commit}"
     )
 
 
