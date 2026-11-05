@@ -95,5 +95,8 @@ fields it starts differently). A capability package carries `TEMPLATE_BLOCK` and
 template flag, the `--from` skeleton, what the benchmark supplies (left out, with a
 comment), the agent's start, the capability's start. `--subset` needs `--benchmark`, because
 a benchmark's supplied settings may depend on the subset (AndroidWorld's still-screen
-wait does). A sampling value no upstream sends stays unwritten, so it is not sent
-(architecture §4.17; `tests/test_cli/test_config_templates.py`).
+wait does). A sampling value no upstream sends stays unwritten, so it is not sent.
+With a benchmark, the Loop's `max_steps` carries a comment naming the step budget the
+benchmark's task loader declares (`__step_budget__`, with its public source) or saying it
+has none (architecture §4.10.1 "基准的步数预算", §4.17;
+`tests/test_cli/test_config_templates.py`).

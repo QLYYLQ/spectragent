@@ -28,6 +28,7 @@ from conscribe.introspect import WiringSlot, wiring_slots
 from conscribe.wiring import expand_relative_keys
 from pydantic import BaseModel, JsonValue
 
+from spectragent.benchmarks import Benchmark
 from spectragent.benchmarks.operations import read_benchmark_with_data
 from spectragent.benchmarks.selection import run_root
 from spectragent.core.actions._registrar import ACTION_KEY_SEPARATOR
@@ -42,6 +43,7 @@ from spectragent.core.capability_merge import (
 )
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.configuration_catalog import ComponentDefinition, ConfigurationCatalog
+from spectragent.core.data_loader.task.base import StepBudget
 from spectragent.core.negotiation._base import extract_wiring
 from spectragent.core.negotiation.action import loop_actions
 from spectragent.core.negotiation.observation import loop_fragments
@@ -170,6 +172,7 @@ def render_config_template(
     )
     for setting in supplied:
         _leave_out(expanded, setting, comments)
+    _name_step_budgets(expanded, run.instances("benchmark"), catalog, comments)
     # Full expansion can change the set of explicitly set fields (notably nested
     # provider options). Recompose the emitted values, not only the input skeleton.
     emitted = _without_left_out(expanded)
@@ -1052,6 +1055,47 @@ def _without_left_out(value: Any) -> Any:
     if isinstance(value, list):
         return [_without_left_out(item) for item in value]
     return value
+
+
+# -- naming what a start or a benchmark decides -----------------------
+
+
+def _name_step_budgets(
+    expanded: dict[str, Any],
+    benchmarks: Sequence[Benchmark],
+    catalog: ConfigurationCatalog,
+    comments: dict[TemplatePath, list[str]],
+) -> None:
+    """Under each agent's Loop ``max_steps``, the step budget the benchmark's tasks bring, or that none do.
+
+    Only for a Loop that takes a task's own budget (the Loop input
+    ``max_steps``): the budget comes from the benchmark's task loader
+    (``__step_budget__``, ``docs/architecture_design.md`` §4.10.1 "基准的步数预算").
+    """
+    lines: list[str] = []
+    for benchmark in benchmarks:
+        budget: StepBudget | None = getattr(type(benchmark.task_loader), "__step_budget__", None)
+        text = (
+            f"Step budget: the benchmark {benchmark.benchmark_id} gives each task {budget.steps}, "
+            f"handed to the Loop per task as the Loop input max_steps ({budget.source}). This "
+            "max_steps stays the ceiling: a task runs at most the smaller of the two."
+            if budget is not None
+            else f"Step budget: the benchmark {benchmark.benchmark_id} has no official step "
+            "budget, so every task runs up to this max_steps, the agent's ceiling."
+        )
+        lines += textwrap.wrap(text, width=88, break_long_words=False, break_on_hyphens=False)
+    if not lines:
+        return
+    for index, agent in enumerate(expanded.get("agent") or []):
+        loop = agent.get("agent_loop") if isinstance(agent, dict) else None
+        if not isinstance(loop, dict) or "max_steps" not in loop:
+            continue
+        key = _named_key(catalog, "agent_loop", loop)
+        takes = key is not None and "max_steps" in getattr(
+            catalog.components["agent_loop"][key].implementation, "__loop_inputs__", {}
+        )
+        if takes:
+            comments.setdefault(("agent", index, "agent_loop", "max_steps"), []).extend(lines)
 
 
 # -- rendering --------------------------------------------------------

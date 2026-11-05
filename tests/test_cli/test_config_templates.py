@@ -1077,3 +1077,107 @@ def test_a_skeleton_holding_a_benchmark_is_refused_with_one_selected(composer, t
     source = yaml.safe_load(benchmark.read_text())
     with pytest.raises(BenchmarkSelectionError, match="never holds a benchmark"):
         render_config_template(TemplateChoices(benchmark=str(benchmark)), source, composer=composer)
+
+
+# ── with a benchmark: the step budget its tasks bring (§4.10.1 "基准的步数预算") ──
+
+
+def _browser_benchmark(root: Path, benchmark_id: str, record: dict[str, str]) -> str:
+    """A benchmark YAML over one task in a data directory of its own."""
+    data = root / "data"
+    data.mkdir(parents=True)
+    (data / "data_info.json").write_text(json.dumps({"split": {"All": "All.json"}}))
+    (data / "All.json").write_text(json.dumps([record]))
+    loader = {"benchmark_name": benchmark_id, "data_dir": str(data)}
+    path = root / f"{benchmark_id}.yaml"
+    path.write_text(
+        yaml.safe_dump({"benchmark": [{"benchmark_id": benchmark_id, "task_loader": loader}]})
+    )
+    return str(path)
+
+
+def _max_steps_comment(text: str) -> str:
+    """The comment lines right above the agent Loop's ``max_steps``, joined into one text."""
+    lines = text.splitlines()
+    at = next(i for i, line in enumerate(lines) if line.startswith("      max_steps: "))
+    above = []
+    for line in reversed(lines[:at]):
+        if not line.startswith("      # "):
+            break
+        above.insert(0, line.removeprefix("      # "))
+    return " ".join(above)
+
+
+def test_a_benchmark_with_a_step_budget_names_it_its_source_and_the_ceiling(composer, tmp_path):
+    record = {"task_id": "m2w-1", "task_text": "Find a flight", "start_url": "https://a.test"}
+    benchmark = _browser_benchmark(tmp_path, "online_mind2web", record)
+    text = render_config_template(
+        TemplateChoices(model="m", benchmark=benchmark), composer=composer
+    )
+    comment = _max_steps_comment(text)
+    assert (
+        "Step budget: the benchmark online_mind2web gives each task 25 steps, handed to the "
+        "Loop per task as the Loop input max_steps (the Online-Mind2Web paper, Appendix E, for "
+        "open-source agents: https://arxiv.org/abs/2504.01382v4). This max_steps stays the "
+        "ceiling: a task runs at most the smaller of the two."
+    ) in comment
+    # The URL is never broken across lines.
+    assert "      # open-source agents: https://arxiv.org/abs/2504.01382v4). This" in text
+    # The agent's ceiling stays what the agent starts from: BrowserUse's 500.
+    raw = yaml.safe_load(text)
+    assert raw["agent"][0]["agent_loop"]["max_steps"] == 500
+    composer.compose(run_root(raw, read_benchmark(benchmark)))
+
+
+@pytest.mark.parametrize(
+    ("benchmark_id", "record"),
+    [
+        ("browsecomp", {"task_id": "bc-1", "task_text": "(encrypted)"}),
+        (
+            "lexbench_browser",
+            {"task_id": "lex-1", "task_text": "Search", "start_url": "www.example.com"},
+        ),
+    ],
+)
+def test_a_benchmark_without_one_says_none_exists_and_the_agents_ceiling_applies(
+    composer, tmp_path, benchmark_id, record
+):
+    benchmark = _browser_benchmark(tmp_path, benchmark_id, record)
+    text = render_config_template(
+        TemplateChoices(agent="skyvern.dom", model="m", benchmark=benchmark), composer=composer
+    )
+    assert _max_steps_comment(text).endswith(
+        f"Step budget: the benchmark {benchmark_id} has no official step budget, so every "
+        "task runs up to this max_steps, the agent's ceiling."
+    )
+    assert yaml.safe_load(text)["agent"][0]["agent_loop"]["max_steps"] == 10
+
+
+def test_androidworlds_per_task_budget_is_named_beside_m3as_ceiling(composer, tmp_path):
+    benchmark = str(_androidworld(tmp_path))
+    text = render_config_template(
+        TemplateChoices(agent="m3a", model="m", benchmark=benchmark), composer=composer
+    )
+    comment = _max_steps_comment(text)
+    assert (
+        "Step budget: the benchmark androidworld gives each task int(10 x complexity) steps, "
+        "10 to 120 on the pinned commit, handed to the Loop per task as the Loop input "
+        "max_steps (AndroidWorld's _allocate_step_budget: https://github.com/google-research/"
+        "android_world/blob/55ddaf5edc6f6c25673aed343907d5b9dca66f84/android_world/"
+        "suite_utils.py#L491-L502)."
+    ) in comment
+
+
+def test_without_a_benchmark_no_step_budget_is_named(composer):
+    text = render_config_template(TemplateChoices(model="m"), composer=composer)
+    assert "Step budget" not in text
+
+
+def test_a_loop_that_takes_no_task_budget_is_told_none(composer, tmp_path):
+    """A branch runs ``1 + continue_steps`` and refuses a task's ``max_steps`` (§4.1 "Loop 输入")."""
+    record = {"task_id": "m2w-1", "task_text": "Find a flight", "start_url": "https://a.test"}
+    benchmark = _browser_benchmark(tmp_path, "online_mind2web", record)
+    text = render_config_template(
+        TemplateChoices(loop="branch", model="m", benchmark=benchmark), composer=composer
+    )
+    assert "max_steps: " in text and "Step budget" not in text
