@@ -34,6 +34,7 @@ from spectragent.core.aop.weaver import Weaver
 from spectragent.core.archive.protocols import ArchiveConsumer
 from spectragent.core.capabilities.base import PreparedSetupContext
 from spectragent.core.composer import ComposedRun, ComposeError
+from spectragent.core.data_loader.task.base import data_version_of
 from spectragent.core.hooks.base import (
     PromptModelOwner,
     RuntimeHook,
@@ -77,6 +78,8 @@ if TYPE_CHECKING:
     from spectragent.benchmarks._setup_registrar import BenchmarkSetup
     from spectragent.core.environments.base import Environment
     from spectragent.core.llm.base import BaseChatModel
+    from spectragent.schemas.benchmark_spec import BenchmarkSpec
+    from spectragent.schemas.data_version import DataVersion
     from spectragent.schemas.restoration import BranchProvenance
     from spectragent.verifiers.base import LiveVerifier
 
@@ -556,7 +559,7 @@ class AgentRuntime:
         # set up, bound or narrowed.
         self._prepared_setup = PreparedSetupContext({}, {})
         self._task_text_setter = None
-        setups = self._benchmark_setups()
+        setups = self.benchmark_setups()
         live_verifiers = self._live_verifiers()
         if env is not None:
             self._prepared_setup = env.prepare_setup_context(env_context)
@@ -750,24 +753,45 @@ class AgentRuntime:
 
         return wrapped_agent
 
-    def _benchmark_setups(self) -> list[BenchmarkSetup]:
-        """The run's benchmark setup component, as a list: ``[]`` with no benchmark or none.
+    def _benchmarks(self) -> list[Benchmark]:
+        """The run's benchmark blocks: none, the one ``--benchmark`` selected, or a branch task's two.
 
-        A run root holds at most one benchmark block (``--benchmark``).
+        A branch task's run root holds its task source (``trace_branches``,
+        which never has a setup component or a verifier of its own) and the
+        benchmark the task belongs to, its source run's
+        (``docs/architecture_design.md`` §4.10.1 "分叉 sweep 是一种任务来源").
         """
-        benchmark = self._run.optional_single("benchmark")
-        setup = getattr(benchmark, "setup", None)
-        return [] if setup is None else [setup]
+        return self._run.instances("benchmark")
+
+    def benchmark_setups(self) -> list[BenchmarkSetup]:
+        """The run's benchmark setup components: ``[]`` with no benchmark or none (:meth:`_benchmarks`).
+
+        :meth:`prepare` binds them; a sweep that asks for reuse reads them
+        before that to decide whether the task may run on the environment
+        kept from the task before (``core/environment_reuse.py``).
+        """
+        return [benchmark.setup for benchmark in self._benchmarks() if benchmark.setup is not None]
 
     def _live_verifiers(self) -> list[LiveVerifier]:
-        """The run's benchmark's verifiers that judge at the scoring point; ``[]`` with no benchmark.
+        """The run's benchmarks' verifiers that judge at the scoring point; ``[]`` with no benchmark.
 
         Raises:
             TypeError: A verifier needs the live environment and names no
                 capability to host it (``Benchmark.live_verifiers``).
         """
-        benchmark: Benchmark | None = self._run.optional_single("benchmark")
-        return [] if benchmark is None else benchmark.live_verifiers()
+        return [
+            verifier for benchmark in self._benchmarks() for verifier in benchmark.live_verifiers()
+        ]
+
+    def _data_version(self) -> DataVersion | None:
+        """The version of the data the run's benchmark reads; ``None`` with no benchmark or no recorded version.
+
+        A branch task's run holds two blocks (:meth:`_benchmarks`): its task
+        source reads recorded runs and records no version, so the version is
+        that of the benchmark it inherited, whose data its setup, its
+        verifiers and its references read (``data_version_of``).
+        """
+        return data_version_of(benchmark.task_loader for benchmark in self._benchmarks())
 
     def seed_messages(self, task: str) -> list[Any]:
         """The run's seed messages for *task*, after :meth:`prepare` (arch §4.2).
@@ -817,10 +841,12 @@ class AgentRuntime:
         env_context: Mapping[str, Any] | None = None,
         loop_inputs: Mapping[str, Any] | None = None,
         branch: BranchProvenance | None = None,
+        benchmark_spec: BenchmarkSpec | None = None,
         config_source: ConfigSource | None = None,
         action_filter: list[str] | None = None,
         config: dict[str, Any] | None = None,
         raise_on_error: bool = True,
+        earlier_tasks_on_environment: int = 0,
     ) -> Any:
         """One-shot: prepare + env lifecycle + run + lifecycle hooks + timeout.
 
@@ -922,6 +948,11 @@ class AgentRuntime:
                 handed to ``on_run_start`` by name and recorded as
                 ``TraceConfig.branch``; the runtime does not read it.
                 ``None`` for every other run.
+            benchmark_spec: How the benchmark this task belongs to was
+                selected, handed to ``on_run_start`` by name and recorded as
+                ``TraceConfig.benchmark_spec``; the runtime does not read it.
+                A branch task's is its source run's (``TaskContext.benchmark``).
+                ``None`` for a task that belongs to no benchmark.
             action_filter: Optional extra narrowing of the action space.
             config_source: Explicit source YAML file identity, if the caller has one.
                 Passed through to persistence; never inferred from the resolved settings.
@@ -929,6 +960,10 @@ class AgentRuntime:
             raise_on_error: Re-raise an unexpected exception after the
                 trace is closed out. Benchmark drivers pass ``False`` to
                 get the failed ``AgentResult`` back and keep going.
+            earlier_tasks_on_environment: How many tasks the environment
+                served before this one, when a sweep kept it from them
+                (``core/environment_reuse.py``); handed to ``on_run_start``
+                for the trace, never read here. 0: a new environment.
         """
         has_env_context = env_context is not None
         prepared_agent = self.prepare(
@@ -994,6 +1029,7 @@ class AgentRuntime:
                 task_id=task_id,
                 benchmark=benchmark,
                 subset=subset,
+                data_version=self._data_version(),
                 run_id=run_id,
                 config=config or {},
                 identity=self._identity,
@@ -1016,6 +1052,8 @@ class AgentRuntime:
                 ),
                 task_setup=self._prepared_setup.recordable if has_env_context else None,
                 branch=branch,
+                benchmark_spec=benchmark_spec,
+                earlier_tasks_on_environment=earlier_tasks_on_environment,
                 config_source=config_source,
             )
 

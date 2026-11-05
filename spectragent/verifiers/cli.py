@@ -25,8 +25,9 @@ from pathlib import Path
 from pydantic import JsonValue
 
 from spectragent.benchmarks import Benchmark
-from spectragent.benchmarks.selection import read_benchmark, run_root
-from spectragent.core.composer import ComposeError, ConfigComposer
+from spectragent.benchmarks.operations import read_benchmark_with_data
+from spectragent.core.benchmark_runner import compose_benchmark_alone
+from spectragent.core.composer import ComposeError
 from spectragent.core.data_loader._common import BenchmarkDataError
 from spectragent.core.data_loader.eval.base import BaseEvalLoader
 from spectragent.core.trace.encoding import verdict_path
@@ -99,8 +100,7 @@ def reference_data(
 
 def compose_benchmark(selection: str) -> Benchmark:
     """The benchmark *selection* names, composed as a run root of its own block alone."""
-    root = run_root({}, read_benchmark(selection))
-    return ConfigComposer.for_config(root).compose(root).single("benchmark")
+    return compose_benchmark_alone(read_benchmark_with_data(selection))
 
 
 def _recording(path: Path) -> dict[str, JsonValue]:

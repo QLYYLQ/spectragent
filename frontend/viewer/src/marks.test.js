@@ -86,3 +86,41 @@ test("dots on the same spot are fanned out, not hidden under each other", () => 
     [0, 1, 0],
   );
 });
+
+test("an element's recorded bounds become a box, and a scroll's arrow follows its direction", () => {
+  const layout = markLayout({
+    width: 540,
+    height: 1200,
+    sets: [{ marks: [
+      { number: 1, kind: "click", x: 450, y: 100, box: [400, 50, 500, 150], text: "点击" },
+      { number: 2, kind: "scroll", x: 270, y: 750, end_x: 270, end_y: 350, direction: "down", text: "向下滚动" },
+      { number: 3, kind: "type", x: 1, y: 1, box: [5, 5, 5, 9], text: "输入" },
+    ] }],
+  });
+  const [click, swipe, flat] = layout.sets[0].shapes;
+  assert.deepEqual(click.box, { x: 400, y: 50, width: 100, height: 100 });
+  // "down": the arrow points down even where the finger's recorded path went up
+  assert.equal(swipe.angle, 90);
+  assert.ok(swipe.end.y > swipe.y);
+  assert.equal(flat.box, undefined);
+});
+
+test("an element named with no recorded point is drawn as its box, numbered at the corner", () => {
+  const data = { width: 540, height: 1200, sets: [{ marks: [
+    { number: 1, kind: "click", x: null, y: null, box: [400, 50, 500, 150], unplaced: "没有记录按下的位置；虚线框是它指名的元素", text: "点击 #0" },
+  ] }] };
+  const [shape] = markLayout(data).sets[0].shapes;
+  assert.deepEqual([shape.x, shape.y, shape.boxOnly], [400, 50, true]);
+  assert.deepEqual(shape.box, { x: 400, y: 50, width: 100, height: 100 });
+  const [row] = legendRows(data)[0].marks;
+  assert.equal(row.drawn, true);
+  assert.match(row.note, /虚线框/);
+});
+
+test("typed text near an image's right edge is labelled to the left of its dot", () => {
+  const layout = markLayout({ width: 100, height: 100, sets: [{ marks: [
+    { number: 1, kind: "type", x: 80, y: 10, typed: "Emilia", text: "输入" },
+    { number: 2, kind: "type", x: 20, y: 10, typed: "Gonzalez", text: "输入" },
+  ] }] });
+  assert.deepEqual(layout.sets[0].shapes.map((shape) => shape.typedLeft), [true, false]);
+});

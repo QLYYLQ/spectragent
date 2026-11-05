@@ -112,8 +112,25 @@ class AgentBase(AgentReceptors, metaclass=AgentRegistrar.Meta):
     These are starting values the template writes into the YAML, never
     defaults a run falls back on: a run takes only what its configuration
     says, and what the agent requires of it is checked by its own
-    ``check_run_settings``, not by this block. Empty (the default) for an
-    agent with no such needs. A ``--from`` skeleton's own values win over them.
+    ``check_run_settings``, not by this block. Each agent starts from its
+    upstream project's settings, cited on the class. A receptor block that
+    names no implementation (an ``llm`` block without ``model_type`` and
+    ``provider``) gives values, not the choice: the template writes each into
+    the implementation it chooses, where that one has the field. A ``--from``
+    skeleton's own values win over them.
+    """
+
+    __template_capabilities__: ClassVar[Mapping[str, Mapping[str, JsonValue]]] = {}
+    """Where ``spectragent config template`` starts the capability blocks this agent runs in.
+
+    By ``capability_id``, each shaped as that capability's ``TEMPLATE_BLOCK``
+    (a capability block without ``capability_id``): the agent's own habits
+    that live in capability fields, such as the page reading it is built for
+    (``docs/architecture_design.md`` §4.17 "agent 的模板起点"). A field or
+    receptor given here replaces the capability's own start for it whole; a
+    capability the run's environment has no block for ignores its entry. A
+    starting point written into the YAML, never a runtime default, and never
+    a requirement: a run that changes it is still a valid run.
     """
 
     id: Annotated[

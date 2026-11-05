@@ -66,7 +66,9 @@ implements `check_run_settings(execution_limits)` (`RunSettingsCheck`), or both;
 is not a consumption declaration. Runtime checks this in `prepare()`, asks
 `check_run_settings` right there, and hands the same typed value to
 `AgentRuntime.seed_messages()` when `prepare` names it. A setting an Agent cannot work with
-(M3A: fewer than 2 actions per reply) is refused in `check_run_settings`, never in its
+(M3A: fewer than 2 actions per reply, parse retries, a bounded parse-error streak or a memory
+keeping more than one message; UI-TARS, BrowserUse and Skyvern: a Loop that leaves
+`max_actions_per_step` unbounded) is refused in `check_run_settings`, never in its
 `prepare` seed slot: `spectragent config check` and the bench pre-flight run `prepare()`
 only, so a refusal in the seed slot passes them and fails every run at its start.
 
@@ -355,9 +357,12 @@ a guard's veto still propagates. Runtime's execution clock includes the observat
 
 `BranchLoop` remains a ReAct branch. Its restored prefix and terminal observation do not
 consume the policy-step budget, enter the run's policy action history, or inherit source
-model usage. Source history reconstruction replays only Agent decision/retry calls, not
-auxiliary model replies. `history_source: source` reconstructs and exactly checks recorded prompts, replaying only
-main decision calls and recorded contributions. It reads each recorded reply through
+model usage. Source history reconstruction replays only Agent decision/retry calls, never
+calls a helper. `history_source: source` reconstructs and exactly checks recorded prompts, replaying only
+main decision calls and recorded contributions; an Agent that owns a helper (M3A's step
+summary) gets the source step's recorded helper replies by purpose
+(`ReactPromptContext.source_helper_replies`, on each replayed step and the first policy
+step) and uses them instead of calling (design doc §4.1 "source 历史", ruling 2026-11-04). It reads each recorded reply through
 `read_reply`, a refused structured reply from its recorded `raw_output` and a cut-off reply
 the source read as is from its recorded `partial_output`, so a refusal reads back in the
 words the live step used; a source recorded before structured refusals were the

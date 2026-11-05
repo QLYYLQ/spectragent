@@ -15,13 +15,13 @@ from __future__ import annotations
 import io
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from PIL import Image
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from spectragent.agents._registrar import AgentBase
 from spectragent.agents.m3a import M3AAgent
@@ -54,12 +54,15 @@ from spectragent.core.llm.messages import (
     UserMessage,
 )
 from spectragent.core.llm.views import ChatInvokeCompletion
-from spectragent.core.loops import ReactLoop
+from spectragent.core.loops import BranchLoop, ReactLoop
+from spectragent.core.loops.validation import IncompatibleCheckpointError
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
+from spectragent.core.trace.reconstruction import recorded_chat_decisions, recorded_form
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation.fragments import HistoryObs, TaskObs
 from spectragent.schemas.prompt import PromptContribution, ReactPromptContext
+from spectragent.schemas.restoration import Checkpoint
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.android_device import (
     ScriptedPhone,
@@ -266,6 +269,64 @@ async def test_the_history_holds_the_summary_of_a_step_and_m3as_line_for_an_unre
 
     assert _text(message) == _ANDROIDWORLD["cases"]["action_selection_with_history"]
     assert len(summarizer.calls) == 1, "no call for the step whose reply could not be read"
+
+
+async def test_a_branch_rebuilding_its_sources_history_takes_the_recorded_summary() -> None:
+    """The same prompt as the run that summarized, with no model call (user ruling 2026-11-04)."""
+    opened = "Reason: Settings has the Wi-Fi toggle.\nAction: {'action_type': 'open_app', 'app_name': 'Settings'}"
+    history = [_record(0, opened, results=[ActionResult(success=True)])]
+    live = _agent(_Summarizer(["Opened Settings."]))
+    await live.build_react_prompt(_Observation(), context=_context(0))
+    (recorded,) = await live.build_react_prompt(
+        _Observation(history=HistoryObs(items=list(history))), context=_context(1)
+    )
+
+    summarizer = _Summarizer([])
+    branch = _agent(summarizer)
+    await branch.build_react_prompt(
+        _Observation(),
+        context=ReactPromptContext(
+            step=0, phase="history", is_branch=True, source_helper_replies={}
+        ),
+    )
+    (rebuilt,) = await branch.build_react_prompt(
+        _Observation(history=HistoryObs(items=list(history))),
+        context=ReactPromptContext(
+            step=1,
+            phase="history",
+            is_branch=True,
+            source_run_id="source-run",
+            source_helper_replies={"step_summary": ("Opened Settings.",)},
+        ),
+    )
+
+    assert _text(rebuilt) == _text(recorded)
+    assert summarizer.calls == [], "rebuilding history makes no model call"
+
+
+@pytest.mark.parametrize("recorded", [{}, {"step_summary": ("one", "two")}])
+async def test_a_source_step_without_its_one_summary_cannot_be_branched(
+    recorded: dict[str, tuple[str, ...]],
+) -> None:
+    opened = "Reason: r\nAction: {'action_type': 'open_app', 'app_name': 'Settings'}"
+    agent = _agent(_Summarizer(["never asked"]))
+    await agent.build_react_prompt(_Observation(), context=_context(0))
+    with pytest.raises(
+        IncompatibleCheckpointError, match="step 1 recorded .* step_summary"
+    ) as caught:
+        await agent.build_react_prompt(
+            _Observation(
+                history=HistoryObs(items=[_record(0, opened, results=[ActionResult(success=True)])])
+            ),
+            context=ReactPromptContext(
+                step=1,
+                phase="policy",
+                is_branch=True,
+                source_run_id="source-run",
+                source_helper_replies=recorded,
+            ),
+        )
+    assert caught.value.source == "source-run"
 
 
 async def test_the_summary_is_a_helper_call_with_androidworlds_prompt_and_the_marked_screens() -> (
@@ -571,6 +632,100 @@ async def test_a_run_types_into_an_element_presses_enter_summarizes_and_claims_s
         (1, "agent", "step_summary"),
         (1, "agent", "agent_decision"),
     ]
+
+
+class _LoopEntry(BaseModel):
+    loop_id: Literal["react", "branch"]
+    max_actions_per_step: int
+    max_consecutive_parse_errors: int | None
+
+
+class _MemoryEntry(BaseModel):
+    memory_id: Literal["sliding_window"] = "sliding_window"
+    window_size: int = 1
+
+
+class _M3AEntry(BaseModel):
+    """What a Composer records of M3A's block (closed values are recorded raw), for a branch to
+    compare against."""
+
+    agent_id: Literal["m3a"] = "m3a"
+    agent_loop: _LoopEntry
+    memory: _MemoryEntry = _MemoryEntry()
+
+
+class _RecordedConfig(BaseModel):
+    agent: list[_M3AEntry]
+
+
+async def _m3a_run(
+    tmp_path: Path, adb: Any, loop: Any, model: ScriptedModel, name: str, **inputs: Any
+) -> tuple[Any, RunTrace]:
+    """One M3A run on the scripted phone, through the real runtime and trace writer."""
+    capability = AndroidCapability(service_apk=str(fake_service_apk(tmp_path)), settle_max_wait_s=0)
+    configured(capability, adb)
+    writer = TraceWriter(trace_dir=str(tmp_path / name))
+    run = make_run(
+        agent=M3AAgent(),
+        loop=loop,
+        env=make_env(AndroidEnvironment, {"android#0": capability}),
+        llm=model,
+        memory=SlidingWindowMemory(window_size=1),
+        hooks=[writer],
+    )
+    recorded = _RecordedConfig(
+        agent=[_M3AEntry(agent_loop=_LoopEntry(loop_id=loop.loop_id, **_ANDROIDWORLD_LOOP))]
+    )
+    run = replace(run, top_level_cfg=recorded)
+    result = await AgentRuntime.for_agent(run, AGENT_ID).execute(
+        _GOAL, timeout=30, task_id="tap-network", **inputs
+    )
+    assert writer.run_dir is not None
+    return result, RunTrace(writer.run_dir)
+
+
+async def test_a_branch_of_an_m3a_run_rebuilds_its_history_from_the_summaries_it_recorded(
+    tmp_path: Path,
+) -> None:
+    """The summary of step 0 is a call of step 1 (made while step 1's prompt is built): a branch
+    at step 1 finds it there, rebuilds the source's prompt with it, and calls no summary model."""
+    phone = ScriptedPhone(screen=_png())
+    phone.forest = settings_forest(
+        ("Network & internet", (0, 300, 1080, 450)), ("Connected devices", (0, 450, 1080, 600))
+    )
+    tap = "Reason: Open it.\nAction: {'action_type': 'click', 'index': 0}"
+    complete = "Reason: Done.\nAction: {'action_type': 'status', 'goal_status': 'complete'}"
+    async with phone_server(phone) as adb:
+        result, source = await _m3a_run(
+            tmp_path,
+            adb,
+            ReactLoop(**_ANDROIDWORLD_LOOP),
+            ScriptedModel(tap, "Opened Network & internet.", complete),
+            "sources",
+        )
+        assert result.agent_done == "done", result.error
+        assert [(c.step, c.purpose) for c in source.call_metrics(1)] == [
+            (1, "step_summary"),
+            (1, "agent_decision"),
+        ]
+        teacher = ScriptedModel(complete)
+        branch, trace = await _m3a_run(
+            tmp_path,
+            adb,
+            BranchLoop(**_ANDROIDWORLD_LOOP),
+            teacher,
+            "branches",
+            loop_inputs={"checkpoint": Checkpoint(trace_dir=str(source.trace_dir), step=1)},
+        )
+
+    assert branch.agent_done == "done", branch.error
+    (decision,) = teacher.calls  # the decision alone: no summary call
+    assert "Opened Network & internet." in _text(decision[0])
+    (recorded,) = recorded_chat_decisions(source, 1, consumer="this test")
+    assert recorded_form(decision) == recorded_form(recorded.messages)
+    first = trace.step(0)
+    assert first is not None and first.origin == "restored" and first.restoration is not None
+    assert first.restoration.verdict == "ok", first.restoration.reasons
 
 
 async def test_a_reply_cut_off_at_the_ceiling_spends_its_step_as_androidworld_does(

@@ -11,6 +11,8 @@ import {
   historyExplanation,
   everywhereLabel,
   gapLabel,
+  notShownCapabilities,
+  reasonLabel,
   modelCallTitle,
   decisionAnswerRows,
 } from "./evidence.js";
@@ -187,4 +189,16 @@ test("a fact no checked step measured is stated once for the run, never as zero"
   assert.match(everywhereLabel({ facts: [dom], checked_steps: 1 }), /唯一一个已检查的步/);
   assert.equal(everywhereLabel({ facts: [], checked_steps: 6 }), null);
   assert.equal(everywhereLabel(undefined), null);
+});
+
+test("a check this view cannot read is never a step with no measured difference", () => {
+  // An Android checkpoint: its own UI tree check failed (warn), and this view reads only browser evidence.
+  const gap = {status: "not_shown", differences: [], unmeasured: [], not_shown: ["android: not shown in this view"], verdict: "warn"};
+  assert.notEqual(gapLabel(gap), "未测得差异");
+  assert.equal(gapLabel(gap), "android 的测量不在这一视图里展示");
+  assert.equal(gapLabel({...gap, unmeasured: ["Action 1: outcome comparison unavailable"]}), "android 的测量不在这一视图里展示");
+  assert.equal(gapLabel({...gap, differences: ["Action 1: not executed"]}), "测得 1 处差异");
+  assert.deepEqual(notShownCapabilities(gap), ["android"]);
+  assert.equal(reasonLabel("ui_tree_mismatch"), "界面树不一致");
+  assert.equal(reasonLabel("something_new"), "something new");
 });

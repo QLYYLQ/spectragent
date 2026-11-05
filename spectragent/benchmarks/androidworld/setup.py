@@ -3,7 +3,8 @@
 ``docs/architecture_design.md`` §4.10.1, §11.2 ("任务裁判拆成两个基准组件").
 Written in the AndroidWorld benchmark's ``setup`` block and hosted by the
 Android capability (``AndroidBenchmarkSetup``), which gives it the booted
-device. One task is one run:
+device. One task is one run, and a sweep may run several tasks on one device
+(below):
 
 1. **start**, once the provider booted the device meeting :attr:`device_needs`
    (the emulator's gRPC behind a token, adbd as root, the guest's Wi-Fi up,
@@ -21,8 +22,25 @@ device. One task is one run:
    launcher adds, whether the page ended its episode; every other task answers
    ``False`` without a wait or a call.
 3. **stop**, first at teardown: ``/task/tear_down`` (best effort, since the
-   device's changes are thrown away with the run; a failure is logged), then
-   the service's process group.
+   device's changes are thrown away with it; a failure is logged), then the
+   service's process group.
+
+**It resets the device between tasks** (``__resets_between_tasks__``), as
+AndroidWorld's own runner does (``suite_utils._run_task`` of the pinned
+commit): one device and one service serve every task, each task's
+``initialize_task`` restores the snapshots of its own apps and sets the
+device's clock, and its ``tear_down`` restores them again and closes the recent
+apps. So a sweep may keep the device for the next task (§4.10.1
+"环境跨任务复用"). Then :meth:`AndroidWorldSetup.stop` is asked to keep the
+service: ``/task/tear_down`` must succeed (else the service is stopped, the
+error raised and the device released), and the service stays up on the device
+for the next task's component, which :meth:`AndroidWorldSetup.start` receives
+instead of starting another. Keeping the service is what makes the reuse
+AndroidWorld's: a new service takes every app's snapshot again from the device
+it starts on, which after a task is that task's leftovers. What AndroidWorld's
+reset leaves as the task left it carries over, as in its own runner: the apps
+outside the task's own, system settings it does not set, and apps still
+running (warm starts).
 
 The task is judged against the same service at the scoring point, by
 AndroidWorld's live verifier (``verifier.py``): the Android capability hands it
@@ -42,7 +60,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field, ValidationError
@@ -55,13 +72,14 @@ from spectragent.benchmarks.androidworld.service import (
     AndroidWorldService,
     AndroidWorldSetupError,
     Installation,
-    default_root,
     goal_after_initialize,
 )
 from spectragent.benchmarks.androidworld.tasks import MINIWOB, UNREPRODUCIBLE, AndroidWorldTask
 from spectragent.core.capabilities.android.backends.base import AndroidProviderSession, DeviceNeeds
 from spectragent.core.capabilities.android.benchmark_setup import OracleTask
 from spectragent.core.capabilities.android.processes import finish
+from spectragent.core.data_loader._common import validation_summary
+from spectragent.core.environment_reuse import KeptEnvironment
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +90,7 @@ class AndroidWorldSetup(BenchmarkSetupBase):
 
     __registry_key__ = "androidworld"
     __hosted_by__ = "android"
+    __resets_between_tasks__ = True
 
     root: Annotated[
         str | None,
@@ -82,10 +101,11 @@ class AndroidWorldSetup(BenchmarkSetupBase):
                 "(src/), and the accessibility forwarder its one-time setup cached "
                 f"(cache/a11y/{FORWARDER_APK}). The AVD the provider boots must be the one that "
                 "setup prepared, and ffmpeg must be on Spectragent's PATH, as AndroidWorld's "
-                "README installs it: its music tasks make their mp3 files with it. None (the "
-                "default): android/androidworld/installation under the benchmark data root, "
-                "$SPECTRAGENT_BENCHMARK_DATA/android/androidworld/installation, whatever the "
-                "task loader's data_dir says."
+                "README installs it: its music tasks make their mp3 files with it. "
+                "spectragent benchmark setup installs it where this says. None (the default): "
+                "android/androidworld/installation under the benchmark data root "
+                "($SPECTRAGENT_BENCHMARK_DATA, else ~/.cache/spectragent/benchmarks), whatever "
+                "the task loader's data_dir says."
             )
         ),
     ] = None
@@ -116,7 +136,9 @@ class AndroidWorldSetup(BenchmarkSetupBase):
     ] = 120.0
 
     _service: AndroidWorldService | None = field(default=None, init=False, repr=False)
-    _stopping: asyncio.Future[None] | None = field(default=None, init=False, repr=False)
+    _stopping: asyncio.Future[AndroidWorldService | None] | None = field(
+        default=None, init=False, repr=False
+    )
     _task: AndroidWorldTask | None = field(default=None, init=False, repr=False)
     _initialized: bool = field(default=False, init=False, repr=False)
     #: The goal the device made at initialize, for a task whose goal is made then.
@@ -124,8 +146,7 @@ class AndroidWorldSetup(BenchmarkSetupBase):
 
     @property
     def installation(self) -> Installation:
-        root = default_root() if self.root is None else Path(self.root).expanduser()
-        return Installation(root)
+        return Installation.at(self.root)
 
     @property
     def device_needs(self) -> DeviceNeeds:
@@ -133,8 +154,8 @@ class AndroidWorldSetup(BenchmarkSetupBase):
         # when it attaches (which would drop the device under the bridge), and
         # its accessibility forwarder reaches the host over the guest's Wi-Fi.
         # It re-takes each app's snapshot from the device it starts on, and
-        # tasks restore their apps from those: a run's changes kept in the AVD
-        # would become every later run's start.
+        # tasks restore their apps from those: changes kept in the AVD would
+        # become every later device's start.
         return DeviceNeeds(emulator_grpc=True, root=True, guest_wifi=True, fresh=True)
 
     def check_setup(self, task: OracleTask | None) -> None:
@@ -156,17 +177,36 @@ class AndroidWorldSetup(BenchmarkSetupBase):
                 "the androidworld setup cannot start: " + "; ".join(problems)
             )
 
-    async def start(self, device: AndroidProviderSession, task: OracleTask | None) -> None:
+    async def start(
+        self,
+        device: AndroidProviderSession,
+        task: OracleTask | None,
+        *,
+        kept: KeptEnvironment | None = None,
+    ) -> None:
+        """Start the service on *device*, or take the one *kept* there, and prepare *task* on it.
+
+        Raises:
+            TypeError: *kept* is no AndroidWorld service.
+            AndroidWorldSetupError: As :meth:`check_setup`, for *task*.
+            AndroidWorldError: The device offers no emulator gRPC endpoint, or
+                the service failed to prepare the task.
+        """
+        if kept is not None:
+            if not isinstance(kept, AndroidWorldService):
+                raise TypeError(f"what the device kept for AndroidWorld is no service: {kept!r}")
+            self._service = kept
         parsed = self._parse(task)
-        emulator = device.emulator
-        if emulator is None or emulator.grpc is None:
-            raise AndroidWorldError(
-                f"AndroidWorld drives an emulator over its gRPC endpoint, and the device "
-                f"{device.provider_id!r} brought up offers none"
+        if self._service is None:
+            emulator = device.emulator
+            if emulator is None or emulator.grpc is None:
+                raise AndroidWorldError(
+                    f"AndroidWorld drives an emulator over its gRPC endpoint, and the device "
+                    f"{device.provider_id!r} brought up offers none"
+                )
+            self._service = await AndroidWorldService.start(
+                self.installation, device, emulator, emulator.grpc, self.start_timeout_s
             )
-        self._service = await AndroidWorldService.start(
-            self.installation, device, emulator, emulator.grpc, self.start_timeout_s
-        )
         self._task, self._device_goal = parsed, None
         await self._prepare(self._service, parsed)
 
@@ -255,34 +295,80 @@ class AndroidWorldSetup(BenchmarkSetupBase):
             raise AndroidWorldError("no AndroidWorld task was initialized on this device")
         return service, task
 
-    async def stop(self) -> None:
+    async def stop(self, *, keep: bool = False) -> AndroidWorldService | None:
+        """End the task with ``/task/tear_down`` and stop the service; with *keep*, keep the service.
+
+        Without *keep* the tear-down is best effort (the device is released
+        with it). With *keep* the device serves the next task, so the
+        tear-down, AndroidWorld's reset, must succeed: the service is
+        returned, still running, for the next task's :meth:`start`; when the
+        tear-down fails or no task was initialized, the service is stopped
+        and the error raised. A cancellation that arrives while it ends the
+        task waits for that, then stops a service it kept, since nobody takes
+        it. Safe to repeat: a second call finds nothing.
+
+        Raises:
+            AndroidWorldError: With *keep*: no task was initialized on the
+                device, or its tear-down failed.
+            TimeoutError: With *keep*: the tear-down gave no answer in time.
+        """
         service = self._service
         if service is None:
-            return
-        if self._stopping is None or self._stopping.done():
-            self._stopping = asyncio.ensure_future(self._stop(service))
-        await finish(self._stopping)
-        self._service = None
-        self._task = None
+            return None
+        stopping = self._stopping
+        if stopping is None or stopping.done():
+            self._stopping = stopping = asyncio.ensure_future(self._stop(service, keep=keep))
+        try:
+            kept = await finish(stopping)
+        except asyncio.CancelledError:
+            # The reset finished and kept the service, and nobody takes it now.
+            if not stopping.cancelled() and stopping.exception() is None:
+                left = stopping.result()
+                if left is not None:
+                    await finish(asyncio.ensure_future(left.close()))
+            raise
+        finally:
+            self._service = None
+            self._task = None
+        return kept
 
-    async def _stop(self, service: AndroidWorldService) -> None:
+    async def _stop(
+        self, service: AndroidWorldService, *, keep: bool
+    ) -> AndroidWorldService | None:
         task, initialized = self._task, self._initialized
         self._initialized = False
+        tear_down = (
+            {"task_type": task.task, "task_idx": task.index}
+            if initialized and task is not None
+            else None
+        )
+        if keep:
+            try:
+                if tear_down is None:
+                    raise AndroidWorldError("no AndroidWorld task was initialized on this device")
+                await service.call(
+                    "POST", "/task/tear_down", tear_down, timeout_s=self.call_timeout_s
+                )
+            except BaseException:
+                await finish(asyncio.ensure_future(service.close()))
+                raise
+            return service
         try:
-            if initialized and task is not None:
+            if tear_down is not None:
                 try:
                     await service.call(
-                        "POST",
-                        "/task/tear_down",
-                        {"task_type": task.task, "task_idx": task.index},
-                        timeout_s=self.call_timeout_s,
+                        "POST", "/task/tear_down", tear_down, timeout_s=self.call_timeout_s
                     )
-                except Exception as exc:  # the device is discarded with the run either way
+                except Exception as exc:  # the device is released with it either way
                     logger.warning(
-                        "AndroidWorld's tear-down of %s #%d failed: %s", task.task, task.index, exc
+                        "AndroidWorld's tear-down of %s #%s failed: %s",
+                        tear_down["task_type"],
+                        tear_down["task_idx"],
+                        exc,
                     )
         finally:
             await service.close()
+        return None
 
     @staticmethod
     def _parse(task: OracleTask | None) -> AndroidWorldTask:
@@ -302,12 +388,14 @@ class AndroidWorldSetup(BenchmarkSetupBase):
             parsed = AndroidWorldTask.model_validate(task)
         except ValidationError as exc:
             raise AndroidWorldSetupError(
-                f"the task's oracle_task is not an AndroidWorld task: {exc}"
+                f"the task's oracle_task is not an AndroidWorld task ({validation_summary(exc)}): "
+                f"fetch the task lists again with spectragent benchmark fetch androidworld"
             ) from None
         if parsed.commit != PINNED_COMMIT:
             raise AndroidWorldSetupError(
                 f"the task list was made with AndroidWorld {parsed.commit}, and this setup runs "
-                f"{PINNED_COMMIT}: generate the list again with the pinned checkout"
+                f"{PINNED_COMMIT}: fetch the task lists again with spectragent benchmark fetch "
+                f"androidworld"
             )
         if parsed.task in UNREPRODUCIBLE:
             raise AndroidWorldSetupError(f"{parsed.task} cannot run: {UNREPRODUCIBLE[parsed.task]}")

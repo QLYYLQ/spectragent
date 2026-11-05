@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
@@ -12,6 +12,7 @@ from spectragent.core.capabilities.browser.actions._browser_commands import hist
 from spectragent.core.capabilities.browser.actions._common import effect_from
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.effects import NavigationEffect
+from spectragent.core.capabilities.browser.presentation import BrowserWords
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
 if TYPE_CHECKING:
@@ -19,13 +20,14 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class GoForwardAction(SettleableAction, ActionBase):
+class GoForwardAction(BrowserWords, SettleableAction, ActionBase):
     """Navigate forward in the current tab's history.
 
     Reports a :class:`NavigationEffect`: the URL before, the URL once the
     history entry committed, and whether that document had finished loading.
     """
 
+    person_verb: ClassVar[str] = "前进"
     __registry_key__ = "browser.go_forward"
     Effect = NavigationEffect
 

@@ -1253,6 +1253,11 @@ def _require_current_format(path: Path, document: Any) -> None:
 
 def _why_not_read(found: Any) -> str:
     """What changed since the format *found*, in the words of a refusal."""
+    if found == 8 and type(found) is int:
+        return (
+            "A format-8 trace does not say how its benchmark was selected, so a branch of it "
+            "could not find its benchmark's setup component and verifiers."
+        )
     if found == 7 and type(found) is int:
         return (
             "A format-7 trace keeps the scoring point's scores in its manifest; the current "

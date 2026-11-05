@@ -1,0 +1,203 @@
+"""``spectragent benchmark setup androidworld``: AndroidWorld's installation (``docs/architecture_design.md`` §4.10.1 "数据", §11.2).
+
+The installation the setup component runs AndroidWorld's service from
+(``service.py``'s :class:`~spectragent.benchmarks.androidworld.service.Installation`),
+by default ``android/androidworld/installation`` in the shared cache:
+
+1. ``src/``: AndroidWorld's repository, cloned and checked out at the pinned
+   commit (fetched first when a checkout there is at another commit);
+2. ``.venv/``: a CPython 3.11 venv made by ``uv``, synced to the packages
+   of ``androidworld_service/requirements.lock.txt`` (``uv pip sync``: what
+   the lock lists is installed at its version, and anything else removed),
+   then the checkout itself, editable and without its dependencies (that
+   build compiles its two protocol buffers into ``src/``); so after every
+   setup the venv holds the lock and the checkout, nothing more;
+3. ``cache/a11y/``: the accessibility forwarder android_env installs on the
+   device, downloaded once and checked against its SHA-256, so the service
+   need not download it at every start.
+
+Each step is skipped when its result is in place. What it cannot install it
+names: ffmpeg on ``PATH`` (AndroidWorld makes its music tasks' audio with it),
+and the AVD the benchmark boots, which AndroidWorld's own one-time setup
+prepares on a running emulator (this command starts none).
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+
+from pydantic import BaseModel, JsonValue
+
+from spectragent.benchmarks.androidworld.data import REPOSITORY
+from spectragent.benchmarks.androidworld.service import (
+    FORWARDER_APK,
+    PINNED_COMMIT,
+    Installation,
+    checkout_commit,
+)
+from spectragent.benchmarks.data import (
+    BenchmarkSetupError,
+    Say,
+    download_file,
+    file_sha256,
+    run_program,
+)
+from spectragent.core.capabilities.android.backends.local_emulator import find_avd_home
+
+#: The packages the venv holds.
+LOCK = Path(__file__).resolve().parent / "androidworld_service" / "requirements.lock.txt"
+#: The Python AndroidWorld runs on (its pyproject.toml: ``>=3.11``; its Dockerfile: 3.11).
+PYTHON = "3.11"
+#: Where android_env downloads the forwarder from, and its SHA-256 (measured 2026-11-01).
+FORWARDER_URL = f"https://storage.googleapis.com/android_env-tasks/{FORWARDER_APK}"
+FORWARDER_SHA256 = "97a56a544e44d79f9b3181fc7dbdd72cffa908efd3d53c82afad1773061a350a"
+#: How to prepare the AVD, which needs a running emulator and a writable boot.
+AVD_STEPS = (
+    "create it as AndroidWorld's README says (Pixel 6, API 33, Google APIs; on Apple silicon "
+    "the arm64-v8a image) and set hw.keyboard=yes in its config.ini, which the one-time setup "
+    "needs; then boot it writable with gRPC (emulator -avd {avd} -no-snapshot -grpc 8554) and "
+    "run AndroidWorld's one-time setup from {src} with {python} (run.py --perform_emulator_setup, "
+    "README.md there), which installs its apps and their permissions into the AVD"
+)
+
+
+@dataclass(frozen=True)
+class AndroidWorldInstallation:
+    """AndroidWorld's installation at *installation*, and the AVD the benchmark boots, by name.
+
+    Attributes:
+        installation: Where it goes.
+        avd: The AVD the benchmark block's ``local_emulator`` backend names;
+            ``None`` when the block names none (the run configuration does).
+        avd_home: That backend's ``avd_home``; ``None``: where the emulator looks.
+    """
+
+    installation: Installation
+    avd: str | None = None
+    avd_home: str | None = None
+
+    def problems(self) -> list[str]:
+        found = self.installation.problems()
+        if self.avd is not None:
+            home = find_avd_home(self.avd_home, os.environ)
+            if not (home / f"{self.avd}.ini").is_file():
+                steps = AVD_STEPS.format(
+                    avd=self.avd, src=self.installation.src, python=self.installation.python
+                )
+                found.append(f"there is no AVD named {self.avd} in {home}: {steps}")
+        return found
+
+    def install(self, say: Say) -> None:
+        self._check_out(say)
+        self._make_the_venv(say)
+        self._cache_the_forwarder(say)
+
+    def _check_out(self, say: Say) -> None:
+        src = self.installation.src
+        git = _program("git")
+        if checkout_commit(src) == PINNED_COMMIT:
+            say(f"AndroidWorld's checkout {src} is at {PINNED_COMMIT}")
+            return
+        if not src.exists():
+            say(f"cloning {REPOSITORY} into {src}")
+            src.parent.mkdir(parents=True, exist_ok=True)
+            run_program(
+                [git, "clone", "--quiet", "--no-checkout", REPOSITORY, src],
+                "clone AndroidWorld",
+            )
+        elif (src / ".git").exists():
+            say(f"fetching {PINNED_COMMIT} into {src}")
+            run_program(
+                [git, "-C", src, "fetch", "--quiet", "origin", PINNED_COMMIT],
+                "fetch AndroidWorld's pinned commit",
+            )
+        else:
+            raise BenchmarkSetupError(
+                f"{src} is there and is no git checkout: move it away, and AndroidWorld is "
+                f"cloned there"
+            )
+        run_program(
+            [git, "-C", src, "-c", "advice.detachedHead=false", "checkout", "--quiet"]
+            + ["--detach", PINNED_COMMIT],
+            "check out AndroidWorld's pinned commit",
+        )
+        found = checkout_commit(src)
+        if found != PINNED_COMMIT:
+            raise BenchmarkSetupError(
+                f"the checkout {src} is at {found} after checking out {PINNED_COMMIT}"
+            )
+
+    def _make_the_venv(self, say: Say) -> None:
+        uv = _program("uv")
+        python = self.installation.python
+        venv = python.parent.parent
+        if not python.is_file():
+            say(f"making a Python {PYTHON} venv at {venv}")
+            run_program(
+                [uv, "venv", "--quiet", "--python", PYTHON, venv], "make AndroidWorld's venv"
+            )
+        say(f"syncing AndroidWorld's dependencies in {venv} to {LOCK.name}")
+        run_program(
+            [uv, "pip", "sync", "--python", python, LOCK], "install AndroidWorld's dependencies"
+        )
+        run_program(
+            [uv, "pip", "install", "--python", python, "--no-deps", "-e", self.installation.src],
+            "install AndroidWorld's checkout",
+        )
+
+    def _cache_the_forwarder(self, say: Say) -> None:
+        target = self.installation.forwarder_apk
+        if target.is_file() and file_sha256(target) == FORWARDER_SHA256:
+            say(f"the accessibility forwarder is cached at {target}")
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        partial = target.with_name(f".{target.name}.partial")
+        download_file(FORWARDER_URL, FORWARDER_SHA256, partial, say)
+        partial.replace(target)
+
+
+def _program(name: str) -> str:
+    """The executable *name* on PATH.
+
+    Raises:
+        BenchmarkSetupError: There is none.
+    """
+    found = shutil.which(name)
+    if found is None:
+        raise BenchmarkSetupError(
+            f"installing AndroidWorld needs {name} on PATH, and there is none"
+        )
+    return found
+
+
+def named_emulator(config: BaseModel) -> tuple[str | None, str | None]:
+    """The AVD and ``avd_home`` a ``local_emulator`` backend names in the benchmark block *config*'s capability list."""
+    blocks: object = getattr(config, "capability", ())
+    if not isinstance(blocks, list | tuple):
+        return None, None
+    for block in blocks:
+        if not isinstance(block, Mapping) or block.get("capability_id") != "android":
+            continue
+        backend: JsonValue = block.get("backend")
+        if isinstance(backend, Mapping) and backend.get("provider_id") == "local_emulator":
+            avd, home = backend.get("avd"), backend.get("avd_home")
+            return (
+                avd if isinstance(avd, str) else None,
+                home if isinstance(home, str) else None,
+            )
+    return None, None
+
+
+__all__ = [
+    "AVD_STEPS",
+    "FORWARDER_SHA256",
+    "FORWARDER_URL",
+    "LOCK",
+    "PYTHON",
+    "AndroidWorldInstallation",
+    "named_emulator",
+]

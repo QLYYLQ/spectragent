@@ -121,6 +121,30 @@ class SourceRun:
         except IncompatibleCallKindError as exc:
             raise IncompatibleCheckpointError(self.name, [str(exc)]) from exc
 
+    def replayed_calls(
+        self, step: int
+    ) -> tuple[list[RecordedChatCall], dict[str, tuple[str, ...]]]:
+        """:meth:`calls` and :meth:`helper_replies` of *step*, its call files read once.
+
+        A replayed step needs both, and each read decodes and checks every
+        image the step's prompts sent.
+        """
+        recorded = self._read(lambda: self._trace.llm_messages(step), f"the calls of step {step}")
+        try:
+            decisions = reconstruction.chat_decisions(
+                recorded, f"{self._trace.run_id} step {step}", consumer="ReAct history"
+            )
+        except IncompatibleCallKindError as exc:
+            raise IncompatibleCheckpointError(self.name, [str(exc)]) from exc
+        return decisions, reconstruction.helper_replies(recorded)
+
+    def helper_replies(self, step: int) -> dict[str, tuple[str, ...]]:
+        """The replies the Agent's own helper calls of *step* returned, by purpose (``reconstruction.recorded_helper_replies``)."""
+        return self._read(
+            lambda: reconstruction.recorded_helper_replies(self._trace, step),
+            f"the helper calls of step {step}",
+        )
+
     def observation(self, step: int, negotiated: Any) -> Any:
         """The observation *step* recorded, as this run's ``NegotiatedObservation``.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -30,7 +31,9 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.benchmark_spec import BenchmarkSpec, BlockFingerprints
 from spectragent.schemas.config_source import ConfigSource
+from spectragent.schemas.data_version import DataVersion
 from spectragent.schemas.recording import RecordingPlan
 from spectragent.schemas.restoration import BranchProvenance, Checkpoint
 from spectragent.schemas.task import TaskContext
@@ -145,6 +148,7 @@ class _Loader:
 
     benchmark_name = "online_mind2web"
     subset = "Hard"
+    data_version: DataVersion | None = None
 
     def __init__(self, broken: set[str] | None = None):
         self._tasks = {
@@ -305,6 +309,25 @@ class TestBenchmarkRunner:
             assert trace.config.subset == "Hard"
             assert trace.config.extra["difficulty"] == "hard"
             assert outcome.trace_dir.name.startswith(outcome.task_id)
+            assert trace.config.benchmark_spec is None, "no selection given, none recorded"
+
+    async def test_each_run_records_how_its_benchmark_was_selected(self, tmp_path):
+        spec = BenchmarkSpec(
+            benchmark_id="online_mind2web",
+            selection="online_mind2web",
+            subset="Hard",
+            fingerprints=BlockFingerprints.of({}),
+        )
+        writers: list[TraceWriter] = []
+        runner = BenchmarkRunner(
+            loader=_Loader(),
+            compose=_make_factory(tmp_path, [], writers),
+            timeout=10,
+            benchmark_spec=spec,
+        )
+        await runner.run()
+
+        assert [RunTrace(w.run_dir).config.benchmark_spec for w in writers] == [spec, spec]  # type: ignore[arg-type]
 
     async def test_limit_and_explicit_ids(self, tmp_path):
         envs: list[_Env] = []
@@ -1016,9 +1039,9 @@ class TestTraceBranchesSweep:
             def reference_loader(self) -> None:
                 return None
 
-        with pytest.raises(SystemExit) as stopped:
+        with pytest.raises(ValueError) as stopped:
             _reference_loader(_NoReferenceData(), [ExactMatchVerifier()], "mine.yaml")  # type: ignore[arg-type]
-        message = str(stopped.value.code)
+        message = str(stopped.value)
         assert "exact_match" in message and "'mine.yaml'" in message
         assert "no reference data" in message and "--no-eval" in message
 
@@ -1571,6 +1594,35 @@ def test_the_verify_timeout_flag_reaches_the_runner(tmp_path, monkeypatch):
     assert given == [VERIFY_TIMEOUT_S, 12.5]
 
 
+def test_reuse_of_the_environment_is_asked_for_with_a_flag(tmp_path, monkeypatch):
+    """Off by default: every task gets a new environment (the user's ruling of 2026-11-04)."""
+    from spectragent.core.benchmark_runner import main
+    from tests._helpers.branch_sources import write_source
+
+    given: list[bool] = []
+    construct = BenchmarkRunner.__init__
+
+    def spy(self, **kwargs):
+        given.append(kwargs["reuse_environment"])
+        construct(self, **kwargs)
+
+    async def no_sweep(self, *, task_ids=None, limit=None):
+        return BenchmarkRunSummary(benchmark="b", subset="")
+
+    monkeypatch.setattr(BenchmarkRunner, "__init__", spy)
+    monkeypatch.setattr(BenchmarkRunner, "run", no_sweep)
+    write_source(tmp_path / "recorded", "run-a", steps=2)
+    argv = [
+        "--session-dir",
+        str(tmp_path / ".sessions"),
+        *_branch_sweep(tmp_path),
+        "--no-eval",
+    ]
+    assert main(argv) == 0
+    assert main([*argv, "--reuse-environment"]) == 0
+    assert given == [False, True]
+
+
 def test_the_subset_flag_selects_the_tasks_and_is_recorded(tmp_path, monkeypatch, capsys):
     """``--subset`` is written into the benchmark's task loader before the run is composed.
 
@@ -1579,6 +1631,7 @@ def test_the_subset_flag_selects_the_tasks_and_is_recorded(tmp_path, monkeypatch
     """
     from pathlib import Path
 
+    from spectragent.benchmarks.selection import read_benchmark
     from spectragent.core.benchmark_runner import main
     from tests._helpers.benchmark_data import online_mind2web_benchmark
 
@@ -1586,21 +1639,40 @@ def test_the_subset_flag_selects_the_tasks_and_is_recorded(tmp_path, monkeypatch
     tasks = [{**task, "task_id": "easy"}, {**task, "task_id": "hard"}]
     benchmark = online_mind2web_benchmark(tmp_path, {"All": tasks, "Hard": tasks[1:]})
     seen: list[tuple[str, Any]] = []
+    specs: list[BenchmarkSpec] = []
     construct = BenchmarkRunner.__init__
 
     def spy(self, **kwargs):
         construct(self, **kwargs)
         (block,) = kwargs["compose"]().top_level_cfg.model_dump()["benchmark"]
         seen.append((kwargs["loader"].subset, block["task_loader"]["subset"]))
+        specs.append(kwargs["benchmark_spec"])
+
+    async def run_nothing(self, *, task_ids=None, limit=None):
+        return BenchmarkRunSummary(benchmark="online_mind2web", subset="")
 
     monkeypatch.setattr(BenchmarkRunner, "__init__", spy)
+    monkeypatch.setattr(BenchmarkRunner, "run", run_nothing)
     config = Path(__file__).resolve().parents[2] / "configs" / "browser_use_local.yaml"
-    argv = ["--config", str(config), "--benchmark", str(benchmark), "--no-eval", "--list"]
-    assert main([*argv, "--session-dir", str(tmp_path / ".sessions")]) == 0
+    argv = ["--config", str(config), "--benchmark", str(benchmark), "--no-eval"]
+    sessions = ["--session-dir", str(tmp_path / ".sessions")]
+    assert main([*argv, *sessions, "--list"]) == 0
     assert capsys.readouterr().out.split() == ["easy", "hard"]
-    assert main([*argv, "--session-dir", str(tmp_path / ".sessions"), "--subset", "Hard"]) == 0
+    assert main([*argv, *sessions, "--list", "--subset", "Hard"]) == 0
     assert capsys.readouterr().out.split() == ["hard"]
+    assert seen == [], "listing composes no stack"
+
+    assert main([*argv, *sessions]) == 0
+    assert main([*argv, *sessions, "--subset", "Hard"]) == 0
     assert seen == [("All", "All"), ("Hard", "Hard")]
+    # What every run records: the benchmark's YAML, absolute, the subset given,
+    # and the block's fingerprints, taken with that subset written in.
+    hard = read_benchmark(str(benchmark), subset="Hard")
+    assert [(spec.selection, spec.subset) for spec in specs] == [
+        (str(benchmark.resolve()), None),
+        (str(benchmark.resolve()), "Hard"),
+    ]
+    assert specs[1].fingerprints == BlockFingerprints.of(hard) != specs[0].fingerprints
 
 
 @pytest.mark.parametrize("flag", ["--timeout", "--verify-timeout"])
@@ -1618,3 +1690,62 @@ def test_a_time_limit_is_seconds_above_zero_on_both_clis(flag, value, capsys):
             cli([*argv, flag, value])
         assert raised.value.code == 2
         assert flag in capsys.readouterr().err
+
+
+class TestTheDataChangingDuringTheSweep:
+    """Each task's stack reads the benchmark's data again; a fetch in between must not slip in.
+
+    The sweep reads its tasks once, through the loader it was given. A task
+    whose own stack would read another version (another worktree fetched
+    another pin into the shared copy), or none (a fetch is rewriting it), is
+    not run: it would record a version, and a ``config_hash``, its task text
+    did not come from (``docs/architecture_design.md`` §4.10.1 "d 段落地了什么").
+    """
+
+    _READ = DataVersion(source="huggingface", repository="org/set", revision="a" * 40)
+
+    def _runner(self, tmp_path, versions: list[DataVersion | None]) -> BenchmarkRunner:
+        """A sweep whose tasks were read from :attr:`_READ`, each next stack's loader reading the next of *versions*."""
+        loader = _Loader()
+        loader.data_version = self._READ
+        compose = _make_factory(tmp_path, [], [])
+        pending = list(versions)
+
+        def composed():
+            run = compose()
+            run.by_layer["benchmark"] = {
+                "b": SimpleNamespace(
+                    setup=None,
+                    live_verifiers=lambda: [],
+                    task_loader=SimpleNamespace(data_version=pending.pop(0)),
+                )
+            }
+            return run
+
+        return BenchmarkRunner(loader=loader, compose=composed)
+
+    async def test_a_task_whose_stack_reads_another_version_is_not_run(self, tmp_path):
+        other = self._READ.model_copy(update={"revision": "b" * 40})
+        summary = await self._runner(tmp_path, [self._READ, other]).run()
+
+        first, second = summary.outcomes
+        assert first.error is None and first.trace_dir is not None
+        assert RunTrace(first.trace_dir).config.data_version == self._READ
+        assert second.error == (
+            f"the benchmark's data changed during the sweep: its tasks were read from "
+            f"{self._READ.describe()}, and this task's run would read {other.describe()}; start "
+            f"the sweep again once the data is fetched"
+        )
+        assert second.trace_dir is None, "no trace was opened for it"
+
+    async def test_data_being_fetched_again_is_a_change_too(self, tmp_path):
+        """A fetch removes the version record while it writes the files."""
+        summary = await self._runner(tmp_path, [self._READ, None]).run()
+        assert "and this task's run would read no recorded version" in str(
+            summary.outcomes[1].error
+        )
+
+    def test_the_pre_flight_refuses_it(self, tmp_path):
+        other = self._READ.model_copy(update={"revision": "b" * 40})
+        with pytest.raises(PreflightError, match="the benchmark's data changed during the sweep"):
+            self._runner(tmp_path, [other]).preflight("t-1")

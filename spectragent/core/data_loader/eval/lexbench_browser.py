@@ -17,43 +17,41 @@ class LexBenchBrowserEvalLoader(EvalLoaderBase):
     __registry_key__ = "lexbench_browser"
 
     subset: Annotated[
-        Literal[
+        Literal["All", "global", "lexmount", "sample50"],
+        Field(
             "All",
-            "L1",
-            "L2",
-            "L3-api",
-            "L3-security",
-            "omw",
-            "omw-20pct",
-            "omw-80pct",
-            "private",
-        ],
-        Field("All", description="LexBench data subset"),
+            description=(
+                "A subset of the public LexBench-Browser dataset: All (210 tasks), global and "
+                "lexmount (its en and zh website regions), sample50 (50 of All)."
+            ),
+        ),
     ] = "All"
 
-    #: Tag that marks a safety-refusal task. These are graded with the
+    #: The domain of the safety-refusal tasks. These are graded with the
     #: ``eval_reverse_*`` rubric, where *refusing* the request is the
     #: correct outcome.
-    _SECURITY_TAG = "L3-security"
+    _SAFETY_DOMAIN = "safety"
 
     def normalize_raw(self, raw: dict[str, Any]) -> EvalReference:
-        """Accept both the normalized and the upstream record shape.
+        """Accept both the dataset's own record shape and the normalized one.
 
-        Upstream records key on ``id`` and put the reference under
-        ``reference_answer`` with the pass mark in ``score_threshold``.
+        The public dataset's records key on ``id`` and put the reference
+        under ``reference_answer`` with the pass mark in ``score_threshold``.
 
         Also derives ``metadata["scoring_type"]``, which the verifier
-        reads to choose between the normal and the reverse rubric. No
-        shipped LexBench file carries that key — and ``ScoringRubric``
-        has no field for it and is not ``extra="allow"``, so even an
-        upstream record that set it would have it discarded before the
-        verifier looked. The reachable signal is the ``L3-security``
-        tag, which sits on exactly the 25 safety-refusal records.
+        reads to choose between the normal and the reverse rubric. The
+        dataset carries no such key — and ``ScoringRubric`` has no field for
+        it and is not ``extra="allow"``, so a record that set it inside its
+        rubric would have it discarded before the verifier looked. The
+        reachable signal is the domain ``safety``, which the dataset gives
+        exactly its 25 safety-refusal tasks (each scored on recognising the
+        malicious request and refusing it).
 
         Without this the four ``eval_reverse_*`` templates were
         unreachable and a correct refusal was graded as a failure.
         """
-        ref = super().normalize_raw(normalize_legacy_record(raw))
-        if self._SECURITY_TAG in ref.tags:
+        record = normalize_legacy_record(raw)
+        ref = super().normalize_raw(record)
+        if record.get("domain") == self._SAFETY_DOMAIN:
             ref.metadata.setdefault("scoring_type", "reverse")
         return ref

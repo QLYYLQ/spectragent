@@ -220,7 +220,10 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                 getattr(agent, "agent_id", type(agent).__name__),
                 self.loop_id,
                 ["build_restored_history"],
-                needed_for="restored branch history",
+                needed_for=(
+                    "history_source: restored, which renders each restored step itself (an "
+                    "agent without it branches with history_source: source)"
+                ),
             )
         if self.history_source == "restored":
             assert callable(history_builder)
@@ -266,6 +269,14 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                     problems.append(f"step {t} is a {record.origin!r} step, not a policy step")
                 if record.error_phase == "observe":
                     problems.append(f"step {t} recorded no observation (its observe failed)")
+                if self.history_source == "source" and record.error_phase == "prompt":
+                    # The policy step decides on the source's prompt of step t,
+                    # which an Agent's helpers (M3A's summary) wrote into; it
+                    # was never finished, so there is nothing to decide on.
+                    problems.append(
+                        f"step {t}'s prompt was never built in the source ({record.error}); "
+                        "history_source: source decides on the source's prompt of that step"
+                    )
         config = source.config
         # The prefix's records read back only when every step up to t is
         # committed and complete; otherwise the problems above already say so.
@@ -504,6 +515,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         agent = run.agent
         memory = run.memory
         observation = source.observation(step, run.negotiated_obs)
+        calls, helper_replies = source.replayed_calls(step)
         try:
             record = source.record(step)
             # The frame the source step recorded: the prompt is rebuilt, and
@@ -517,6 +529,9 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                     contributions=list(record.prompt_contributions),
                     source_run_id=source.manifest.run_id,
                     source_reply=record.llm_output,
+                    # What the source Agent's own helpers returned while it built
+                    # this prompt: rebuilding history makes no model call.
+                    source_helper_replies=helper_replies,
                     frame=record.frame,
                 ),
             )
@@ -525,7 +540,6 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             raise
         memory.add_messages(new_msgs)
 
-        calls = source.calls(step)
         if not calls:
             raise IncompatibleCheckpointError(
                 source.name, [f"step {step} made no model call to replay"]
@@ -933,9 +947,18 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         return record
 
     def prompt_context(self, run: ReactRun, step_idx: int) -> ReactPromptContext:
-        """Expose branch provenance as facts; contribution functions choose their text."""
+        """Expose branch provenance as facts; contribution functions choose their text.
+
+        Under ``history_source: source`` the first policy step's prompt still
+        ends the source's history: the source Agent's own helper replies of
+        that step (``source_helper_replies``), which wrote about the steps
+        before it, are handed over as on a replayed step. Later steps call
+        their helpers live.
+        """
         context = super().prompt_context(run, step_idx)
         if isinstance(run, BranchRun):
+            if self.history_source == "source" and step_idx == run.checkpoint_step:
+                context.source_helper_replies = run.source.helper_replies(step_idx)
             context.source_run_id = run.source.manifest.run_id
             complete = run.source.manifest.complete_through
             if (

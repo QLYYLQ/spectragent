@@ -45,7 +45,7 @@ class TestWhatGoesOnTheWire:
     def test_auto_on_any_other_model_sends_nothing(self) -> None:
         params = ChatOpenAI(model="gpt-4o").common_model_params()
         assert "reasoning_effort" not in params
-        assert params["temperature"] == 0.2
+        assert "temperature" not in params
 
     def test_none_is_sent_as_none(self) -> None:
         """``none`` is a wire value (no reasoning), not "not set"."""
@@ -53,9 +53,11 @@ class TestWhatGoesOnTheWire:
         assert params["reasoning_effort"] == "none"
 
     def test_explicit_value_reaches_a_model_the_list_does_not_know(self) -> None:
-        params = ChatOpenAI(model="gemini-3.5-flash", reasoning_effort="low").common_model_params()
+        params = ChatOpenAI(
+            model="gemini-3.5-flash", reasoning_effort="low", temperature=0.2
+        ).common_model_params()
         assert params["reasoning_effort"] == "low"
-        # Not an OpenAI reasoning model: sampling knobs stay.
+        # Not an OpenAI reasoning model: a sampling knob it was given stays.
         assert params["temperature"] == 0.2
 
     def test_explicit_value_overrides_the_listed_default(self) -> None:

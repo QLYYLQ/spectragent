@@ -215,11 +215,46 @@ def test_a_text_field_has_focus_where_the_input_method_serves_a_connection(
     assert parse_text_focus(windows, methods) == expected
 
 
+#: The input method's own history of starting input, oldest first, as the API 33 emulator
+#: printed it on a WebView's page (2026-11-04); it comes before its client's part.
+_START_INPUT_HISTORY = (
+    "  mStartInputHistory:\n"
+    "   StartInput #3:\n"
+    "    time=2023-10-15 15:34:09.553 (timestamp=65538) reason=CHECK_FOCUS restarting=false\n"
+    "    inputType=0x0 imeOptions=0x12000000 fieldId=0x7f05004b fieldName=null actionId=0\n"
+    "   StartInput #4:\n"
+    "    time=2023-10-15 15:34:09.804 (timestamp=65789) reason=APP_CALLED_RESTART_INPUT_API "
+    "restarting=true\n"
+    "    inputType=0x8c0a1 imeOptions=0x12000002 fieldId=0x7f05004b fieldName=null actionId=0\n"
+    "  mSoftInputShowHideHistory:\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("methods", "expected"),
+    [
+        (_START_INPUT_HISTORY + _client(_SERVED), TextFocus(_SEARCH.split(" u0 ")[1], True, 4)),
+        (
+            _START_INPUT_HISTORY
+            + "Input method client state for android.view.inputmethod.InputMethodManager@41da151:\n"
+            "Timeout waiting for dump\n",
+            TextFocus(_SEARCH.split(" u0 ")[1], None, 4),
+        ),
+        (_client(_SERVED), TextFocus(_SEARCH.split(" u0 ")[1], True, None)),
+    ],
+    ids=["the latest record", "a client that did not answer", "no history"],
+)
+def test_the_input_methods_latest_start_of_input_is_its_last_record(
+    methods: str, expected: TextFocus
+) -> None:
+    assert parse_text_focus(_windows(_SEARCH, _SEARCH), methods) == expected
+
+
 async def test_the_text_focus_is_read_off_the_window_manager_and_the_input_method() -> None:
-    async with FakeAdbServer({SERIAL: ScriptedPhone(text_field=True)}) as adb:
+    async with FakeAdbServer({SERIAL: ScriptedPhone(text_field=True, input_started=9)}) as adb:
         focus = await AdbQueries(AdbClient(adb.host, adb.port), SERIAL).text_focus()
 
-    assert focus.text_field is True
+    assert (focus.text_field, focus.input_started) == (True, 9)
     assert [request.service for request in adb.requests] == [
         "shell,v2:dumpsys window",
         "shell,v2:dumpsys input_method",

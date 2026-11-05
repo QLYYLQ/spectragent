@@ -58,7 +58,9 @@ from spectragent.core.trace.redaction import redact_config, trace_safe
 from spectragent.core.trace.verdicts import write_verdict
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas.agent_result import AgentUsage
+from spectragent.schemas.benchmark_spec import BenchmarkSpec
 from spectragent.schemas.config_source import ConfigSource
+from spectragent.schemas.data_version import DataVersion
 from spectragent.schemas.recording import (
     ExecutionError,
     RecordingHealth,
@@ -301,6 +303,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         task_id: str = "",
         benchmark: str = "",
         subset: str = "",
+        data_version: DataVersion | None = None,
         run_id: str | None = None,
         config: Any = None,
         agent_id: str = "",
@@ -314,11 +317,13 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         env_evidence_privacy: Sequence[str] | None = None,
         task_setup: Mapping[str, Any] | None = None,
         branch: BranchProvenance | None = None,
+        benchmark_spec: BenchmarkSpec | None = None,
         config_source: ConfigSource | None = None,
         call_context: RunCallContext | None = None,
         action_space: Any = None,
         step_budget: int | None = None,
         task_text_setter: str | None = None,
+        earlier_tasks_on_environment: int = 0,
         **kwargs: Any,
     ) -> None:
         self._reset()
@@ -346,6 +351,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                 llm_model=llm_model,
                 benchmark=benchmark,
                 subset=subset,
+                data_version=data_version,
                 task=task,
                 task_id=task_id,
                 extra=snapshot(config) if isinstance(config, Mapping) else {},
@@ -361,8 +367,10 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                 else None,
                 task_setup=_task_setup_record(task_setup, record_secrets=self.record_secrets),
                 branch=branch,
+                benchmark_spec=benchmark_spec,
                 max_steps=step_budget,
                 task_text_setter=task_text_setter,
+                earlier_tasks_on_environment=earlier_tasks_on_environment,
                 config_source=config_source,
                 **(
                     {"action_space": action_space.model_copy(deep=True)}

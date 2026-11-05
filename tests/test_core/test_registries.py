@@ -13,6 +13,8 @@ test imports is still covered.
 from __future__ import annotations
 
 import ast
+import importlib
+import sys
 from pathlib import Path
 
 import pytest
@@ -26,6 +28,7 @@ from spectragent.core.registries import (
     TemplateFlag,
     capability_declarations,
     collect_registrars,
+    declared_branch_archives,
     start_flags,
     template_flags,
 )
@@ -143,6 +146,10 @@ def test_a_layer_two_owners_declare_is_refused(monkeypatch: pytest.MonkeyPatch) 
         ("TEMPLATE_FLAGS", None),
         ("TEMPLATE_FLAGS", [TemplateFlag("--backend", "backend", "which provider")]),
         ("TEMPLATE_FLAGS", (StartFlag("--backend", "backend", "which provider"),)),
+        ("BRANCH_ARCHIVES", None),
+        ("BRANCH_ARCHIVES", ["browser.network"]),
+        # Only its own archivers: what another capability's branch needs is that one's to say.
+        ("BRANCH_ARCHIVES", ("android.ui_tree_raw",)),
     ],
 )
 def test_a_malformed_declaration_is_refused(
@@ -247,6 +254,8 @@ def test_the_template_flags_are_every_capabilitys_by_capability() -> None:
     assert [(flag.flag, flag.receptor) for flag in flags["browser"]] == [
         ("--backend", "backend"),
         ("--replayability", "replayability"),
+        ("--dom-cleaner", "dom_cleaner"),
+        ("--dom-serializer", "dom_serializer"),
     ]
 
 
@@ -259,3 +268,38 @@ def test_one_template_flag_two_capabilities_declare_is_refused(
     monkeypatch.setattr(android_declarations, "TEMPLATE_FLAGS", (flag,))
     with pytest.raises(ValueError, match="'android' and 'browser' both declare the template flag"):
         template_flags()
+
+
+def test_the_branch_archives_read_without_importing_agree_with_the_declarations() -> None:
+    """The ``trace_branches`` description reads them from source; the reader imports and checks."""
+    imported = {item.capability_id: item.branch_archives for item in capability_declarations()}
+    assert declared_branch_archives() == imported
+    assert imported["browser"] == ("browser.network",) and imported["android"] == ()
+
+
+@pytest.mark.parametrize(
+    ("source", "found"),
+    [
+        ("TASK_SETUP = None\n", "None"),
+        ("BRANCH_ARCHIVES = tuple(['probe.archive'])\n", "None"),
+        ("BRANCH_ARCHIVES = ('probe.archive', 3)\n", "('probe.archive', 3)"),
+    ],
+    ids=["missing", "not_a_literal", "not_strings"],
+)
+def test_branch_archives_read_from_source_must_be_a_literal_tuple_of_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str, found: str
+) -> None:
+    """Read without importing, the declaration can only be a literal: anything else is refused."""
+    package = tmp_path / "probe"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "declarations.py").write_text(source)
+    capabilities = importlib.import_module("spectragent.core.capabilities")
+    monkeypatch.setattr(capabilities, "__path__", [*capabilities.__path__, str(tmp_path)])
+
+    with pytest.raises(
+        ValueError, match="probe.declarations must assign BRANCH_ARCHIVES"
+    ) as caught:
+        declared_branch_archives()
+    assert str(caught.value).endswith(f"found {found}")
+    assert "spectragent.core.capabilities.probe" not in sys.modules, "read, never imported"

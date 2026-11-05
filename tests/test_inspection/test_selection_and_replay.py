@@ -199,3 +199,22 @@ def test_broken_replay_archive_remains_an_explicit_error(tmp_path: Path) -> None
     assert detail["steps"]
     assert detail["replay_log"]["counts"] is None
     assert detail["replay_log"]["error"]
+
+
+def test_run_kind_needs_no_capability_knowledge(tmp_path: Path) -> None:
+    """A run that read no recorded run is live, whatever environment it ran in."""
+    android = {
+        "environment": [{"env_type": "android", "capabilities": [{"capability_id": "android"}]}]
+    }
+    _run(tmp_path, "android-live", TraceConfig(resolved=android))
+    _run(tmp_path, "android-branch", TraceConfig(resolved=android, branch=_branch()))
+    replay = TaskSetupRecord(
+        context={"replay_archive": str(tmp_path / "android-live")}, redactions=RedactionLedger()
+    )
+    _run(tmp_path, "branch-replay", TraceConfig(task_setup=replay, branch=_branch()))
+    kinds = {row["key"]: row["execution_kind"] for row in open_repository(tmp_path).list_runs()}
+    assert kinds == {
+        "android-live": "live",
+        "android-branch": "branch",
+        "branch-replay": "branch_replay",
+    }

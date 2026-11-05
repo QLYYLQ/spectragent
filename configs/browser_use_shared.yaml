@@ -11,6 +11,10 @@ agent:
       model_type: openai
       model: gpt-4o
       provider: {name: direct}
+      # browser-use's own sampling (its ChatOpenAI), which the openai provider no
+      # longer sends unless written.
+      temperature: 0.2
+      frequency_penalty: 0.3
     memory: {memory_id: simple, max_messages: 200}
 
 environment:

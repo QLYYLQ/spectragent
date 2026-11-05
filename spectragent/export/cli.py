@@ -22,7 +22,8 @@ from pathlib import Path
 
 import yaml
 
-from spectragent.benchmarks.selection import read_benchmark, run_root
+from spectragent.benchmarks.operations import read_benchmark_with_data
+from spectragent.benchmarks.selection import run_root
 from spectragent.core.composer import ConfigComposer
 from spectragent.export.errors import ExportConfigError
 from spectragent.export.runner import ExportReport, ExportRunner
@@ -43,7 +44,7 @@ def export(config_path: Path, benchmarks: Sequence[str] = ()) -> ExportReport:
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ExportConfigError(f"{config_path} is not a YAML mapping")
-    raw = run_root(raw, *(read_benchmark(selection) for selection in benchmarks))
+    raw = run_root(raw, *(read_benchmark_with_data(selection) for selection in benchmarks))
     run = ConfigComposer.for_config(raw).compose(raw)
     return ExportRunner.from_run(run, origin=str(config_path)).run()
 

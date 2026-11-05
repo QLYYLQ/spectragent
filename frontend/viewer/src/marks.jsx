@@ -28,6 +28,17 @@ export function MarkLayer({ data }) {
       >
         {layout.sets.map((set, index) =>
           set.shapes
+            .filter((shape) => shape.box)
+            .map((shape) => (
+              <g key={`box-${index}-${shape.number}`}>
+                <rect {...shape.box} fill="none" stroke="#fff" strokeWidth="5" vectorEffect="non-scaling-stroke" />
+                <rect {...shape.box} fill={set.color} fillOpacity="0.08" stroke={set.color} strokeWidth="2"
+                  strokeDasharray="5 3" vectorEffect="non-scaling-stroke" />
+              </g>
+            )),
+        )}
+        {layout.sets.map((set, index) =>
+          set.shapes
             .filter((shape) => shape.end)
             .map((shape) => (
               <g key={`${index}-${shape.number}`}>
@@ -77,7 +88,7 @@ export function MarkLayer({ data }) {
             </span>
             {shape.typed && (
               <span
-                className="mark-typed"
+                className={`mark-typed ${shape.typedLeft ? "left" : ""}`}
                 style={{ ...at(shape), "--mark": set.color, "--stack": shape.stack }}
               >
                 “{shape.typed}”

@@ -15,23 +15,35 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel
 
-from spectragent.core.capabilities.browser.archive.frames import (
-    FrameRecord,
-    before_action_frames,
-    read_frame_image,
+from spectragent.core.archive._registrar import ArchiverRegistrar
+from spectragent.core.presentation import (
+    ArchivedFrame,
+    KeepsActionFrames,
+    LogsReplayDecisions,
+    discover_capabilities,
 )
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.models import TraceConfig
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.sources import task_identity
 from spectragent.core.trace.usage import recorded_usage
+from spectragent.inspection.graph import (
+    restoration_tally,
+    run_graph,
+    task_graph,
+    task_headers,
+    task_key,
+    task_keys,
+)
 from spectragent.inspection.marks import (
     ImagePointer,
     MarkRequest,
     action_lines,
     action_verbs,
+    addressed_elements,
     before_action_marks,
     default_requests,
+    frame_keepers,
     marks_on,
     observation_marks,
     observation_pointer,
@@ -43,9 +55,14 @@ from spectragent.inspection.restoration import (
     unmeasured_everywhere,
 )
 from spectragent.schemas.observation.image import image_media_type, read_model_image
+from spectragent.schemas.task import REPLAY_ARCHIVE_KEY
 from spectragent.schemas.verdict import Verdict
 
 _IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+#: Row fields the list computes rather than reads from a run's record.
+_RESOLVED = frozenset(
+    {"source_key", "source_resolution", "task_key", "task_incomplete", "task_header"}
+)
 
 
 class RepositoryError(ValueError):
@@ -59,12 +76,13 @@ class RunRepository(Protocol):
     def matches(self, key: str) -> bool: ...
     def run(self, key: str) -> dict[str, Any]: ...
     def graph(self, key: str) -> dict[str, Any]: ...
+    def task_graphs(self, tasks: list[str]) -> list[dict[str, Any]]: ...
     def trajectory(self, key: str, anchor: int) -> dict[str, Any]: ...
     def step_frames(self, key: str, index: int) -> list[dict[str, Any]]: ...
     def step_frame_image(self, key: str, index: int, frame_id: str) -> bytes: ...
     def step(self, key: str, index: int, *, include_messages: bool = True) -> dict[str, Any]: ...
     def screenshot(
-        self, key: str, index: int, *, view: Literal["browser", "agent"] = "browser"
+        self, key: str, index: int, *, view: Literal["raw", "agent"] = "raw"
     ) -> bytes | None: ...
     def has_step(self, key: str, index: int) -> bool: ...
     def archive_image(self, key: str, step: int | None, archiver: str, name: str) -> bytes: ...
@@ -122,22 +140,18 @@ def _has_screenshot(entry: Any) -> bool:
     )
 
 
-def _frame_identity(at: int | None, cycle: int, index: int | None) -> str:
-    return f"{at if at is not None else 'trailing'}:{cycle}:{index}"
-
-
-def _action_frames(trace: RunTrace, index: int) -> list[tuple[int | None, FrameRecord]]:
+def _action_frames(trace: RunTrace, index: int) -> list[tuple[KeepsActionFrames, ArchivedFrame]]:
+    """The screens kept before *index*'s actual action calls, each with the archiver that kept it."""
     record = trace.step(index)
     if record is None:
         raise FileNotFoundError(f"Run {trace.run_id} has no committed step {index}")
     spans = record.action_spans
-    return before_action_frames(
-        trace,
-        index,
-        action_times=[(span.started_at, span.ended_at) for span in spans]
-        if spans is not None
-        else None,
-    )
+    times = [(span.started_at, span.ended_at) for span in spans] if spans is not None else None
+    return [
+        (keeper, frame)
+        for keeper in frame_keepers()
+        for frame in keeper.action_frames(trace, index, action_times=times)
+    ]
 
 
 def _verdicts_of(trace: RunTrace) -> tuple[dict[str, Verdict], str | None]:
@@ -177,11 +191,13 @@ def _mappings(value: Any) -> Iterator[dict[str, Any]]:
 
 
 def _replay_archive(config: TraceConfig) -> str | None:
+    """The recorded run this one replayed: its setup context's ``replay_archive``.
+
+    The framework's own key (``schemas/task.py``), whichever capability read
+    it; the same rule by which the branch loader refuses a replay run.
+    """
     context = config.task_setup.context if config.task_setup else {}
-    value = context.get("replay_archive")
-    if not isinstance(value, str):
-        browser = context.get("browser", {})
-        value = browser.get("replay_archive") if isinstance(browser, dict) else None
+    value = context.get(REPLAY_ARCHIVE_KEY)
     return value if isinstance(value, str) else None
 
 
@@ -189,7 +205,7 @@ def _network_source(config: TraceConfig) -> str | None:
     sources = {
         block["network_source"].get("source_id")
         for block in _mappings(config.resolved)
-        if block.get("capability_id") == "browser" and isinstance(block.get("network_source"), dict)
+        if block.get("capability_id") and isinstance(block.get("network_source"), dict)
     }
     sources &= {"live", "archive"}
     if len(sources) == 1:
@@ -199,10 +215,16 @@ def _network_source(config: TraceConfig) -> str | None:
 
 
 def _execution_kind(config: TraceConfig) -> str:
-    network = _network_source(config)
+    """Live, a replay, a branch, or a branch that replays: recorded facts only.
+
+    Read from the task's recorded ``replay_archive`` and the run's branch
+    provenance, so it needs no capability's knowledge: a run that read no
+    recorded run is live, whatever its environment.
+    """
+    replays = _replay_archive(config) is not None
     if config.branch is not None:
-        return "branch_replay" if network == "archive" else "branch"
-    return "replay" if network == "archive" else "live" if network == "live" else "unknown"
+        return "branch_replay" if replays else "branch"
+    return "replay" if replays else "live"
 
 
 def _strategy(config: TraceConfig) -> dict[str, Any]:
@@ -221,20 +243,30 @@ def _strategy(config: TraceConfig) -> dict[str, Any]:
 
 
 def _replay_log(trace: RunTrace) -> dict[str, Any]:
-    from spectragent.core.capabilities.browser.replay.replay_log import iter_decisions
+    """A replay's serving decisions, from the archivers that log them (``LogsReplayDecisions``).
 
-    enabled = bool(
-        trace.config.negotiation
-        and "browser.replay_log" in trace.config.negotiation.active_archivers
-    )
+    Unbound, logged nothing and unreadable are three different answers.
+    """
+    discover_capabilities()
+    active = trace.config.negotiation.active_archivers if trace.config.negotiation else []
+    loggers = [
+        (key, found)
+        for key, found in ArchiverRegistrar.get_all().items()
+        if isinstance(found, LogsReplayDecisions)
+    ]
+    enabled = any(key in active for key, _ in loggers)
     entries: list[dict[str, Any]] = []
-    counts = dict.fromkeys(("hit", "miss", "exhausted", "substituted", "synthetic"), 0)
+    counts = {kind: 0 for _, logger in loggers for kind in logger.decision_kinds}
     try:
-        for step, entry, weight in iter_decisions(trace):
-            if entry.kind not in counts:
-                raise ValueError("A folded replay log entry does not identify its decision kind")
-            entries.append({"step": step, **entry.model_dump(mode="json"), "weight": weight})
-            counts[entry.kind] += weight
+        for _, logger in loggers:
+            for step, entry, weight in logger.replay_decisions(trace):
+                kind = entry.get("kind")
+                if not isinstance(kind, str) or kind not in logger.decision_kinds:
+                    raise ValueError(
+                        "A folded replay log entry does not identify its decision kind"
+                    )
+                entries.append({"step": step, **entry, "weight": weight})
+                counts[kind] += weight
     except (TraceSchemaError, ValueError, KeyError) as exc:
         return {
             "recorded": enabled or bool(entries),
@@ -294,6 +326,10 @@ def _summary(trace: RunTrace, key: str, usage: Any = None) -> dict[str, Any]:
         "answer": result.answer if result else "",
         "error": result.error if result else None,
         "branch": _json(config.branch),
+        "task_key": task_key(config),
+        "restoration": restoration_tally(records, config.branch.checkpoint_step)
+        if config.branch
+        else None,
         "verdicts": _verdict_brief(verdicts),
         "verdict_error": verdict_error,
         "read_error": None,
@@ -391,10 +427,22 @@ class _FileRepository:
         except (OSError, UnicodeError, ValueError) as exc:
             raise RepositoryError(f"Cannot read {path.relative_to(self.root)}: {exc}") from exc
 
-    def list_runs(self, search: str = "") -> list[dict[str, Any]]:
-        rows = []
-        # Every readable run under the root, filtered or not: a branch's
-        # source is resolved against the root, never against the filter.
+    def _rows(
+        self, *, outside_filters: bool = False, tasks: frozenset[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Every run row under the root with its source resolved and its task key and header.
+
+        Rows the configuration filters leave out are dropped, or kept marked
+        ``context`` with *outside_filters*. Unreadable runs are rows too. A
+        branch's source, its task and the task's header are resolved against
+        every readable run under the root, never against the filter: a
+        filtered-out run still lends its identity, so the list and the task
+        graph agree. Identities are cheap (a run's configuration); the full
+        summary is read only for the rows returned, and with *tasks* only for
+        the runs of those tasks.
+        """
+        identities: list[tuple[RunTrace, dict[str, Any]]] = []
+        broken: list[dict[str, Any]] = []
         keys_by_run_id: dict[str, list[str]] = {}
         for directory, files in self._directories():
             if "manifest.json" not in files or self._kind(directory / "manifest.json") == "dataset":
@@ -402,14 +450,25 @@ class _FileRepository:
             key = directory.relative_to(self.root).as_posix()
             try:
                 trace = self._trace(key)
+                config = trace.config
                 keys_by_run_id.setdefault(trace.run_id, []).append(key)
-                if self._matches(trace):
-                    rows.append(_summary(trace, key))
+                identity = {
+                    "key": key,
+                    "task_key": task_key(config),
+                    "branch": _json(config.branch),
+                    "benchmark": config.benchmark,
+                    "subset": config.subset,
+                    "task_id": config.task_id,
+                    "task": trace.task_text(),
+                    "created_at": trace.manifest.created_at.isoformat(),
+                    "matches": self._matches(trace),
+                }
+                identities.append((trace, identity))
             except (RepositoryError, TraceSchemaError, OSError) as exc:
                 if self.config_source is not None or self.config_hash is not None:
                     # No readable identity means no evidence of membership.
                     continue
-                rows.append(
+                broken.append(
                     {
                         "key": key,
                         "run_id": directory.name,
@@ -418,12 +477,8 @@ class _FileRepository:
                         "verdicts": [],
                     }
                 )
-        needle = search.casefold()
-        if needle:
-            rows = [
-                row for row in rows if needle in " ".join(str(v) for v in row.values()).casefold()
-            ]
-        for row in rows:
+        resolved = [identity for _, identity in identities] + broken
+        for row in resolved:
             if row.get("branch"):
                 # The same resolution ``run`` reports, from the same scan.
                 candidates = keys_by_run_id.get(row["branch"]["source_run_id"], [])
@@ -431,7 +486,71 @@ class _FileRepository:
                 row["source_resolution"] = (
                     "found" if len(candidates) == 1 else "ambiguous" if candidates else "missing"
                 )
+        task_keys(resolved)
+        headers = task_headers(resolved)
+        rows: list[dict[str, Any]] = []
+        for trace, identity in identities:
+            if tasks is not None and identity["task_key"] not in tasks:
+                continue
+            if not (identity["matches"] or outside_filters):
+                continue
+            try:
+                row = _summary(trace, identity["key"])
+            except (RepositoryError, TraceSchemaError, OSError) as exc:
+                if self.config_source is not None or self.config_hash is not None:
+                    continue
+                row = {
+                    "key": identity["key"],
+                    "run_id": trace.run_id,
+                    "read_error": str(exc),
+                    "trace_status": "unreadable",
+                    "verdicts": [],
+                }
+            for field in ("task_key", "task_incomplete", "source_key", "source_resolution"):
+                if field in identity:
+                    row[field] = identity[field]
+            if not identity["matches"]:
+                row["context"] = True
+            rows.append(row)
+        rows += [row for row in broken if tasks is None or row["task_key"] in tasks]
+        for row in rows:
+            row["task_header"] = headers[row["task_key"]]
+        return rows
+
+    def list_runs(self, search: str = "") -> list[dict[str, Any]]:
+        rows = self._rows()
+        needle = search.casefold()
+        if needle:
+            # What the list resolved is no recorded text to search.
+            rows = [
+                row
+                for row in rows
+                if needle
+                in " ".join(str(v) for k, v in row.items() if k not in _RESOLVED).casefold()
+            ]
         return sorted(rows, key=lambda row: (row.get("created_at", ""), row["key"]), reverse=True)
+
+    def task_graphs(self, tasks: list[str]) -> list[dict[str, Any]]:
+        """Each of *tasks* (task keys) placed as a graph, from one scan (``graph.task_graph``).
+
+        A branch's source that the configuration filters leave out is kept as
+        context, with its own sources, so the branch still leaves a commit. A
+        task with no readable run left under the root is left out of the
+        answer, so one run removed since the list was read fails no other task.
+        """
+        rows = self._rows(outside_filters=True, tasks=frozenset(tasks))
+        by_key = {row["key"]: row for row in rows}
+        shown = [row for row in rows if not row.get("context")]
+        sources: dict[str, dict[str, Any]] = {}
+        pending = [row for row in shown if row.get("branch")]
+        while pending:
+            source = by_key.get(pending.pop().get("source_key") or "")
+            if source is not None and source.get("context") and source["key"] not in sources:
+                sources[source["key"]] = source
+                pending.append(source)
+        rows = shown + list(sources.values())
+        known = {row.get("task_key") for row in rows if not row.get("read_error")}
+        return [task_graph(rows, task) for task in tasks if task in known]
 
     def run(self, key: str) -> dict[str, Any]:
         trace = self._trace(key)
@@ -596,8 +715,6 @@ class _FileRepository:
         return comparison
 
     def graph(self, key: str) -> dict[str, Any]:
-        from spectragent.inspection.graph import run_graph
-
         try:
             return run_graph(self._trace(key))
         except (TraceSchemaError, KeyError) as exc:
@@ -617,7 +734,7 @@ class _FileRepository:
                         "index": entry.step,
                         "origin": record.origin,
                         "record": _json(record),
-                        "action_summary": action_lines(record),
+                        "action_summary": action_lines(record, addressed_elements(trace, record)),
                         "has_screenshot": _has_screenshot(entry),
                     }
                 )
@@ -636,13 +753,13 @@ class _FileRepository:
         try:
             return [
                 {
-                    "id": _frame_identity(at, frame.cycle, frame.action_index),
-                    "action_index": frame.action_index,
+                    "id": frame.id,
+                    "action_index": frame.action_call,
                     "action": frame.action,
                     "kind": frame.kind,
                     "outcome": frame.outcome,
                     "detail": frame.detail,
-                    "has_image": frame.outcome == "captured" and frame.name is not None,
+                    "has_image": frame.has_image,
                     "marks": _json(before_action_marks(trace, key, index, frame)),
                     "pointer": _json(
                         ImagePointer(
@@ -652,7 +769,7 @@ class _FileRepository:
                         )
                     ),
                 }
-                for at, frame in _action_frames(trace, index)
+                for _, frame in _action_frames(trace, index)
             ]
         except (TraceSchemaError, KeyError, ValueError) as exc:
             raise RepositoryError(str(exc)) from exc
@@ -664,16 +781,16 @@ class _FileRepository:
         trace = self._trace(key)
         try:
             matches = [
-                (at, frame)
-                for at, frame in _action_frames(trace, index)
-                if _frame_identity(at, frame.cycle, frame.action_index) == frame_id
+                (keeper, frame)
+                for keeper, frame in _action_frames(trace, index)
+                if frame.id == frame_id
             ]
             if len(matches) != 1:
                 raise FileNotFoundError(f"第 {index} 步没有唯一匹配的动作前截图")
-            at, frame = matches[0]
+            keeper, frame = matches[0]
             if frame.outcome != "captured":
                 raise FileNotFoundError(f"这张动作前截图未采集成功：{frame.outcome}")
-            return read_frame_image(trace, at, frame)
+            return keeper.frame_image(trace, frame)
         except (TraceSchemaError, KeyError, ValueError) as exc:
             raise RepositoryError(str(exc)) from exc
 
@@ -723,11 +840,11 @@ class _FileRepository:
             raise RepositoryError(str(exc)) from exc
 
     def screenshot(
-        self, key: str, index: int, *, view: Literal["browser", "agent"] = "browser"
+        self, key: str, index: int, *, view: Literal["raw", "agent"] = "raw"
     ) -> bytes | None:
         try:
             trace = self._trace(key)
-            if view == "browser":
+            if view == "raw":
                 return trace.screenshot(index)
             if view != "agent":
                 raise RepositoryError(f"Unknown screenshot view: {view}")

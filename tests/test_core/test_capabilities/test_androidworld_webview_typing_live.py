@@ -13,7 +13,11 @@ and its text in one action (``docs/architecture_design.md`` §11.2 "动作"):
   body, then back into "to:", replacing its text: each into the field its tap
   gave focus;
 - ``enter-password``: text goes at the cursor of an empty password field,
-  which reports its cursor at 0.
+  which reports its cursor at 0;
+- ``book-flight``: after text went into the "To" field, typing into the
+  departure date, jQuery's ``<input readonly>``, is refused. The service names
+  the date field as focused before the input method drops the "To" field's
+  connection, and ``key_events`` once typed into that gap (2026-11-04).
 
 After such taps the service's ``findFocus`` names the WebView itself, not the
 page's field, so ``set_text`` refused most of them with ``no_focused_field``
@@ -102,6 +106,15 @@ async def _type(prepared: Prepared, index: int, text: str, *, clear: bool) -> Ac
     return typed
 
 
+async def _index_of(prepared: Prepared, view_id: str) -> int:
+    """The index of the element whose view id is *view_id*, in a fresh tree."""
+    tree = await _tree(prepared)
+    for index, node in tree.tree().element_nodes():
+        if node.view_id_resource_name == view_id:
+            return index
+    raise AssertionError(f"no element {view_id!r}; the tree reads:\n{tree.serialized}")
+
+
 async def _fields(prepared: Prepared) -> dict[str, tuple[int, str]]:
     """The forward form's "to:" field and its body: each one's index in a fresh tree, and its text."""
     tree = await _tree(prepared)
@@ -157,3 +170,17 @@ async def test_type_by_index_goes_at_the_cursor_of_an_empty_password_field(
     assert typed.success, typed.error
     passwords = [node.text for _, node in after.tree().element_nodes() if node.is_password]
     assert len(passwords[0]) == 5, passwords
+
+
+async def test_type_by_index_into_a_read_only_field_after_a_text_field_is_refused(
+    tmp_path: Path,
+) -> None:
+    async with _prepared(tmp_path, "book-flight") as page:
+        into_to = await _type(page, await _index_of(page, "flight-to"), "Qzx", clear=True)
+        into_date = await _type(
+            page, await _index_of(page, "datepicker"), "10/21/2016", clear=False
+        )
+
+    assert into_to.success, into_to.error
+    assert not into_date.success
+    assert into_date.error is not None and "not on a text field" in into_date.error

@@ -49,6 +49,7 @@ from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.models import TaskSetupRecord, TraceConfig, TraceNegotiation
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.benchmark_spec import BenchmarkSpec, BlockFingerprints
 from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.restoration import BranchProvenance
@@ -172,6 +173,7 @@ async def _run(
     branch=None,
     env_context=None,
     config_source=None,
+    benchmark_spec=None,
 ) -> Path:
     raw = copy.deepcopy(yaml.safe_load((CONFIG_DIR / "browser_use_local.yaml").read_text("utf-8")))
     if mutate is not None:
@@ -197,6 +199,7 @@ async def _run(
         branch=branch,
         env_context=env_context,
         config_source=config_source,
+        benchmark_spec=benchmark_spec,
     )
     assert writer.run_dir is not None
     return writer.run_dir
@@ -236,6 +239,34 @@ class TestConfigurationSource:
         assert trace.config.branch == branch
         assert trace.config.config_source is not None
         assert trace.config.config_source.path != branch.source_trace
+
+
+class TestBenchmarkSpec:
+    """``TraceConfig.benchmark_spec``: how the run's benchmark was selected, out of the digest (§5.3)."""
+
+    async def test_recorded_typed_and_out_of_the_hash(self, tmp_path, composer):
+        fingerprints = BlockFingerprints.of({"task_loader": {"benchmark_name": "online_mind2web"}})
+        alias = BenchmarkSpec(
+            benchmark_id="online_mind2web", selection="online_mind2web", fingerprints=fingerprints
+        )
+        path = BenchmarkSpec(
+            benchmark_id="online_mind2web",
+            selection=str(tmp_path / "mine.yaml"),
+            subset="Hard",
+            fingerprints=BlockFingerprints.of({}),
+        )
+        by_alias = RunTrace(await _run(tmp_path, composer, task_id="alias", benchmark_spec=alias))
+        by_path = RunTrace(await _run(tmp_path, composer, task_id="path", benchmark_spec=path))
+        none = RunTrace(await _run(tmp_path, composer, task_id="none"))
+        assert (by_alias.config.benchmark_spec, by_path.config.benchmark_spec) == (alias, path)
+        assert none.config.benchmark_spec is None
+        assert "benchmark_spec" not in json.loads((none.trace_dir / "config.json").read_text())
+        # Where the block came from; the block itself is in ``resolved``.
+        assert (
+            by_alias.manifest.config_hash
+            == by_path.manifest.config_hash
+            == none.manifest.config_hash
+        )
 
 
 class TestResolvedConfigIsRecorded:

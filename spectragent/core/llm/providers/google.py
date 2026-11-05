@@ -117,14 +117,14 @@ class ChatGoogle(ChatModelBase):
         float | Literal["auto"] | None,
         Field(
             description=(
-                "Sampling temperature. 'auto' (the default) keeps the provider's policy: "
-                "1.0 on Gemini 3 models, the default Google documents for them and "
-                "recommends keeping because lower values can make them loop, and 0.5 on "
-                "every other model. A number is sent as written; None sends nothing, so "
-                "the server's default applies."
+                "Sampling temperature. None (the default) sends nothing, so the server's "
+                "default applies: 1.0 on Gemini 3 models, which Google documents and "
+                "recommends keeping because lower values can make them loop. A number is "
+                "sent as written. 'auto' is the provider's policy: 1.0 on Gemini 3 models "
+                "and 0.5 on every other model."
             )
         ),
-    ] = "auto"
+    ] = None
     top_p: Annotated[
         float | None, Field(description="Nucleus sampling top-p. None (the default): not sent.")
     ] = None

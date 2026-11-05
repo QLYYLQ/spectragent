@@ -82,3 +82,18 @@ Tests escalate `conscribe.ConscribeWarning`. Use `isolated_registries()` or the
 `conscribe_isolated` fixture for test implementations; capture module-level fakes and
 activate them only for the tests that need them. Do not weaken strict discovery or
 warning filters to make a malformed fake pass a production-schema build.
+
+## Template starts are data, not wiring
+
+`spectragent config template` writes a YAML starting point; it is not a runtime default
+and no regeneration is needed when it changes. An agent class carries `__template_block__`
+(its block: knobs and receptor values, each from the upstream project's own settings, with
+the source noted in a comment; an LLM block names no provider and writes only fields the
+chosen provider has) and `__template_capabilities__` (per `capability_id`, the capability
+fields it starts differently). A capability package carries `TEMPLATE_BLOCK` and
+`TEMPLATE_FLAGS` in `declarations.py`. A capability block starts from, highest first: a
+template flag, the `--from` skeleton, what the benchmark supplies (left out, with a
+comment), the agent's start, the capability's start. `--subset` needs `--benchmark`, because
+a benchmark's supplied settings may depend on the subset (AndroidWorld's still-screen
+wait does). A sampling value no upstream sends stays unwritten, so it is not sent
+(architecture §4.17; `tests/test_cli/test_config_templates.py`).

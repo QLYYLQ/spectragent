@@ -6,7 +6,7 @@
 
 Spectragent 把一次 agent 运行拆成可以逐个替换的部分：agent、模型、执行 loop、observation、action、memory 和 environment。一份 YAML 为每个部分选一个实现。trace hook 把运行记录下来，之后的查看、判分、离线回放、从录制的某一步分叉、训练导出都读这份记录，不重跑 agent。
 
-版本 0.3.0 · Python 3.11+ · Apache-2.0 · trace 格式 7 · `AgentResult` schema 5.0
+版本 0.3.0 · Python 3.11+ · Apache-2.0 · trace 格式 9 · `AgentResult` schema 5.0
 
 - [工作方式](#工作方式)
 - [当前实现](#当前实现)
@@ -98,7 +98,7 @@ uv run spectragent runs list
 uv run spectragent view --open
 ```
 
-`run`、`eval` 和 `replay-review` 还会读取工作目录下的 `.env`；`bench` 和 `flywheel` 只读 shell 环境（`set -a; . ./.env; set +a`）。Benchmark 数据不随仓库发布：在 task loader 上设 `data_dir:`，或让 `SPECTRAGENT_BENCHMARK_DATA` 指向按 `<env_type>/<benchmark>` 排布的根目录。
+`run`、`eval` 和 `replay-review` 还会读取工作目录下的 `.env`；`bench` 和 `flywheel` 只读 shell 环境（`set -a; . ./.env; set +a`）。Benchmark 数据不随仓库发布：`spectragent benchmark fetch <alias>` 把基准钉住的数据下载到共用缓存（`$SPECTRAGENT_BENCHMARK_DATA`，没设时是 `~/.cache/spectragent/benchmarks`），`spectragent benchmark setup <alias>` 装它在数据之外需要的东西（AndroidWorld）；缺了数据，run 会拒绝，带 `--fetch` 时先下载。见 [Benchmark data](configs/README.md#benchmark-data)。
 
 发布的入口配置：`configs/browser_use_local.yaml`、`configs/skyvern_agent_local.yaml`、`configs/ui_tars_local.yaml`、`configs/browser_use_skyvern.yaml`（Skyvern 云浏览器）和 `configs/browser_use_shared.yaml`（共享一个 Chrome，每个任务一个新 context）。切换后端只改 `environment[0].capabilities[0].backend`。登录态、共享 Chrome 与排错见 [浏览器 agent 运行手册](docs/browser_agent_runbook.md)。
 
@@ -222,7 +222,7 @@ traces/<run_id>/
   verdicts/                        # 每份判定（活体与离线）一个 <slug>.json，在 manifest 之外
 ```
 
-trace 在声明的录制范围内是完整的；没有选的通道不算损坏的证据。token 用量按 provider 报告的数保存，没报告的保持未知。框架不计算价格。读取方拒绝格式 8 以外的 trace。
+trace 在声明的录制范围内是完整的；没有选的通道不算损坏的证据。token 用量按 provider 报告的数保存，没报告的保持未知。框架不计算价格。读取方拒绝格式 9 以外的 trace。
 
 在 Python 里通过 `spectragent.core.trace.RunTrace` 读取，它只提供已提交的文件，并核对大小和哈希。
 
@@ -282,7 +282,7 @@ uv run spectragent view --annotations labels/ --annotator alice
 ```bash
 uv sync --extra dev
 uv run pytest -m "not requires_chrome"     # 跳过启动真实 Chrome 的测试
-uv run pytest                              # 全部测试，在空闲的机器上跑
+uv run pytest                              # 全部测试，push 之前在空闲的机器上跑一次
 uv run ruff check . && uv run ruff format .
 uv run pyright spectragent tests
 ```

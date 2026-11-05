@@ -63,7 +63,7 @@ for bad in bad_inputs:
 for model in (runtime, ComposedConfig):
     branch = model.model_validate({"benchmark": [{"benchmark_id": "trace_branches", "task_loader": {"benchmark_name": "trace_branches", "step_selector": {"selector_id": "all"}}}]}).benchmark[0].task_loader
     assert branch.sources == ("*",)
-    assert branch.require_archive == ("browser.network",)
+    assert branch.require_archive is None
     export = model.model_validate({"exporter": [{"exporter_id": "openai_messages", "student_run_config": "student.yaml", "output_dir": "dataset", "translator": {"translator_id": "identity"}}]}).exporter[0]
     assert export.sources == ("*",)
 

@@ -27,6 +27,7 @@ from spectragent.schemas import (
     StepRecord,
     TaskContext,
 )
+from spectragent.schemas.benchmark_spec import BenchmarkSpec, BlockFingerprints
 from spectragent.schemas.restoration import IDENTITY, ordered_reasons
 
 
@@ -256,3 +257,22 @@ class TestTaskContext:
         checkpoint = Checkpoint(trace_dir=str(tmp_path), step=1)
         context = TaskContext(env={"start_url": "https://a.test/"}, loop={"checkpoint": checkpoint})
         assert context.loop["checkpoint"] is checkpoint
+
+    def test_only_a_branch_task_names_the_benchmark_it_belongs_to(self) -> None:
+        """Every other task belongs to the benchmark whose task source gave it (§4.10.1)."""
+        spec = BenchmarkSpec(
+            benchmark_id="androidworld",
+            selection="androidworld",
+            fingerprints=BlockFingerprints.of({}),
+        )
+        branch = BranchProvenance(
+            source_run_id="run-a",
+            source_trace="run-a",
+            checkpoint_step=1,
+            branch_index=0,
+            branch_group_id="run-a/s1",
+        )
+        assert TaskContext(branch=branch, benchmark=spec).benchmark == spec
+        assert TaskContext(branch=branch).benchmark is None, "a branch of a run of no benchmark"
+        with pytest.raises(ValidationError, match="a task with no branch belongs to the benchmark"):
+            TaskContext(benchmark=spec)

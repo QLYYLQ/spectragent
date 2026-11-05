@@ -3,10 +3,12 @@
 :class:`ScriptedPhone` is one phone with both of its sides:
 
 - **adb's own commands**, answered with output shaped like the emulator's (API
-  33, 2026-11-01): the focus lines of ``dumpsys window``, the input method
-  client's served connection from ``dumpsys input_method``, a frame count from
+  33, 2026-11-01): the focus lines of ``dumpsys window``, the input method's
+  latest start of input and its client's served connection from ``dumpsys
+  input_method``, a frame count from
   ``dumpsys gfxinfo``, ``wm size``, ``getprop``, ``settings``, ``pm``,
-  ``cmd package`` and ``am start``;
+  ``cmd package``, ``am start``, and the wall clock: ``date +%s%3N`` and
+  ``cmd alarm set-time``;
 - **the device side** (:class:`~tests._helpers.fake_device_side.FakeDeviceSide`):
   the APK's install, the shell helper, the accessibility service, and what
   they do for a run: screenshots, timed strokes, keys, text, the node with
@@ -184,6 +186,9 @@ class ScriptedPhone:
             method serves its window, and the view with focus holds an input
             connection. ``None``: the input method's client does not answer, so
             its report names no connection.
+        input_started: The number of the input method's latest start of input
+            (``StartInput #N`` in its report): raise it when focus moves to
+            another field, as the input method then starts input again.
         window_over: A window over the activity that has focus instead of it,
             by its title (``NotificationShade``): the input method still serves
             the activity's window, as the emulator reported.
@@ -218,11 +223,25 @@ class ScriptedPhone:
         typing_fails: The error code the helper's ``type_text`` answers with
             from now on (``typed_partly``: a key failed after others went
             in); ``None``: it types.
+        unbinds_after_reads: How many reads of the bootstrap provider's health
+            the service stays bound after it left the setting
+            (:class:`FakeDeviceSide`); 0: at once.
         inputs: Every input the device side received, in order, setup's test
             tap first: ``"<program> stroke (x,y)@t ..."``, ``"helper key
             KEYCODE_..."``, ``"helper type_text '...' replace|at the cursor"``,
             ``"service set_text '...' replace|at the cursor"``, ``"service
             commit_text '...' replace|at the cursor"``.
+        clock_ms: The wall clock when the phone booted, in ms since the epoch
+            (AndroidWorld's 2023-10-15 15:34 UTC); it runs on from there, and
+            ``cmd alarm set-time`` moves it.
+        clock_fails: ``date`` fails from now on.
+        clock_sets_that_work: How many ``cmd alarm set-time`` calls succeed
+            before every later one fails, as the shell user's does when the
+            system refuses it; ``None``: every one succeeds.
+        clock_sets: Every time ``cmd alarm set-time`` set the clock, in order.
+        global_settings: The global settings ``settings get global`` reads,
+            ``put`` writes and ``delete`` removes, by name: the emulator's two
+            animation scales set, the animator's not.
     """
 
     width: int = 1080
@@ -240,6 +259,7 @@ class ScriptedPhone:
     screenshot_fails: bool = False
     screen: bytes | None = None
     text_field: bool | None = False
+    input_started: int = 4
     window_over: str | None = None
     field_bounds: tuple[int, int, int, int] | None = (0, 100, 1080, 250)
     field_node: int = 1
@@ -255,13 +275,27 @@ class ScriptedPhone:
     tree_reads: list[JsonValue] = field(default_factory=list)
     tree_delay_s: float = 0.0
     typing_fails: str | None = None
+    unbinds_after_reads: int = 0
     inputs: list[str] = field(default_factory=list)
+    clock_ms: int = 1_697_384_040_000
+    clock_fails: bool = False
+    clock_sets_that_work: int | None = None
+    clock_sets: list[int] = field(default_factory=list)
+    global_settings: dict[str, str] = field(
+        default_factory=lambda: {
+            "window_animation_scale": "1.0",
+            "transition_animation_scale": "1.0",
+        }
+    )
     side: FakeDeviceSide = field(init=False)
     _booted: float = field(init=False, default_factory=time.monotonic)
+    #: When the clock was last set (or the phone booted), on the host's monotonic clock.
+    _clock_since: float = field(init=False, default_factory=time.monotonic)
 
     def __post_init__(self) -> None:
         self.side = FakeDeviceSide(
             sdk_int=self.sdk_int,
+            unbinds_after_reads=self.unbinds_after_reads,
             service_methods={
                 "ping": self._service_ping,
                 "screenshot": self._screenshot("accessibility_service"),
@@ -286,6 +320,11 @@ class ScriptedPhone:
     def uptime_ms(self) -> int:
         """The device's uptime: the clock its events and pings are on."""
         return 100_000 + round((time.monotonic() - self._booted) * 1000)
+
+    @property
+    def now_ms(self) -> int:
+        """The device's wall clock: :attr:`clock_ms`, run on since it was last set."""
+        return self.clock_ms + round((time.monotonic() - self._clock_since) * 1000)
 
     def emit(self, event_type: str = "TYPE_WINDOW_CONTENT_CHANGED") -> int:
         """The service receives an accessibility event now; returns its ``seq``."""
@@ -477,7 +516,7 @@ class ScriptedPhone:
         if command == "dumpsys window":
             return ShellResult(stdout=_window_report(self.focused, self.window_over))
         if command == "dumpsys input_method":
-            return ShellResult(stdout=_input_method_report(self.text_field))
+            return ShellResult(stdout=_input_method_report(self.text_field, self.input_started))
         if words[:2] == ["dumpsys", "gfxinfo"]:
             if words[2] != package or self.frames is None:
                 return ShellResult(stdout=f"No process found for: {words[2]}\n".encode())
@@ -486,6 +525,31 @@ class ScriptedPhone:
             return ShellResult(stdout=f"Physical size: {self.width}x{self.height}\n".encode())
         if command == "getprop ro.build.fingerprint":
             return ShellResult(stdout=f"{FINGERPRINT}\n".encode())
+        if command == "date +%s%3N":
+            if self.clock_fails:
+                return ShellResult(stderr=b"date: bad clock\n", exit_code=1)
+            return ShellResult(stdout=f"{self.now_ms}\n".encode())
+        if words[:3] == ["cmd", "alarm", "set-time"]:
+            if (
+                self.clock_sets_that_work is not None
+                and len(self.clock_sets) >= self.clock_sets_that_work
+            ):
+                return ShellResult(
+                    stderr=b"java.lang.SecurityException: setTime: Neither user 2000 nor current "
+                    b"process has android.permission.SET_TIME.\n",
+                    exit_code=255,
+                )
+            self.clock_ms, self._clock_since = int(words[3]), time.monotonic()
+            self.clock_sets.append(self.clock_ms)
+            return ShellResult()
+        if words[:3] == ["settings", "put", "global"]:
+            self.global_settings[words[3]] = words[4]
+            return ShellResult()
+        if words[:3] == ["settings", "get", "global"]:
+            return ShellResult(stdout=f"{self.global_settings.get(words[3], 'null')}\n".encode())
+        if words[:3] == ["settings", "delete", "global"]:
+            gone = self.global_settings.pop(words[3], None)
+            return ShellResult(stdout=f"Deleted {int(gone is not None)} rows\n".encode())
         if command == "settings get secure default_input_method":
             return ShellResult(stdout=f"{INPUT_METHOD}\n".encode())
         if command == "pm list packages":
@@ -527,8 +591,11 @@ def _window_report(focused: str, window_over: str | None) -> bytes:
     ).encode()
 
 
-def _input_method_report(text_field: bool | None) -> bytes:
-    """The input method client's lines of ``dumpsys input_method``, around the one the bridge reads."""
+def _input_method_report(text_field: bool | None, input_started: int) -> bytes:
+    """The lines of ``dumpsys input_method`` the bridge reads, in a little of the rest of it.
+
+    The input method's latest start of input, then its client's connection.
+    """
     connection = (
         "RemoteInputConnectionImpl{connection=dzl@450171d finished=false "
         "mParentInputMethodManager.isActive()=true mServedView=dzd{805613a VFED..CL. .F...... "
@@ -548,6 +615,11 @@ def _input_method_report(text_field: bool | None) -> bytes:
         "Current Input Method Manager state:\n"
         "  mShowRequested=false mShowExplicitlyRequested=false mShowForced=false "
         "mInputShown=false\n"
+        "  mStartInputHistory:\n"
+        f"   StartInput #{input_started}:\n"
+        "    time=2023-10-15 15:34:09.804 (timestamp=65789) reason=APP_CALLED_RESTART_INPUT_API "
+        "restarting=true\n"
+        "  mSoftInputShowHideHistory:\n"
         " \n"
         "Input method client state for android.view.inputmethod.InputMethodManager@ac641eb:\n"
         + client

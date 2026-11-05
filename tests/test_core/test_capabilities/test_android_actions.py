@@ -789,11 +789,59 @@ async def test_typing_at_a_point_types_when_focus_moved_to_another_field(
 
     def focuses_another_field() -> None:
         phone.field_bounds, phone.field_node = (0, 2000, 1080, 2150), 2  # away from the point
+        phone.input_started += 1
 
     phone.on_tap = focuses_another_field
     result = await act(capability, "type_coordinate", coordinate_x=540, coordinate_y=900, text="hi")
 
     assert result.success, result.error
+
+
+async def test_typing_where_focus_moved_types_as_asked_when_the_input_method_never_starts_input(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """Focus moved, and the input method's latest start of input stays the one before the tap
+    for the whole wait: the device cannot tell, so the text is entered as asked."""
+    capability.actions = [AndroidTypeCoordinateAction(focus_wait_ms=200)]
+    phone.text_field, phone.field_bounds, phone.field_node = True, (0, 100, 1080, 250), 1
+
+    def focuses_another_field() -> None:
+        phone.field_bounds, phone.field_node = (0, 2000, 1080, 2150), 2  # away from the point
+
+    phone.on_tap = focuses_another_field
+    result = await act(capability, "type_coordinate", coordinate_x=540, coordinate_y=900, text="hi")
+
+    assert result.success, result.error
+    assert phone.inputs[-1] == "service set_text 'hi' replace"
+
+
+async def test_typing_at_a_point_waits_for_the_input_method_to_start_input_where_focus_moved(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """book-flight's read-only date field (measured 2026-11-04): the tap from a text field moves
+    focus there at once, while the input method still serves the old field's connection; a
+    moment later it starts input again, with no connection. Nothing is typed."""
+    capability.actions = [AndroidTypeCoordinateAction(focus_wait_ms=600)]
+    phone.text_field, phone.field_bounds, phone.field_node = True, (0, 100, 1080, 250), 1
+
+    def input_starts_again_without_a_connection() -> None:
+        phone.input_started, phone.text_field = phone.input_started + 1, False
+
+    def focuses_a_read_only_field() -> None:
+        phone.field_bounds, phone.field_node = (0, 800, 1080, 1000), 2
+        asyncio.get_running_loop().call_later(0.3, input_starts_again_without_a_connection)
+
+    phone.on_tap = focuses_a_read_only_field
+    result = await act(capability, "type_coordinate", coordinate_x=540, coordinate_y=900, text="hi")
+
+    assert (result.success, result.error) == (
+        False,
+        "No text field took focus at the tapped point: focus is in "
+        "com.google.android.apps.nexuslauncher/"
+        "com.google.android.apps.nexuslauncher.NexusLauncherActivity, not on a text field, "
+        "so no text was typed.",
+    )
+    assert phone.inputs == ["helper stroke (540,900)@0 (540,900)@50"], "nothing entered"
 
 
 async def test_typing_at_a_point_inside_the_field_that_has_focus_types(
@@ -859,6 +907,7 @@ async def test_typing_at_a_point_waits_for_focus_to_leave_the_field_it_stayed_on
     async def focus_moves() -> None:
         await asyncio.sleep(0.3)
         phone.field_bounds, phone.field_node = (0, 800, 1080, 1000), 2
+        phone.input_started += 1
 
     moving = asyncio.ensure_future(focus_moves())
     result = await act(capability, "type_coordinate", coordinate_x=540, coordinate_y=900, text="hi")

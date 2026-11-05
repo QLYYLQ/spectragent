@@ -19,6 +19,8 @@ Read [references/guide.md](references/guide.md) by symptom:
 
 Validate the actual response against the real closed action union; an HTTP 200 does not prove that a gateway preserved the schema.
 
+A sampling field (`temperature`, `frequency_penalty`, `presence_penalty`, `top_p`, `top_k`, `seed`) defaults to `None`, and `None` is left out of the request body, never sent as `null` (pass an SDK only the values that are set). An agent's official sampling values belong in its template start, not in a provider default (architecture §4.7, §4.17; `tests/test_core/test_llm/test_unset_sampling.py` checks every provider).
+
 A Chat provider fills `ChatInvokeCompletion.thinking` (and `redacted_thinking`) from whatever reasoning its response already carries, on every return path, and never changes the request to obtain it; the reasoning is recorded, never fed back.
 
 

@@ -18,6 +18,7 @@ from spectragent.core.llm.base import BaseChatModel
 from spectragent.core.llm.call_context import RunCallContext
 from spectragent.core.loops.identity import RunIdentity
 from spectragent.schemas.action_space import ActionSpace
+from spectragent.schemas.benchmark_spec import BenchmarkSpec
 from spectragent.schemas.config_source import ConfigSource
 
 
@@ -98,6 +99,7 @@ class RuntimeHook(Protocol):
         action_space: ActionSpace,
         step_budget: int | None,
         task_text_setter: str | None,
+        earlier_tasks_on_environment: int,
         agent_id: str,
         loop_id: str,
         env_type: str,
@@ -109,6 +111,7 @@ class RuntimeHook(Protocol):
         env_evidence_privacy: list[str] | None,
         task_setup: Mapping[str, Any] | None,
         branch: Any,
+        benchmark_spec: BenchmarkSpec | None,
         config_source: ConfigSource | None,
         **kwargs: Any,
     ) -> None:
@@ -158,6 +161,10 @@ class RuntimeHook(Protocol):
           the source run, its trace and the checkpoint step — or ``None``
           for every run that is not a branch. Per task, like ``task_setup``;
           the runtime passes it through without reading it.
+        - ``benchmark_spec``: how the benchmark this task belongs to was
+          selected (a branch task's is its source run's), or ``None`` when it
+          belongs to none. Per task; the runtime passes it through without
+          reading it.
         - ``step_budget``: the most policy steps the Loop allows this task
           (``loop.step_budget(loop_inputs)``: a task's own budget lowers
           ReAct's configured ``max_steps``; a branch's is its
@@ -169,6 +176,10 @@ class RuntimeHook(Protocol):
           The completed text arrives after setup through
           ``Environment.task_text_from_setup``, which a recorder intercepts.
           Per task, like ``task_setup``.
+        - ``earlier_tasks_on_environment``: how many tasks this run's
+          environment served before it, kept by a sweep from its earlier
+          tasks (``docs/architecture_design.md`` §4.10.1); 0 for a new
+          environment. Per task, like ``task_setup``.
         - ``config_source``: the source YAML path and consumed-byte digest supplied
           by the caller, or ``None`` when its source is unknown. It is provenance,
           not effective configuration; no hook derives it from resolved settings.

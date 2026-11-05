@@ -73,6 +73,11 @@
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9);
 }
 
+/* Typing in the right part of an image: the text sits left of its dot, inside the image. */
+.mark-typed.left {
+  transform: translate(calc(-100% - 16px), -50%);
+}
+
 .mark-legend {
   display: grid;
   gap: 6px;
@@ -95,7 +100,7 @@
   align-items: center;
   gap: 6px;
   font-weight: 600;
-  color: var(--ink, #1d2430);
+  color: var(--ink, var(--text));
 }
 
 .mark-swatch {
@@ -116,8 +121,9 @@
 
 .mark-set li {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 6px;
+  gap: 0 6px;
   min-width: 0;
 }
 
@@ -141,7 +147,10 @@
   box-shadow: inset 0 0 0 1.5px var(--mark);
 }
 
+/* In a narrow image's legend the note drops below the line, never squeezing it to one character a row. */
 .mark-text {
+  flex: 1 1 7em;
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 
@@ -152,7 +161,7 @@
 
 .mark-note,
 .mark-problem {
-  color: var(--muted, #687385);
+  color: var(--muted, var(--text-2));
   font-size: 12px;
 }
 
@@ -171,14 +180,14 @@
 
 .screenshot .mark-legend {
   padding: 0 14px 10px;
-  background: #fffcf4;
+  background: var(--surface);
 }
 
 .board-panel .mark-legend {
   margin: 0;
   padding: 6px 10px;
-  border-bottom: 1px solid #e5e1d6;
-  background: #fffdf7;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
 }
 
 .image-tools {

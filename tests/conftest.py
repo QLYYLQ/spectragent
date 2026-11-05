@@ -155,8 +155,9 @@ _ensure_generated_config()
 
 # ── Benchmark data is an optional, out-of-band dependency ────────────
 #
-# ``spectragent/benchmark_data/`` is not part of the distribution and is
-# not guaranteed to be in a checkout. The loaders are deliberately loud
+# No benchmark data ships with spectragent: it lives in the shared cache
+# (``$SPECTRAGENT_BENCHMARK_DATA``, else ``~/.cache/spectragent/benchmarks``),
+# written by ``spectragent benchmark fetch``. The loaders are deliberately loud
 # when it is absent (``BenchmarkDataError`` at construction) because for a
 # *run* "no data" and "broken data" both have to stop the world. A test
 # session needs the opposite: a dataset that was never fetched is not a
@@ -169,19 +170,20 @@ _ensure_generated_config()
 # build their own data under ``tmp_path`` and must keep running.
 
 _BENCHMARK_DATA_HINT = (
-    "Benchmark data is not shipped with spectragent. Point the loaders at a "
-    "local copy with SPECTRAGENT_BENCHMARK_DATA=<root>, or set `data_dir:` on "
-    "the individual loader — see configs/README.md."
+    "Benchmark data is not shipped with spectragent. Fetch it with "
+    "`spectragent benchmark fetch <alias>`, point the loaders at a local copy "
+    "with SPECTRAGENT_BENCHMARK_DATA=<root>, or set `data_dir:` on the "
+    "individual loader — see configs/README.md."
 )
 
 
 def _missing_benchmark_data(datasets: tuple[str, ...]) -> list[str]:
     """Return the ``<env_type>/<benchmark>`` entries that are unusable.
 
-    Resolution goes through ``resolve_data_dir`` rather than
-    ``BENCHMARK_DATA_ROOT`` so the skip decision and the loader agree about
-    where the data is — otherwise ``SPECTRAGENT_BENCHMARK_DATA`` could
-    supply the data and the tests would skip anyway. A directory counts as
+    Resolution goes through ``resolve_data_dir``, the loaders' own, so the
+    skip decision and the loader agree about where the data is — otherwise
+    ``SPECTRAGENT_BENCHMARK_DATA`` could supply the data and the tests would
+    skip anyway. A directory counts as
     usable only once it declares its splits, which is the same condition
     the loaders raise on.
     """

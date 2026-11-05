@@ -40,6 +40,7 @@ from typing import Annotated, Any, ClassVar, Final, Protocol, runtime_checkable
 from conscribe import create_registrar
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, SerializeAsAny, model_validator
 
+from spectragent.schemas.benchmark_spec import BenchmarkSpec
 from spectragent.schemas.restoration import BranchProvenance
 
 # ── Task setups ───────────────────────────────────────────────────────
@@ -220,7 +221,7 @@ class TaskDefinition(BaseModel):
 
 
 class TaskContext(BaseModel):
-    """What one task hands to three different consumers, kept apart.
+    """What one task hands to its different consumers, kept apart.
 
     Returned by ``TaskLoader.get_task_context(task_id)`` and split by the
     caller (``BenchmarkRunner.run_task``) across ``AgentRuntime.execute``
@@ -233,7 +234,15 @@ class TaskContext(BaseModel):
       declares in ``__loop_inputs__`` (``checkpoint`` for ``BranchLoop``),
       checked at ``prepare()``;
     - ``branch`` → ``execute(branch=...)``: where a branch task came from,
-      recorded as ``TraceConfig.branch`` and read by nothing else.
+      recorded as ``TraceConfig.branch`` and read by nothing else;
+    - ``benchmark``, a branch task's only: the benchmark it belongs to, its
+      source run's, as the source trace recorded how it was selected
+      (``TraceConfig.benchmark_spec``; ``None`` when the source belonged to
+      none). The caller composes the task's run with that benchmark beside
+      the branch sweep's task source, so the branch is set up, judged and
+      configured as its source was (§4.10.1 "分叉 sweep 是一种任务来源"),
+      and hands it to ``execute(benchmark_spec=...)``. Every other task
+      belongs to the benchmark whose task source gave it.
 
     None of them leaks into another: the environment never sees a
     checkpoint, the Loop never sees the setup context.
@@ -242,6 +251,16 @@ class TaskContext(BaseModel):
     env: dict[str, Any] = Field(default_factory=dict)
     loop: dict[str, Any] = Field(default_factory=dict)
     branch: BranchProvenance | None = None
+    benchmark: BenchmarkSpec | None = None
+
+    @model_validator(mode="after")
+    def _benchmark_of_a_branch_task(self) -> TaskContext:
+        if self.benchmark is not None and self.branch is None:
+            raise ValueError(
+                "benchmark names the benchmark a branch task inherits from its source run; a "
+                "task with no branch belongs to the benchmark whose task source gave it"
+            )
+        return self
 
 
 class SetupTaskText(BaseModel):

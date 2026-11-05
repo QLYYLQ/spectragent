@@ -1,11 +1,14 @@
-# LexBench's browser tasks. Select it with --benchmark lexbench_browser
-# (docs/architecture_design.md §4.10.1); for one split, add --subset <split>.
+# LexBench-Browser's public tasks. Select it with --benchmark lexbench_browser
+# (docs/architecture_design.md §4.10.1); for one subset, add --subset <subset>.
+# Its data is the public Lexmount/LexBench-Browser v1.0 on Hugging Face, pinned at a
+# commit: fetch it into the shared cache with spectragent benchmark fetch lexbench_browser
+# (or run and bench with --fetch).
 benchmark:
   - benchmark_id: lexbench_browser
     task_loader:
       benchmark_name: lexbench_browser
-      subset: All
-      data_dir: null             # null: $SPECTRAGENT_BENCHMARK_DATA/browser/lexbench_browser
+      subset: All                # All (210) | global (92) | lexmount (118) | sample50 (50 of All)
+      data_dir: null             # null: the cache copy, <data root>/browser/lexbench_browser
     # eval_loader left out: the registered lexbench_browser eval loader for the task loader's subset.
     # verifiers: who judges the runs. None is listed: an LLM judge's model must be
     # one you verified first (docs/browser_agent_runbook.md, "独立评测已录下的任务").
@@ -14,4 +17,8 @@ benchmark:
     #   verifiers:
     #     - verifier_id: lexbench_browser    # rubric-scored, with the task's pass mark
     #       eval_strategy: stepwise          # final: the last frame only
-    #       llm: { model_type: openai, model: <a verified vision model>, provider: { name: direct } }
+    #       # temperature 1.0 is the LexBench-Browser v1.0.0 protocol's judge setting (its judge,
+    #       # gpt-5.4, takes only 1): https://github.com/lexmount/browseruse-agent-bench/blob/313b0cf7f75b3a61f9be9041612b7873ac6354cc/config.example.yaml#L370-L378
+    #       # Its code falls back to 0.3 when a config writes none:
+    #       # https://github.com/lexmount/browseruse-agent-bench/blob/313b0cf7f75b3a61f9be9041612b7873ac6354cc/browseruse_bench/eval/lexbench_browser/lexmount_eval.py#L401
+    #       llm: { model_type: openai, model: <a verified vision model>, provider: { name: direct }, temperature: 1.0 }

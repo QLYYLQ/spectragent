@@ -42,6 +42,17 @@ class BenchmarkSetup(Protocol):
         """The ``capability_id`` of the capability that hosts it."""
         ...
 
+    @property
+    def resets_between_tasks(self) -> bool:
+        """Whether it resets the state its host carries from one task into the next.
+
+        A sweep sets a task up on the environment the task before it used
+        only when this is true and the environment's identity is the same
+        (``docs/architecture_design.md`` §4.10.1 "环境跨任务复用"); otherwise
+        every task gets a new one.
+        """
+        ...
+
 
 BenchmarkSetupRegistrar = create_registrar(
     "benchmark_setup",
@@ -55,7 +66,9 @@ class BenchmarkSetupBase(metaclass=BenchmarkSetupRegistrar.Meta):
     """Base of every benchmark setup component; ``setup_id`` is the registry key.
 
     A concrete component sets ``__registry_key__`` and ``__hosted_by__``, the
-    ``capability_id`` of the capability that hosts it.
+    ``capability_id`` of the capability that hosts it, and
+    ``__resets_between_tasks__`` when it resets the state its host carries
+    from one task into the next.
     """
 
     __abstract__ = True
@@ -64,6 +77,8 @@ class BenchmarkSetupBase(metaclass=BenchmarkSetupRegistrar.Meta):
     __registry_key__: ClassVar[str]
     #: The ``capability_id`` of the capability that hosts it.
     __hosted_by__: ClassVar[str]
+    #: Whether it resets the state its host carries from one task into the next.
+    __resets_between_tasks__: ClassVar[bool] = False
 
     @property
     def setup_id(self) -> str:
@@ -72,6 +87,10 @@ class BenchmarkSetupBase(metaclass=BenchmarkSetupRegistrar.Meta):
     @property
     def capability_id(self) -> str:
         return self.__hosted_by__
+
+    @property
+    def resets_between_tasks(self) -> bool:
+        return self.__resets_between_tasks__
 
 
 __all__ = ["BenchmarkSetup", "BenchmarkSetupBase", "BenchmarkSetupRegistrar"]

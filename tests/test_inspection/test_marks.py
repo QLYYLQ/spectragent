@@ -10,15 +10,16 @@ from pathlib import Path
 import pytest
 
 import spectragent.core.capabilities.browser.actions  # noqa: F401 — action effects registered
+from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.capabilities.browser.effects import (
     ElementFacts,
     PointerEffect,
     TextInputEffect,
     ViewportPoint,
 )
+from spectragent.core.presentation import discover_capabilities
 from spectragent.core.trace.reader import RunTrace
 from spectragent.inspection.marks import (
-    ACTION_VERBS,
     Geometry,
     MarkRequest,
     action_lines,
@@ -28,6 +29,7 @@ from spectragent.inspection.marks import (
     marks_on,
     observation_marks,
     observation_pointer,
+    presenter,
     step_marks,
 )
 from spectragent.schemas.action import Action, ActionResult
@@ -301,7 +303,13 @@ def test_a_missing_step_is_a_set_problem(run: RunTrace) -> None:
     assert found.sets[0].problem == "这次运行没有已提交的第 9 步"
 
 
-@pytest.mark.parametrize("name", sorted(set(ACTION_VERBS) - {"loop.done"}))
+def _worded_actions() -> list[str]:
+    """Every registered action whose class says how it reads, except the Loop's ``done``."""
+    discover_capabilities()
+    return sorted(key for key in ActionRegistrar.get_all() if presenter(key) and key != "loop.done")
+
+
+@pytest.mark.parametrize("name", _worded_actions())
 def test_each_line_says_the_verb_the_viewer_labels_its_step_with(name: str) -> None:
     # One wording: the line and the step label (the run API's action_verbs) agree.
     assert action_verb(name) in action_text(Action(name=name), None)

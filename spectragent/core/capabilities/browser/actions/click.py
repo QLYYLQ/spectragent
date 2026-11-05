@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
@@ -18,6 +18,7 @@ from spectragent.core.capabilities.browser.actions._common import (
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.effects import PointerEffect
+from spectragent.core.capabilities.browser.presentation import BrowserWords
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import ClickElementEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
@@ -27,9 +28,10 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class ClickAction(SettleableAction, ActionBase):
+class ClickAction(BrowserWords, SettleableAction, ActionBase):
     """Click a DOM element by its selector_map index."""
 
+    person_verb: ClassVar[str] = "点击"
     __registry_key__ = "browser.click"
 
     #: Where it pressed, what the page hit there and whether that is the

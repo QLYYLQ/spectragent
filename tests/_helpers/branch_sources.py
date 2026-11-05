@@ -37,6 +37,7 @@ from spectragent.core.trace.verdicts import write_verdict
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.benchmark_spec import BenchmarkSpec
 from spectragent.schemas.observation.capture_state import FailedVisibleResources, PointerState
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.restoration import BranchProvenance
@@ -135,6 +136,8 @@ def write_source(
     format_version: int | None = None,
     uncommitted: Sequence[int] = (),
     task_text_setter: str | None = None,
+    benchmark_spec: BenchmarkSpec | None = None,
+    names_capability: bool = True,
 ) -> Path:
     """Commit one recorded run under ``root/<run_id>`` and return its directory.
 
@@ -150,7 +153,10 @@ def write_source(
     the trace's (``writing``: never closed out; ``incomplete`` closes it with
     *incomplete_reason*); ``agent_done`` is the agent's, written as
     ``result.json`` (``None``: no result.json); ``task_text_setter`` names
-    the capability whose setup completed the run's task text (§4.10).
+    the capability whose setup completed the run's task text (§4.10);
+    ``benchmark_spec`` records how the run's benchmark was selected (``None``:
+    the run belonged to none); ``names_capability`` false records an empty
+    resolved configuration, as a run assembled without the Composer does.
     """
     specs = [Step() for _ in range(steps)] if isinstance(steps, int) else list(steps)
     captured = any(spec.capture is not None for spec in specs)
@@ -178,6 +184,18 @@ def write_source(
             task_setup=setup_record() if task_setup is _DEFAULT else task_setup,
             branch=branch,
             task_text_setter=task_text_setter,
+            benchmark_spec=benchmark_spec,
+            # The capability it ran, named where the schema puts it: what a
+            # branch of it needs is that capability's declaration.
+            resolved=(
+                {
+                    "environment": [
+                        {"env_type": env_type, "capabilities": [{"capability_id": env_type}]}
+                    ]
+                }
+                if names_capability
+                else {}
+            ),
         )
     )
     for index, spec in enumerate(specs):

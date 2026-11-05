@@ -53,7 +53,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, create_model
+from pydantic import BaseModel, ConfigDict, JsonValue, create_model
 from pydantic import Field as PydanticField
 
 from spectragent.agents._registrar import AgentBase
@@ -141,6 +141,30 @@ class BrowserUseAgent(AgentBase):
         "llm": "llm",  # auto-discovery — any registered LLM
     }
     __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset({"max_actions_per_step"})
+    #: Where a new ``config template`` starts a member: browser-use's own
+    #: defaults (``docs/architecture_design.md`` §4.17 "agent 的模板起点"), at
+    #: browser-use commit 6e2add1c. The llm values name no provider, so the
+    #: template writes each into whichever model block it chooses that has the
+    #: field. Starting values written into the YAML, not defaults.
+    #:
+    #: - ``temperature`` 0.2, ``frequency_penalty`` 0.3: browser-use's ChatOpenAI,
+    #:   https://github.com/browser-use/browser-use/blob/6e2add1c8139b17b01a549eea944687486724fda/browser_use/llm/openai/chat.py#L37-L38
+    #: - ``max_actions_per_step`` 5: ``AgentSettings``,
+    #:   https://github.com/browser-use/browser-use/blob/6e2add1c8139b17b01a549eea944687486724fda/browser_use/agent/views.py#L70
+    #: - ``max_steps`` 500: ``Agent.run``'s default,
+    #:   https://github.com/browser-use/browser-use/blob/6e2add1c8139b17b01a549eea944687486724fda/browser_use/agent/service.py#L2468
+    __template_block__: ClassVar[Mapping[str, JsonValue]] = {
+        "agent_loop": {"loop_id": "react", "max_actions_per_step": 5, "max_steps": 500},
+        "llm": {"temperature": 0.2, "frequency_penalty": 0.3},
+    }
+    #: Where a new ``config template`` starts the browser block a member runs
+    #: in: browser-use cuts the page text it shows at 40000 characters
+    #: (``max_clickable_elements_length``,
+    #: https://github.com/browser-use/browser-use/blob/6e2add1c8139b17b01a549eea944687486724fda/browser_use/agent/views.py#L91, applied at
+    #: https://github.com/browser-use/browser-use/blob/6e2add1c8139b17b01a549eea944687486724fda/browser_use/agent/prompts.py#L238-L240).
+    __template_capabilities__: ClassVar[Mapping[str, Mapping[str, JsonValue]]] = {
+        "browser": {"dom_max_serialized_chars": 40000}
+    }
     # The prompt states a desktop browser's input platform (render_browser_platform).
     __input_platforms__: ClassVar[frozenset[InputPlatform]] = BROWSER_PLATFORMS
     # The DOM text's format is its serializer's to describe: the surface
@@ -159,7 +183,18 @@ class BrowserUseAgent(AgentBase):
     # deliberately absent: the Loop owns and enforces them. AgentRuntime
     # hands the loop's limits to ``prepare()`` so the prompt advertises
     # exactly what will be executed.
-    flash_mode: Annotated[bool, PydanticField(description="Skip thinking for speed")] = True
+    # browser-use's own default (``AgentSettings.flash_mode``, browser-use
+    # ``browser_use/agent/views.py:72``), so a run that leaves it out runs the
+    # official prompt (user ruling 2026-11-04).
+    flash_mode: Annotated[
+        bool,
+        PydanticField(
+            description=(
+                "Flash mode: the reply drops the thinking, evaluation and next-goal fields, "
+                "and the system prompt is the flash one. Off (the default), as in browser-use."
+            )
+        ),
+    ] = False
     use_thinking: Annotated[bool, PydanticField(description="Enable extended thinking")] = True
     is_browser_use_model: Annotated[
         bool, PydanticField(description="Using fine-tuned browser-use model")

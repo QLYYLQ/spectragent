@@ -15,6 +15,8 @@ import {
   gapLabel,
   modelCallTitle,
   decisionAnswerRows,
+  notShownCapabilities,
+  reasonLabel,
 } from "./evidence.js";
 import {
   number,
@@ -38,6 +40,7 @@ import { StepLabels } from "./stepLabels.jsx";
 import { MarkLayer, MarkLegend, MarkToggle } from "./marks.jsx";
 import { hasMarks } from "./marks.js";
 import { TaskGraphs } from "./taskGraph.jsx";
+import { tallestRatio } from "./reviewEvidence.js";
 import "./styles.css";
 
 /** Display names for the restorer's verify setting (``strict`` or ``warn``). */
@@ -222,7 +225,7 @@ function Ledger({ row }) {
   );
 }
 
-function RunList({ revision, selected, setSelected, workspace }) {
+function RunList({ revision, selected, setSelected, workspace, route }) {
   const [view, setView] = useState("tasks");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("");
@@ -341,7 +344,7 @@ function RunList({ revision, selected, setSelected, workspace }) {
             onChange={(event) => setExecution(event.target.value)}
           >
             <option value="">全部运行方式</option>
-            {["live", "replay", "branch", "branch_replay", "unknown"].map(
+            {["live", "replay", "branch", "branch_replay"].map(
               (value) => (
                 <option key={value} value={value}>
                   {statusLabel(value)}
@@ -381,7 +384,15 @@ function RunList({ revision, selected, setSelected, workspace }) {
                       : "请选择包含运行记录的目录，然后刷新。这里只显示已提交的记录。"}
               </Empty>
             ) : view === "tasks" ? (
-              <TaskGraphs rows={rows} visible={visible} revision={revision} selected={selected} onToggle={toggle} />
+              <TaskGraphs
+                visible={visible}
+                selected={selected}
+                onToggle={toggle}
+                route={route}
+                renderStep={(key, index) => (
+                  <StepDetail key={`${key}#${index}`} runKey={key} index={index} revision={revision} />
+                )}
+              />
             ) : (
               <div className="table-scroll">
                 <table className="runs-table">
@@ -713,7 +724,7 @@ function Screenshot({ runKey, step, view = "agent", marks = null }) {
         <span className="screenshot-marked">
           <img
             src={src}
-            alt={`第 ${step} 步的${view === "agent" ? "智能体观测" : "浏览器状态"}`}
+            alt={`第 ${step} 步的${view === "agent" ? "智能体观测" : "原始画面"}`}
             onError={() => setFailed(true)}
           />
           {marks && <MarkLayer data={marks} />}
@@ -721,11 +732,34 @@ function Screenshot({ runKey, step, view = "agent", marks = null }) {
       </a>
       <figcaption>
         <Icon name="image" />
-        {view === "agent" ? "智能体观测" : "浏览器状态"} · 第 {step} 步
+        {view === "agent" ? "智能体观测" : "原始画面"} · 第 {step} 步
         <a href={src} target="_blank" rel="noreferrer">
           查看原图 ↗
         </a>
       </figcaption>
+    </figure>
+  );
+}
+
+/** One screenshot of a comparison row: the shared box, top-aligned, with its own step's marks. */
+function ComparedScreenshot({ runKey, step, view, marks, caption, note, missing }) {
+  const [failed, setFailed] = useState(false);
+  const src = runKey != null && !missing ? query("screenshot", { key: runKey, index: step, view }) : null;
+  useEffect(() => setFailed(false), [src]);
+  return (
+    <figure className="compare-figure">
+      <figcaption>{caption}<span>{note}</span></figcaption>
+      {src && !failed ? (
+        <a className="compare-box" href={src} target="_blank" rel="noreferrer" title="按原始尺寸打开截图">
+          <span className="compare-surface">
+            <img src={src} alt={`${caption}的截图`} onError={() => setFailed(true)} />
+            {marks && <MarkLayer data={marks} />}
+          </span>
+        </a>
+      ) : (
+        <div className="compare-box empty"><p className="muted small">{failed ? "无法读取已提交的截图。" : missing}</p></div>
+      )}
+      <div className="compare-legend">{marks && <MarkLegend data={marks} />}</div>
     </figure>
   );
 }
@@ -735,7 +769,7 @@ function ImageViewSwitch({ view, setView }) {
     <div className="tabs compact image-switch" aria-label="截图视图">
       {[
         ["agent", "智能体观测"],
-        ["browser", "浏览器状态 · 原始画面"],
+        ["raw", "原始画面 · 不加标记"],
       ].map(([key, label]) => (
         <button
           key={key}
@@ -784,8 +818,9 @@ function ObservationImage({ runKey, step, fragments }) {
   );
 }
 
-function GapSummary({ gap, everywhere = [] }) {
+function GapSummary({ gap, everywhere = [], reasons = [] }) {
   if (!gap) return null;
+  const hidden = notShownCapabilities(gap);
   return (
     <div className={`gap-summary ${gap.differences.length ? "has-gap" : ""}`}>
       <div className="section-heading">
@@ -794,12 +829,20 @@ function GapSummary({ gap, everywhere = [] }) {
           校验 <Badge value={gap.verdict} />
         </span>
       </div>
+      {reasons.length > 0 && (
+        <p className="small">没有通过的检查：{reasons.map(reasonLabel).join("、")}</p>
+      )}
       {gap.differences.length > 0 && (
         <ul>
           {gap.differences.map((item) => (
             <li key={item}>{item}</li>
           ))}
         </ul>
+      )}
+      {hidden.length > 0 && (
+        <p className="muted small">
+          {hidden.join("、")} 的恢复证据由它自己的检查判定，这一视图不读它的测量，不说有没有测得差异；它的原始测量在下面的“恢复检查”记录里。
+        </p>
       )}
       {gap.unmeasured.length > 0 && (
         <details>
@@ -825,8 +868,13 @@ function GapSummary({ gap, everywhere = [] }) {
 
 function RestorationComparison({ step, runKey, index, everywhere }) {
   const [view, setView] = useState("agent");
+  const [showMarks, setShowMarks] = useState(true);
   const comparison = step.comparison;
   const source = comparison.source;
+  const sourceMarks = useRemote(
+    source?.has_screenshot ? query("marks", { key: comparison.source_key, index: comparison.source_step }) : null,
+  );
+  const actualMarks = useRemote(step.has_screenshot ? query("marks", { key: runKey, index }) : null);
   const check = step.record.restoration;
   const prefix = step.record.origin === "restored";
   return (
@@ -847,8 +895,37 @@ function RestorationComparison({ step, runKey, index, everywhere }) {
           ? "这一恢复步没有做新的策略决策。"
           : "在检查点上，新策略总是使用实际恢复出的观测。"}
       </p>
-      <GapSummary gap={step.gap} everywhere={everywhere} />
-      <ImageViewSwitch view={view} setView={setView} />
+      <GapSummary gap={step.gap} everywhere={everywhere} reasons={check?.reasons || []} />
+      <div className="image-tools">
+        <ImageViewSwitch view={view} setView={setView} />
+        <MarkToggle show={showMarks} onChange={setShowMarks} keycap={false} />
+      </div>
+      <div
+        className="compare-row restoration-images"
+        style={{ "--compare-count": 2, "--compare-ratio": tallestRatio([sourceMarks.data, actualMarks.data]) ?? undefined }}
+      >
+        <ComparedScreenshot
+          runKey={comparison.source_key}
+          step={comparison.source_step}
+          view={view}
+          marks={showMarks && hasMarks(sourceMarks.data) ? sourceMarks.data : null}
+          caption={`原始记录 · 第 ${comparison.source_step} 步`}
+          note={!source ? `原始记录不可用 · ${statusLabel(comparison.source_status)}` : view === "agent" ? cursorLabel(source.fragments) : "原始画面"}
+          missing={!source ? "原始记录不可用" : !source.has_screenshot ? (source.recording.observations ? "没有已提交的截图。" : "没有记录观测。") : null}
+        />
+        <ComparedScreenshot
+          runKey={runKey}
+          step={index}
+          view={view}
+          marks={showMarks && hasMarks(actualMarks.data) ? actualMarks.data : null}
+          caption={`${prefix ? "实际回放" : "检查点状态"} · 第 ${index} 步`}
+          note={view === "agent" ? cursorLabel(step.fragments) : "恢复后的原始画面"}
+          missing={step.has_screenshot ? null : "这一步没有已提交的截图。"}
+        />
+      </div>
+      <p className="muted small">
+        两张图放在同样大小的框里、顶端对齐；编号标记是各自那一步在这一屏上做的动作{prefix ? "（恢复步是重新执行的原动作）" : "：左边是源运行原来的决定，右边是分叉在恢复出的同一屏上的新决定"}。
+      </p>
       <div className="restoration-columns">
         <article className="restoration-column source-column">
           <div className="section-heading">
@@ -861,24 +938,6 @@ function RestorationComparison({ step, runKey, index, everywhere }) {
           </div>
           {source ? (
             <>
-              <p className="muted small">
-                {view === "agent"
-                  ? cursorLabel(source.fragments)
-                  : "原始浏览器状态 · 原始画面"}
-              </p>
-              {source.has_screenshot ? (
-                <Screenshot
-                  runKey={comparison.source_key}
-                  step={comparison.source_step}
-                  view={view}
-                />
-              ) : (
-                <Empty title="原始截图不可用">
-                  {source.recording.observations
-                    ? "没有已提交的截图。"
-                    : "没有记录观测。"}
-                </Empty>
-              )}
               <p className="observation-summary">
                 {source.record.observation_summary}
               </p>
@@ -932,18 +991,6 @@ function RestorationComparison({ step, runKey, index, everywhere }) {
                   : "新策略的输入"}
             </span>
           </div>
-          <p className="muted small">
-            {view === "agent"
-              ? cursorLabel(step.fragments)
-              : "恢复后的浏览器状态 · 原始画面"}
-          </p>
-          {step.has_screenshot ? (
-            <Screenshot runKey={runKey} step={index} view={view} />
-          ) : (
-            <Empty title="回放截图不可用">
-              这一步没有已提交的截图。
-            </Empty>
-          )}
           <p className="observation-summary">
             {step.record.observation_summary}
           </p>
@@ -3017,6 +3064,7 @@ function App() {
                     selected={selected}
                     setSelected={setSelected}
                     workspace={workspace.data}
+                    route={route}
                   />
                 )}
               </>

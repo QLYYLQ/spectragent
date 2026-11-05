@@ -220,7 +220,9 @@ async def verify_restoration(self, recorded: Any, restored: Any) -> MyRestoratio
   only the action reasons (`retarget_*`, `action_failed`) and `strict | warn`
   (`core/loops/restore/checks.py::judge`). The browser's is
   `core/capabilities/browser/restoration_evidence.py::BrowserRestorationEvidence`
-  (`screenshot_max_distance`, `media_time_tolerance_s` are BrowserCapability knobs).
+  (`screenshot_max_distance`, `media_time_tolerance_s` are BrowserCapability knobs);
+  Android's is `core/capabilities/android/restoration_evidence.py::AndroidRestorationEvidence`
+  (`screenshot_max_distance`, `clock_max_difference_s` are AndroidCapability knobs).
 - **Reads the two observations handed to it**, whole `NegotiatedObservation`s. Read
   your own fragments by local name and check their type (a failed capture is a
   `FragmentFailure`, a fragment this run did not negotiate is absent). No step numbers, no
@@ -230,8 +232,12 @@ async def verify_restoration(self, recorded: Any, restored: Any) -> MyRestoratio
   call. That makes `verify_restoration` order-dependent, so restorers call it exactly once
   per restored observation; test that a second call reads 0.
 - **Put the logic in pure functions of its own module** and keep the capability methods
-  one-line delegations (the browser: `retarget_action`, `measure`, `element_signature`,
-  `dhash` in `core/capabilities/browser/restoration.py`). A knob it needs is an
+  one-line delegations (the browser: `retarget_action`, `measure`, `element_signature`
+  in `core/capabilities/browser/restoration.py`; Android: the same in
+  `core/capabilities/android/restoration.py`). A screenshot comparison uses the shared
+  difference hash (`core/image_hash.py`: `dhash`, `image_dhash`, `hamming`), masking
+  first what your screens change on their own (the browser its media areas, Android
+  its status bar). A knob it needs is an
   `Annotated` constructor parameter (`retarget_tolerance_px`), regenerated like any other.
   State it needs between measurements (the browser's last-seen replay-log
   `diverged_total`) is reset in `setup` / `teardown`.
@@ -276,6 +282,17 @@ async def align_next_observation(self, recorded: Any) -> None: ...
   second, higher-priority connection of the screenshot resolver with the complementary
   filter); every other capture keeps the connection order. Measured: with the DOM first a
   playing video moved 0.6 s at 5,000 elements and 3.5 s at 30,000, past the 1 s tolerance.
+  Android aligns its device clock the same way, with no switch (§11.2 "分支回放落地了什么"):
+  after the settle wait it sets the clock to the recorded capture's (`cmd alarm set-time`),
+  waits for a still screen again so what shows the time redraws, sets it once more so that
+  wait's own time is taken back, then asks its sources; the report is a `ClockAlignment` on
+  `AndroidRestorationEvidence.clock_alignment`, judged through `clock_difference`.
+  What it compares comes from the recording: every Android capture also reads a
+  `DeviceAtCapture{clock_ms, package, activity, window}` onto its fragments
+  (`AndroidCaptureFragment.device`; `None` plus a WARNING when unreadable, never a lost
+  observation). A capability with state to put back records what it needs at capture time
+  the same way. `animation_scale` is the capability knob that makes the replayed screens
+  stable (default `null`: untouched; setup restores the device's old values at teardown).
 - **Belongs to one observation only.** Bind the request to the next cycle
   (`begin_observation`); a later cycle drops it, and the next `verify_restoration` takes
   the report whether or not a capture acted on it. So nothing is ever aligned after the
@@ -369,7 +386,7 @@ outside the package may wire to the package's own keys (Step 6, the environment)
 spectragent/core/capabilities/docker/
 ├── __init__.py          # imports nothing: declarations.py must stay light
 ├── declarations.py      # STRATEGY_AXES, TASK_SETUP, OPTIONAL_EXTRA_MODULES, START_FLAGS,
-│                        # TEMPLATE_BLOCK, TEMPLATE_FLAGS
+│                        # TEMPLATE_BLOCK, TEMPLATE_FLAGS, BRANCH_ARCHIVES
 ├── task_setup.py        # DockerSetup(SetupBase), registered by subclassing
 ├── capability.py        # the DockerCapability class
 ├── environment.py       # DockerEnvironment, its single-capability environment
@@ -406,6 +423,8 @@ START_FLAGS = (  # single-task start flags `spectragent run` generates; () when 
 TEMPLATE_BLOCK: Mapping[str, JsonValue] = {}
 # The capability's `config template` flags; () when none.
 TEMPLATE_FLAGS: tuple[TemplateFlag, ...] = ()
+# The archives a branch of its recordings needs; () when none. A literal tuple.
+BRANCH_ARCHIVES: tuple[str, ...] = ()
 ```
 
 - **`STRATEGY_AXES`** — every internal registrar YAML chooses from, keyed by the
@@ -438,15 +457,31 @@ TEMPLATE_FLAGS: tuple[TemplateFlag, ...] = ()
   and nothing can choose for the user (a machine's own path) is a visible placeholder
   (Android's `avd` and `service_apk`). `{}` when the block needs nothing; the template then
   refuses a missing required field by name (design doc §4.17 "capability 的模板起点").
+  An agent may start some fields differently for itself (its `__template_capabilities__`,
+  keyed by `capability_id`: Skyvern's own cleaner, M3A's pause after an action). The
+  order, highest first: a template flag (it picks the receptor's implementation, keeping a
+  skeleton's knobs when it names the same one), a `--from` skeleton's values, what a
+  benchmark supplies, the agent's start, this block (§4.17 "capability 块的起点的优先次序").
+  Keep this block agent-neutral.
 - **`TEMPLATE_FLAGS`** — a tuple of `TemplateFlag(flag, receptor, help)`
   (`core/registries.py`): each a `config template` flag whose value is a registry key of
   the receptor's layer, replacing that receptor's strategy in this capability's block
-  (browser: `--backend`, `--replayability`). Generated like `START_FLAGS`, listed by
-  capability, refused when the template has no block of this capability; a flag two
+  (browser: `--backend`, `--replayability`, `--dom-cleaner`, `--dom-serializer`).
+  Generated like `START_FLAGS`, listed by capability, refused when the template has no
+  block of this capability; a flag two
   packages declare, or one the command already takes, is refused. `()` when none.
 
+- **`BRANCH_ARCHIVES`** — the archiver keys, all your own (`docker.<id>`), that a source
+  run must have recorded for a branch of it to restore (browser: `("browser.network",)`,
+  what an offline branch replays the network from; Android: `()`). `trace_branches`
+  requires them of each source that ran your capability when its `require_archive` is not
+  written, and its skip reasons name the capability that required them. Write a literal
+  tuple: the loader's field description lists every package's declaration and reads it
+  from the source without importing the package (`declared_branch_archives`), and a test
+  checks that reading against the imported one (design doc §4.2.1, §4.10).
+
 The reader (`core/registries.py::_read_declarations`) refuses a module missing any of
-these six names, so `run`, `config check` and `config explain` fail until all are there.
+these seven names, so `run`, `config check` and `config explain` fail until all are there.
 
 Importing any module of the package runs every `__init__.py` on the way, so none of them
 imports an implementation; import from the defining module instead.
@@ -638,6 +673,18 @@ so the run fails before its trace is opened and before anything is acquired, and
 arguments only (no backend, no connection, no state written); `setup()` may call it again.
 The environment routes the context exactly as setup does, so a key no `setup()` declares is
 refused there too.
+
+**A capability that brings up a device may serve several tasks of a sweep.** Implement the
+optional `ReusableEnvironment` Protocol (`core/capabilities/base.py`: `environment_identity(setup)`,
+reading configuration only, and `bind_handover(handover)`, acquiring nothing); `CapabilityBase`
+gives no default. Only `spectragent bench --reuse-environment` (off by default) keeps an
+environment for the next task, and only when the identities are equal, the benchmark's setup
+component this capability hosts declares `__resets_between_tasks__`, and the task's setup and
+every step that ended it (the setup component's reset included) succeeded; a failure on the
+agent's side (model unavailable, timeout) still keeps it. Teardown then hands the environment over instead of releasing it, setup takes what the handover
+holds. The trace records `earlier_tasks_on_environment`. A browser context, new for every task,
+carries nothing over and is not this (`core/environment_reuse.py`; design doc §4.10.1
+"环境跨任务复用").
 
 **`teardown` failures are isolated per capability** (`environments/_registrar.py:814-839`).
 Every capability gets its turn even if an earlier one raises; the first error is re-raised
@@ -880,10 +927,11 @@ Before you call a capability done:
 - [ ] Every `ArchiveFile` carries `meta` (`captured_at`, `cycle`, `ids`), a `capability_id` that is this capability's own, and a single-segment `name` of at most 255 bytes of UTF-8 (`MAX_SEGMENT_BYTES`; derive names from URLs or titles only after shortening them); every string it carries (`name`, `media_type`, `ids`) encodes as UTF-8, so decode CDP payloads strictly rather than leaving lone surrogates; at most one JSON run record per batch
 - [ ] If a recorded run can resume here: `RestorationSupport` (and, for state that moves on its own clock, `RestorationAlignment`) implemented as pure measurements and requests; unknown values never decide
 - [ ] All registry keys fully qualified; `__wiring__` *requires* stay relative
-- [ ] `declarations.py` names every internal registrar (`STRATEGY_AXES`, the backend registrar included), the task setup class (`TASK_SETUP`), any module that imports an optional extra at top level (`OPTIONAL_EXTRA_MODULES`), its single-task start flags (`START_FLAGS`, `()` when none), the block a new `config template` starts from (`TEMPLATE_BLOCK`, `{}` when none) and its template flags (`TEMPLATE_FLAGS`, `()` when none); the package's `__init__.py` files import no implementation; no framework file edited
+- [ ] `declarations.py` names every internal registrar (`STRATEGY_AXES`, the backend registrar included), the task setup class (`TASK_SETUP`), any module that imports an optional extra at top level (`OPTIONAL_EXTRA_MODULES`), its single-task start flags (`START_FLAGS`, `()` when none), the block a new `config template` starts from (`TEMPLATE_BLOCK`, `{}` when none), the archives a branch of its recordings needs (`BRANCH_ARCHIVES`, `()` when none) and its template flags (`TEMPLATE_FLAGS`, `()` when none); the package's `__init__.py` files import no implementation; no framework file edited
 - [ ] `uv run pytest tests/test_core/test_capabilities/test_capability_declarations.py` passes
 - [ ] `uv run spectragent config generate`, then `uv run pytest tests/test_generated/`
 - [ ] `uv run pyright spectragent tests` — only the four known metaclass artifacts
+- [ ] The viewer: implement the Protocols of `core/presentation.py` in your package, on the classes you already register; the read side (`spectragent/inspection/`) names no capability and you never edit it (`tests/test_inspection/test_capability_seam.py`). Each action class: `PresentsAction` (`person_verb`, `present`); a fragment an element param addresses: `DescribesElements`; an archiver that keeps a screen before each action: `KeepsActionFrames`; one that logs a replay's decisions: `LogsReplayDecisions`; your `RestorationEvidence`: `MeasuresRestorationGap`. The browser's and Android's `presentation.py` are the models. A run's kind and its screenshot need nothing: the kind comes from the task's recorded `replay_archive` and branch provenance, and the screenshot and capture state are found by their field names (`screenshot`, `capture_state`) when the fragments carry `ScreenshotGeometry`'s four sizes.
 - [ ] A test on the action seam: negotiation matches **names**, not parameter contracts. An agent may emit a verb the run holds and send params the action cannot read. `tests/_helpers/action_params.py::minimal_params` walks `descriptor().params_schema` and builds the smallest legal payload; use it.
 - [ ] `docs/architecture_design.md` §4.9 (line 1352) and `docs/execution_dag.md` M06 updated if you changed the contract. AGENTS.md §0 makes the design doc the source of truth — a contract that lives only in `base.py` and a test helper is the situation this layer exists to end.
 

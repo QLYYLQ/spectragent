@@ -5,8 +5,9 @@ A task comes from one of two places (``docs/architecture_design.md``
 
 - a benchmark's task source: ``--benchmark <alias|path.yaml> --task-id <id>``
   (and ``--subset``, the subset that task is in) gives the task's text and its
-  three context parts (environment, Loop, branch), exactly as ``spectragent
-  bench`` runs it;
+  context parts (environment, Loop, branch, and a branch task's source
+  benchmark, which its run is composed with), exactly as ``spectragent bench``
+  runs it;
 - the command line: ``--task`` and the start flags of the run's
   capabilities (``--start-url`` …), which each capability package declares in
   its ``declarations.py`` (``START_FLAGS``, §4.9 "起始参数"). Every
@@ -28,13 +29,20 @@ from typing import Any
 import yaml
 from dotenv import load_dotenv
 
-from spectragent.benchmarks.selection import read_benchmark, run_root
-from spectragent.core.benchmark_runner import positive_seconds, safe_run_id, task_snapshot
+from spectragent.benchmarks.operations import read_benchmark_with_data, read_spec_with_data
+from spectragent.benchmarks.selection import run_root, spec_of
+from spectragent.core.benchmark_runner import (
+    compose_benchmark_alone,
+    positive_seconds,
+    safe_run_id,
+    task_snapshot,
+)
 from spectragent.core.composer import ConfigComposer, named_packages
 from spectragent.core.experiment import ExperimentScope
 from spectragent.core.registries import CapabilityFlag, start_flags
 from spectragent.core.runtime import VERIFY_TIMEOUT_S, AgentRuntime
 from spectragent.core.trace.reader import RunTrace
+from spectragent.schemas.benchmark_spec import BenchmarkSpec
 from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.restoration import BranchProvenance
 
@@ -158,6 +166,7 @@ class _Task:
     env: Mapping[str, Any] | None = None
     loop: Mapping[str, Any] | None = None
     branch: BranchProvenance | None = None
+    benchmark_spec: BenchmarkSpec | None = None
     task_id: str = "unknown"
     benchmark: str = ""
     subset: str = ""
@@ -182,6 +191,7 @@ async def _run_in_experiment(
     start: Mapping[str, str] | None = None,
     benchmark: str | None = None,
     subset: str | None = None,
+    fetch: bool = False,
     task_id: str | None = None,
     verify_timeout: float = VERIFY_TIMEOUT_S,
     progress: Any = None,
@@ -189,13 +199,14 @@ async def _run_in_experiment(
 ) -> int:
     canonical = config_path.expanduser().resolve()
     source_bytes = canonical.read_bytes()
-    blocks = [read_benchmark(benchmark, subset=subset)] if benchmark else []
-    raw = run_root(yaml.safe_load(source_bytes), *blocks)
+    configuration = yaml.safe_load(source_bytes)
+    blocks = [read_benchmark_with_data(benchmark, subset=subset, fetch=fetch)] if benchmark else []
+    raw = run_root(configuration, *blocks)
     context = start_context(start or {}, raw)
     config_source = ConfigSource.from_path(canonical, data=source_bytes)
-    run = scope.bind(ConfigComposer.for_config(raw).compose(raw))
     if task_id is not None:
-        loader = run.single("benchmark").task_loader
+        assert benchmark is not None  # main() refuses --task-id without --benchmark
+        loader = compose_benchmark_alone(blocks[0]).task_loader
         definition = loader.get(task_id)
         if definition is None:
             selection = f"--benchmark {benchmark}" + (f" --subset {subset}" if subset else "")
@@ -204,11 +215,20 @@ async def _run_in_experiment(
                 f"such task ({len(loader)} tasks; spectragent bench {selection} --list lists them)"
             )
         parts = loader.get_task_context(task_id)
+        if parts.branch is None:
+            spec = spec_of(benchmark, blocks[0], subset=subset)
+        else:
+            # A branch task belongs to its source run's benchmark, composed
+            # beside the task source as ``bench`` composes it (§4.10.1).
+            spec = parts.benchmark
+            if spec is not None:
+                raw = run_root(configuration, *blocks, read_spec_with_data(spec, fetch=fetch))
         selected = _Task(
             text=definition.task_text,
             env=parts.env,
             loop=parts.loop,
             branch=parts.branch,
+            benchmark_spec=spec,
             task_id=task_id,
             benchmark=loader.benchmark_name,
             subset=loader.subset,
@@ -217,6 +237,7 @@ async def _run_in_experiment(
         )
     else:
         selected = _Task(text=task, env=context)
+    run = scope.bind(ConfigComposer.for_config(raw).compose(raw))
     label = selected.task_id
     if progress is not None:
         from spectragent.monitoring import attach_progress
@@ -267,6 +288,7 @@ async def _run_in_experiment(
             env_context=selected.env,
             loop_inputs=selected.loop,
             branch=selected.branch,
+            benchmark_spec=selected.benchmark_spec,
             config_source=config_source,
             config=selected.config,
         )
@@ -352,6 +374,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="The subset of --benchmark the task is in, written into its task loader",
     )
     parser.add_argument(
+        "--fetch",
+        action="store_true",
+        help=(
+            "Fetch the benchmark's pinned data first when its data directory does not hold it "
+            "(as spectragent benchmark fetch does); without it, missing data is refused"
+        ),
+    )
+    parser.add_argument(
         "--timeout", type=positive_seconds, default=300.0, help="Run timeout in seconds"
     )
     parser.add_argument(
@@ -388,6 +418,8 @@ def main(
         parser.error("--benchmark and --task-id go together: they select one task of a benchmark")
     if args.subset is not None and args.task_id is None:
         parser.error("--subset selects a benchmark's tasks: it goes with --benchmark and --task-id")
+    if args.fetch and args.benchmark is None:
+        parser.error("--fetch fetches a benchmark's data: it goes with --benchmark and --task-id")
     if args.task_id is not None:
         given = [*(["--task"] if args.task else []), *start]
         if given:
@@ -410,6 +442,7 @@ def main(
             start=start,
             benchmark=args.benchmark,
             subset=args.subset,
+            fetch=args.fetch,
             task_id=args.task_id,
             timeout=args.timeout,
             verify_timeout=args.verify_timeout,

@@ -34,6 +34,7 @@ measure  spectragent flywheel run | report      a chain spec, not a run YAML
 | Layer | Owns | Where |
 |---|---|---|
 | Browser capability | Capture (the recorder connection, each bound archiver's run-time session, redaction before a file is built), the replayability tier, replay serving and miss answers, retargeting and restoration checks, the student capture check, and every reader of its own evidence formats | `core/capabilities/browser/`: `recorder.py`, `archive/`, `replay/`, `restoration.py`, `capture_check.py`, `index_points.py`, `archive_stats.py`, `cooperation.py`, `navigation.py`, `settle.py` |
+| Android capability | The same two halves for a device: `RestorationSupport` (retarget by bounds and attributes, `AndroidRestorationEvidence`) and `RestorationAlignment` (pins the device clock), the `DeviceAtCapture` record each capture carries, pure functions in `android/restoration.py` | `core/capabilities/android/` |
 | Archive axis | `ArchiverRegistrar`, the `ArchivingCapability` and `ArchiveConsumer` Protocols, `ArchiveFile` / `ArchiveBatch`, the shared privacy rules and ledger, the replay read side (`ArchiveReader`, `open_archive`) | `core/archive/` |
 | Negotiation and runtime | `negotiate_archive` (right after memory negotiation), `bind_archivers` as the last step of `prepare()` on the raw environment, `seed_messages`, typed Loop inputs, the branch provenance handed to the trace | `core/negotiation/archive.py`, `core/runtime.py` |
 | Recording component, WAL, reader | Archive demands, pulling `collect_archive()` at commit points, call/step attribution, usage, the `env/` subtree, immutable run-record versions, gaps and recording health; manifest-based reading and shared context reconstruction | `core/hooks/`, `core/trace/` |
@@ -167,7 +168,11 @@ uv run spectragent run --config configs/flywheel/record_ui_tars_pinned.yaml \
 ```
 
 `--benchmark` takes a shipped alias (`configs/benchmarks/<alias>.yaml`) or the path of a
-benchmark YAML of your own; the data directory is its task loader's knob, `--subset` writes
+benchmark YAML of your own; the data directory is its task loader's knob (left out, it is the
+benchmark's copy in the shared cache, `$SPECTRAGENT_BENCHMARK_DATA` or
+`~/.cache/spectragent/benchmarks`, which `spectragent benchmark fetch <alias>` fills at the
+pinned version and `bench` / `run --fetch` fills when it is missing; without `--fetch`, missing
+data is refused with exit 2), `--subset` writes
 the subset into that task loader before the run is composed (so the resolved configuration
 and the run's identity record it), and a run configuration never holds a benchmark
 (`docs/architecture_design.md` §4.10.1). `--start-url` is a start flag the browser declares
@@ -450,7 +455,8 @@ benchmark:
       branches_per_step: 3               # the shipped value; the branches differ only by sampling
       agent_outcome: any                 # done | max_steps | error | timeout | vetoed (result.json)
       require_eval: null                 # {verifier_id, label: 1, slug: null}: a judged verdict in verdicts/
-      # require_archive: [browser.network]   # the default; []: none
+      # require_archive: [browser.network]   # not written: what each source's capabilities declare
+      #                                     # (browser: browser.network; android: nothing); []: none
       on_unbranchable: raise             # skip
       task_variants: null                # a task-variants-1 file: another task per checkpoint
       exclude_runs: null                 # a run-exclusions-1 file: recorded run ids not to branch
@@ -469,8 +475,12 @@ uv run spectragent run --config configs/flywheel/branch_ui_tars_archive.yaml \
 - A task id is `<source_run_id>/s<t>/b<i>` (`<source_run_id>/s<t>/v<variant_id>/b<i>` under
   `task_variants`). Its context carries the source's setup context
   (re-resolved through the source benchmark's loader when it is missing or carries
-  redactions), `replay_archive`, the `checkpoint` Loop input, and the branch provenance that
-  only the trace receives.
+  redactions), `replay_archive` when the source recorded an archive its capability declares a
+  branch needs (`BRANCH_ARCHIVES`: the browser's `browser.network`), the `checkpoint` Loop
+  input, and the branch provenance that only the trace receives. A source whose recorded
+  configuration names no capability is refused unless `require_archive` is written. Under
+  `history_source: source` a checkpoint whose source prompt failed (`error_phase: prompt`)
+  is refused at assembly.
 - Candidates are committed policy steps whose prefix is committed, whose observation was
   recorded and that the source's trace is complete through (`complete_through`). The trace's
   own ledger is a hard condition, not a filter: a trace never closed (`writing`) has no
@@ -479,9 +489,25 @@ uv run spectragent run --config configs/flywheel/branch_ui_tars_archive.yaml \
   `exclude_runs` filters out the run ids a `run-exclusions-1` file lists (`lookahead health`
   writes one for recordings that are not usable as data), with the file's reason. A source
   that cannot be branched (it does not read back — an older trace format included — is
-  itself a branch or replay run, lacks a `require_archive` archiver or its fingerprint, has
+  itself a branch or replay run, lacks a required archiver or its fingerprint (`require_archive`,
+  or, not written, what each capability it ran declares in `BRANCH_ARCHIVES`), has
   no recoverable setup context, or shares its `run_id`) stops the sweep with every reason at
   once, or is left out under `on_unbranchable: skip`.
+- Branching an Android recording (architecture §11.2 "分支回放"; M3A and UI-TARS both
+  branch). It is prefix replay from the task start, no mid-task snapshot. Each capture
+  records a `DeviceAtCapture` (device clock, foreground package, Activity, window) on its
+  screenshot, tree and foreground fragments; the restorer pins the device clock to the
+  recorded one before each restored observation (no switch, never after the checkpoint);
+  `verify_restoration` judges foreground, clock, tree signature, keyboard and focus, and a
+  status-bar-masked screenshot hash (`core/image_hash.py`, shared with the browser). Android
+  declares `BRANCH_ARCHIVES = ()`, so its branches YAML leaves `require_archive` out and
+  the task gets no `replay_archive`. Time-driven state (a running stopwatch) fails the
+  check by design, and a source whose task text its setup fills in (MiniWoB++) is refused
+  at `prepare()`. Write the branch config's capability settings (`settle_*`, scroll
+  duration, `animation_scale`) to equal the recording's: `BranchLoop` does not compare
+  them. Under `history_source: source` M3A reads its recorded summaries instead of
+  calling its helper model (`ReactPromptContext.source_helper_replies`), so the replayed
+  prefix makes no model call; each step after the checkpoint calls the helper live.
 - Unloaded checkpoints (architecture §4.4 "初次加载是否完成", §4.10). With
   `exclude_unloaded_checkpoints: true` (default; both shipped branch configs write it), a
   chosen step whose recorded capture state says `settle_state.loaded is False` (the main
@@ -508,8 +534,8 @@ uv run spectragent run --config configs/flywheel/branch_ui_tars_archive.yaml \
 - Teacher sampling (architecture §4.1 "teacher 采样"). The branches of one checkpoint get
   identical inputs (the branch index reaches only the trace), so sampling alone makes them
   differ: the shipped branch config runs the teacher at `temperature: 0.8` with
-  `branches_per_step: 3`; the same-path config keeps the recording's model and default
-  temperature, and nothing requires the teacher to differ from the source. The metrics
+  `branches_per_step: 3`; the same-path config keeps the recording's model and
+  temperature (UI-TARS's own 0, written out), and nothing requires the teacher to differ from the source. The metrics
   report's duplicate-branch rate says whether the spread is enough.
 - `history_source: source` reconstructs and compares the exact recorded decision prompts;
   only `purpose=agent_decision` calls pass through the parser. `restored` instead uses
@@ -551,9 +577,24 @@ uv run spectragent run --config configs/flywheel/branch_ui_tars_archive.yaml \
   `online_mind2web`) judges it, on the variant's text, its verdict's evidence carrying
   `task_variant` (architecture §4.11). Any other branch run is judged against its source
   task's reference row (evidence `source_reference`).
-- A `trace_branches` block takes no `verifiers:` (written there, it is refused), so a
-  branch sweep judges nothing and needs no `--no-eval`; its tasks belong to their source
-  runs' benchmarks, and a branch run is judged afterwards with `spectragent eval`.
+- A `trace_branches` block takes no `verifiers:`, `setup:` or `capability:` (written there,
+  it is refused): each branch task belongs to its source run's benchmark. A source recorded
+  with `--benchmark` names it in its `config.json` (`benchmark_spec`, how it was selected);
+  the branch task carries that record, and its run is composed from the run configuration,
+  the `trace_branches` block and the source benchmark's block read again from that
+  selection. So the source benchmark's setup component and live verifiers are hosted, its
+  part of the capability configuration is merged (AndroidWorld's AVD and app table: the
+  branch run configuration writes neither), and its offline verifiers judge the branch run
+  after the sweep (`--no-eval` skips them). Sources of several benchmarks mix in one sweep,
+  each task its own; the pre-flight runs once per benchmark. A source whose benchmark YAML no
+  longer reads, holds another benchmark, or changed its task source, reference data, setup
+  component or capability part since the source ran (`benchmark_spec.fingerprints`; a
+  verifier added later is fine) is unbranchable (`on_unbranchable`), the refusal naming the
+  changed parts. The fingerprints do not see the data itself, a `data_dir: null` resolved
+  through the shared data cache (its version is in `TraceConfig.data_version`), or capability parts computed in code from the data. A branch of
+  a run that belonged to no benchmark inherits nothing. `spectragent eval --benchmark
+  <source benchmark>` still judges branch runs afterwards
+  (architecture §4.10.1 "分叉任务继承源基准落地了什么").
 - Write branch runs outside the sources glob; the shipped file sets the trace writer's
   `trace_dir` to `traces/branches`. A branch run is unbranchable, so under
   `on_unbranchable: raise` it would stop the next sweep.
@@ -749,7 +790,8 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   `--no-eval`, so the benchmark's offline verifiers judge its runs after the sweep, each
   verdict into its run's `verdicts/` (the chain keeps no verdict directory of its own);
   only a `tasks.benchmark` that lists `verifiers:` has any (a shipped alias lists none).
-  `same_path` and `branch` refuse `evaluate: true`. A stage's `verify_timeout` is the
+  On `same_path` and `branch`, `evaluate: true` judges each branch run with its source
+  run's benchmark's offline verifiers. A stage's `verify_timeout` is the
   bench's `--verify-timeout`. With the export selected,
   an existing `datasets/first` or `datasets/second` is a `ChainConfigError` before any paid
   stage runs.
@@ -1380,7 +1422,7 @@ value on an existing one.
     a word. `branch.py` imports `Annotated` and `Field` under exactly those names because the
     strings it inherits from `react.py` resolve there.
   - A list knob with a non-empty default is `list[str] | None = None`, `None` meaning the
-    documented default (`sources`, `require_archive`). A list default in a signature is a
+    documented default (`sources`). A list default in a signature is a
     shared mutable default, and `tuple[str, ...]` is generated as `tuple[str, Ellipsis]`,
     which pyright rejects.
   - `Field(min_length=...)` on a top-level knob is dropped from the generated config; enforce
@@ -1408,6 +1450,7 @@ value on an existing one.
 | A summary row says `infrastructure failure: ...` | The environment failed, the model stayed unavailable after the provider's retries, or the run's trace is `incomplete` / never closed (its manifest's `incomplete_reason` says what was lost). The three counters above the rows are the agent's ledger, the environment's and the trace's |
 | `spectragent bench` exits 4: `the sweep reached its token limit after task ...` | The tokens the sweep's traces recorded reached `--token-limit`: the named task finished, the rest never started. The table's `tokens:` line is the total; `no usage reported (not counted)` names calls without usage, `tokens not counted` a task whose trace does not read back |
 | `spectragent flywheel` exits 4: `stopped at the token limit ...` | The runs under the chain root reached `token_limit`; read `chain.json`'s `stopped_by_token_limit` (`stage: null`: reached before this invocation). Raise the limit, then run only the stages not started (`--stages`) |
+| `spectragent run` or `bench` exits 2 naming a benchmark's data (missing, or of another version than the pin) or an installation (AndroidWorld's checkout, venv or forwarder) | The message names the command: `spectragent benchmark fetch <alias>` (or `--fetch` on `run` / `bench`), `spectragent benchmark setup <alias>` for what a benchmark installs; a component's own `Refusal` (`core/refusal.py`) is shown as written and exits 2, where any other constructor error is withheld as `constructor_failed` |
 | `spectragent bench` exits 2: `the pre-flight check refused the configuration for task ...` | The first task's `prepare()` refused the stage YAML before any task ran; the original error follows the colon and names both sides. Check one task with `spectragent run --dry-run` (`--replay-archive DIR` for a replay) |
 | `BrowserCooperationError` naming `browser.network` or `browser.replay_log` beside the network source | A replay binds `browser.replay_log` in `browser.network`'s place; a live run binds no `browser.replay_log` (§2.2) |
 | A replay refused at `prepare()`, naming the tier, shim, viewport or launch flags | `replay/consistency.py::consistency_problems`. The replay YAML must match the recording's tier, seed, user agent, viewport and provider switches |
@@ -1473,7 +1516,7 @@ result contracts. All shipped run YAML uses four actions per step.
   unmeasurable is `null`, which blocks candidate acceptance. Action effects never enter the
   request.
 
-Current traces use format 6, including explicit Chat/Decision call kinds. Keep historical
+Current traces use format 9, including explicit Chat/Decision call kinds. Keep historical
 trace originals and use frozen prepared inputs or their original-version reader; do not
 add a missing-kind-as-Chat compatibility path. Candidate acceptance, further review and
 execution failure are separate facts; missing evidence or a failed call never becomes a

@@ -22,6 +22,7 @@ agent:
       model_type: openai
       model: ui-tars-student
       provider: { name: direct }
+      temperature: 0             # UI-TARS's own (README_deploy.md); no frequency_penalty
     memory: { memory_id: simple, max_messages: 200 }
 
 environment:

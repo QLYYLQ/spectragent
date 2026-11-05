@@ -74,6 +74,7 @@ from spectragent.core.composition_evidence import (
     safe_error_message,
 )
 from spectragent.core.configuration_catalog import ConfigurationCatalog, build_configuration_catalog
+from spectragent.core.refusal import Refusal
 from spectragent.core.registries import (
     AGENTS_PACKAGE,
     BENCHMARKS_PACKAGE,
@@ -753,6 +754,18 @@ class ConfigComposer:
 
         try:
             instance = cls(**init_kwargs)
+        except Refusal as exc:
+            # Written for the user and free of secrets (``core/refusal.py``):
+            # the one constructor exception whose own words are shown.
+            raise InstantiationError(
+                f"{path}: {exc}",
+                issue=CompositionIssue(
+                    "component_refused",
+                    path,
+                    str(exc),
+                    "Do what the message says, then run the command again.",
+                ),
+            ) from exc
         except Exception as exc:
             raise InstantiationError(
                 f"{path}: failed to construct {cls.__name__}: {exc}",

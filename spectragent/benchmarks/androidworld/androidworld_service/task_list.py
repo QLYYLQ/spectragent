@@ -12,9 +12,11 @@ It makes the suite AndroidWorld's own runner makes (``create_suite``: each
 task's instances, their seeds derived from the suite seed, the task and the
 index) and writes ``<data dir>/<split>.json``, format
 ``androidworld-tasks-2`` (``spectragent/benchmarks/androidworld/tasks.py``),
-then names the split in ``<data dir>/data_info.json``. Point the loader's
-``data_dir`` there, or write it to
-``$SPECTRAGENT_BENCHMARK_DATA/android/androidworld``.
+then names the split in ``<data dir>/data_info.json``. ``spectragent
+benchmark fetch androidworld`` runs it for the subsets the benchmark ships
+(``spectragent/benchmarks/androidworld/data.py``) into the benchmark's data
+directory; run it by hand for a list of your own, and point the loader's
+``data_dir`` there.
 
 Beside the lists it writes ``<data dir>/open_app.json``, format
 ``androidworld-open-app-1`` (``spectragent/benchmarks/androidworld/open_app.py``):

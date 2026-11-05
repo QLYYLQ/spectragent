@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -106,9 +107,10 @@ class _Verifier:
 
 
 class _Benchmark:
-    """The run's benchmark: no setup component, one live verifier."""
+    """The run's benchmark: no setup component, one live verifier, a task loader with no data version."""
 
     setup = None
+    task_loader = SimpleNamespace(data_version=None)
 
     def live_verifiers(self) -> list[_Verifier]:
         return [_Verifier()]

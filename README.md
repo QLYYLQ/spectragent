@@ -6,7 +6,7 @@ An evaluation and experimentation framework for agent researchers.
 
 Spectragent splits an agent run into parts you can change one at a time: the agent, its model, the execution loop, observations, actions, memory and the environment. One YAML file picks an implementation for each part. A trace hook records the run, and everything after it reads that recording instead of rerunning the agent: inspection, scoring, offline replay, branching from a recorded step, and training export.
 
-Version 0.3.0 · Python 3.11+ · Apache-2.0 · trace format 7 · `AgentResult` schema 5.0
+Version 0.3.0 · Python 3.11+ · Apache-2.0 · trace format 9 · `AgentResult` schema 5.0
 
 - [How it works](#how-it-works)
 - [What is implemented](#what-is-implemented)
@@ -98,7 +98,7 @@ uv run spectragent runs list
 uv run spectragent view --open
 ```
 
-`run`, `eval` and `replay-review` also read `.env` from the working directory; `bench` and `flywheel` read only the shell environment (`set -a; . ./.env; set +a`). Benchmark data is not shipped: set `data_dir:` on a task loader, or point `SPECTRAGENT_BENCHMARK_DATA` at a root laid out as `<env_type>/<benchmark>`.
+`run`, `eval` and `replay-review` also read `.env` from the working directory; `bench` and `flywheel` read only the shell environment (`set -a; . ./.env; set +a`). Benchmark data is not shipped: `spectragent benchmark fetch <alias>` downloads a benchmark's pinned data into the shared cache (`$SPECTRAGENT_BENCHMARK_DATA`, else `~/.cache/spectragent/benchmarks`), and `spectragent benchmark setup <alias>` installs what it needs beside it (AndroidWorld); a run refuses missing data, or fetches it with `--fetch`. See [Benchmark data](configs/README.md#benchmark-data).
 
 Shipped entry points: `configs/browser_use_local.yaml`, `configs/skyvern_agent_local.yaml`, `configs/ui_tars_local.yaml`, `configs/browser_use_skyvern.yaml` (Skyvern cloud browser) and `configs/browser_use_shared.yaml` (one shared Chrome, a fresh context per task). Switching backends changes only `environment[0].capabilities[0].backend`. The [browser agent runbook](docs/browser_agent_runbook.md) (Chinese) covers logins, shared Chrome and troubleshooting.
 
@@ -222,7 +222,7 @@ traces/<run_id>/
   verdicts/                        # every verdict, live or offline, one <slug>.json each, outside the manifest
 ```
 
-A trace is complete within its declared recording scope; an omitted channel is not corrupt evidence. Token usage is stored as the provider reported it, and unreported usage stays unknown. No prices are computed. Readers refuse any trace format other than 8.
+A trace is complete within its declared recording scope; an omitted channel is not corrupt evidence. Token usage is stored as the provider reported it, and unreported usage stays unknown. No prices are computed. Readers refuse any trace format other than 9.
 
 Read it in Python through `spectragent.core.trace.RunTrace`, which only serves committed files and checks their sizes and hashes.
 
@@ -282,7 +282,7 @@ A new registrar must also be listed in [AGENTS.md](AGENTS.md) §2.2 and `docs/ar
 ```bash
 uv sync --extra dev
 uv run pytest -m "not requires_chrome"     # skip the tests that launch a real Chrome
-uv run pytest                              # everything, on a quiet machine
+uv run pytest                              # everything, once before a push, on a quiet machine
 uv run ruff check . && uv run ruff format .
 uv run pyright spectragent tests
 ```

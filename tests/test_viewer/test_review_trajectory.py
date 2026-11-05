@@ -237,3 +237,15 @@ def test_observation_pointer_is_independent_of_action_target_and_frame_pointer(r
     before = body["frames"][0]["pointer"]
     assert before["status"] == "unknown" and before["x"] is None and before["y"] is None
     assert "没有独立记录" in before["problem"]
+
+
+def test_a_steps_actions_are_drawn_on_the_screen_after_them(review):
+    client, _, params = review
+    body = client.get("/api/review/trajectory-step", params={**params, "index": 2}).json()
+    after = body["after_marks"]
+    # step 2's click, on step 3's observation, through that image's own geometry
+    (marks,) = after["sets"]
+    assert (marks["step"], marks["label"]) == (2, "第 2 步做的动作")
+    assert (marks["marks"][0]["x"], marks["marks"][0]["y"]) == (40, 60)
+    last = client.get("/api/review/trajectory-step", params={**params, "index": 3}).json()
+    assert last["after_marks"] is None

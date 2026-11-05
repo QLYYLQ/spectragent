@@ -72,6 +72,15 @@ class ReactPromptContext:
     append contributions before calling the Agent. The Loop passes those facts
     to its step record without interpreting their text or placement.
 
+    ``source_helper_replies`` is set where a branch rebuilds its source's
+    history (``BranchLoop``, ``history_source: source``): on each replayed
+    step and on the first policy step, the replies the source Agent's own
+    helper calls of that step returned, by purpose, in call order (M3A's
+    ``step_summary``). An Agent that would call a helper there takes the
+    recorded reply instead: rebuilding history makes no model call, and the
+    rebuilt prompt is the source's. ``None`` everywhere else, where a helper
+    is called live (``docs/architecture_design.md`` §4.1 "source 历史").
+
     ``frame`` is the frame this step's points are written in (the run's
     declared grid over the screenshot this step shows), built by the framework
     and recorded on the step (``StepRecord.frame``): the Agent writes the
@@ -87,6 +96,7 @@ class ReactPromptContext:
     contributions: list[PromptContribution] = field(default_factory=list)
     source_run_id: str | None = None
     source_reply: str | None = None
+    source_helper_replies: dict[str, tuple[str, ...]] | None = None
     frame: PointFrame | None = None
     generated: set[object] = field(default_factory=set, repr=False)
 

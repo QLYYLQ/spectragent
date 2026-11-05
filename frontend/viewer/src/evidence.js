@@ -87,12 +87,39 @@ export function cursorLabel(fragments) {
   return `已画出光标 · 位置 (${fragment.cursor.position.join(", ")}) CSS 像素 · 大小 ${fragment.cursor.size_css_px} CSS 像素`;
 }
 
+/** Why a restored step did not pass, by the reason a check recorded (`RestorationCheck.reasons`). */
+const RESTORATION_REASONS = {
+  foreground_mismatch: "前台应用不一致",
+  clock_difference: "设备时钟不一致",
+  ui_tree_mismatch: "界面树不一致",
+  keyboard_focus_mismatch: "键盘或焦点不一致",
+  screenshot_distance: "截图差异超限",
+  document_miss: "页面没有回放命中",
+  url_mismatch: "网址不一致",
+  signature_mismatch: "页面结构不一致",
+  media_mismatch: "媒体状态不一致",
+  retarget_not_found: "找不到原动作的目标",
+  retarget_ambiguous: "原动作的目标不唯一",
+  action_failed: "动作结果不同",
+};
+export const reasonLabel = (value) =>
+  RESTORATION_REASONS[value] || String(value).replaceAll("_", " ");
+
+/** The capabilities whose evidence this view does not read (`not_shown`: "<capability>: not shown in this view"). */
+export function notShownCapabilities(gap) {
+  return (gap?.not_shown || []).map((item) => item.split(":")[0]);
+}
+
 // `everywhere` lists the facts no checked step of the run measured
 // (`run.unmeasured_everywhere.facts`): the run states them once, so a step
 // is incomplete only for the unmeasured facts that vary between steps.
+// Evidence of a capability this view does not read is never "no measured
+// difference": its own checks decided the verdict, and may have failed.
 export function gapLabel(gap, everywhere = []) {
   if (!gap) return "无对比";
   if (gap.differences.length) return `测得 ${gap.differences.length} 处差异`;
+  const hidden = notShownCapabilities(gap);
+  if (hidden.length) return `${hidden.join("、")} 的测量不在这一视图里展示`;
   const varying = gap.unmeasured.filter((item) => !everywhere.includes(item));
   return varying.length ? "对比不完整" : "未测得差异";
 }

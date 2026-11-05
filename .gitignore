@@ -15,8 +15,10 @@ mock_test/
 tmp/
 CLAUDE.md
 *.txt
-# ...but the shipped prompt tree is runtime data, not scratch text.
+# ...but the shipped prompt tree is runtime data, not scratch text,
+# and so is the dependency lock `spectragent benchmark setup androidworld` installs.
 !/spectragent/prompts/**/*.txt
+!/spectragent/benchmarks/androidworld/androidworld_service/requirements.lock.txt
 .env
 # macOS
 .DS_Store

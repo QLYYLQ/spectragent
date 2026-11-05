@@ -14,12 +14,14 @@ from pydantic import Field
 from spectragent.core.data_loader._common import (
     BenchmarkDataError,
     parse_file,
+    read_data_version,
     resolve_data_dir,
     resolve_split_file,
     resolve_task_id,
 )
 from spectragent.core.data_loader.task.base import BaseTaskLoader
 from spectragent.core.registries import setup_class_for_env
+from spectragent.schemas.data_version import DataVersion
 from spectragent.schemas.task import TaskContext, TaskDefinition
 
 TaskLoaderRegistrar = create_registrar(
@@ -54,14 +56,18 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
         Field(
             None,
             description=(
-                "Data dir for this loader ('~' expanded). None (the default): "
-                "$SPECTRAGENT_BENCHMARK_DATA/<env_type>/<benchmark>."
+                "Data dir for this loader ('~' expanded); data there no fetch wrote is read "
+                "as it is. None (the default): the benchmark's copy in the shared cache, "
+                "<data root>/<env_type>/<benchmark>, the data root being "
+                "$SPECTRAGENT_BENCHMARK_DATA, else ~/.cache/spectragent/benchmarks; "
+                "spectragent benchmark fetch writes it there."
             ),
         ),
     ] = None
 
     # internal storage — not a config field
     _tasks: dict[str, TaskDefinition] = field(default_factory=dict, init=False, repr=False)
+    _data_version: DataVersion | None = field(default=None, init=False, repr=False)
 
     # Default environment type — subclasses targeting other envs override.
     env_type: str = "browser"
@@ -74,6 +80,15 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
     @property
     def benchmark_name(self) -> str:
         return self.__registry_key__  # type: ignore[attr-defined]
+
+    @property
+    def data_version(self) -> DataVersion | None:
+        """The version of the data its tasks were read from, as the fetch that wrote it recorded it.
+
+        ``None`` when its data directory holds no such record (data placed by
+        hand, or none read from a directory at all).
+        """
+        return self._data_version
 
     def __len__(self) -> int:
         return len(self._tasks)
@@ -112,6 +127,9 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
         for raw in parse_file(resolve_split_file(root, self.subset)):
             task = self.normalize_raw(raw)
             self._tasks[task.task_id] = task
+        # After the data: a fetch removes the record before it replaces the
+        # files, so data read from a new fetch never meets the old record.
+        self._data_version = read_data_version(root)
 
     def normalize_raw(self, raw: dict[str, Any]) -> TaskDefinition:
         """Map a raw record into a ``TaskDefinition``.

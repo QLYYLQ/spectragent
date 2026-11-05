@@ -51,9 +51,7 @@ from spectragent.core.capabilities.browser.replay.replay_log import ReplayLog, R
 from spectragent.core.capabilities.browser.restoration import (
     MAX_MASKED_SHARE,
     TEXT_DEPTH_LIMIT,
-    dhash,
     element_signature,
-    hamming,
     measure,
     media_measure,
     retarget_action,
@@ -62,6 +60,7 @@ from spectragent.core.capabilities.browser.restoration import (
 from spectragent.core.capabilities.browser.restoration_evidence import (
     BrowserRestorationEvidence,
 )
+from spectragent.core.image_hash import dhash, hamming
 from spectragent.core.loops.restore.checks import judge
 from spectragent.core.trace.encoding import decode_fragment, encode_fragment
 from spectragent.schemas.action import Action
@@ -464,23 +463,6 @@ def test_everything_else_runs_as_recorded(action: Action) -> None:
 
 
 # ── measure ───────────────────────────────────────────────────────────
-
-
-class TestDhash:
-    def test_identical_bytes_are_zero_apart(self) -> None:
-        a = dhash(png(1))
-        assert a is not None and hamming(a, dhash(png(1)) or 0) == 0
-
-    def test_the_same_pixels_in_another_encoding_are_close(self) -> None:
-        a, b = dhash(png(1)), dhash(png(1, fmt="JPEG"))
-        assert a is not None and b is not None and hamming(a, b) <= 5
-
-    def test_another_page_is_far(self) -> None:
-        a, b = dhash(png(1)), dhash(png(2))
-        assert a is not None and b is not None and hamming(a, b) > 5
-
-    def test_bytes_that_are_no_image(self) -> None:
-        assert dhash(b"\x89PNG\r\n\x1a\nnot really") is None
 
 
 #: A page-URL rule of the replay's rule set: the cart page writes ``session`` into its address.

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
@@ -17,6 +17,7 @@ from spectragent.core.capabilities.browser.actions._common import (
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.effects import PointerEffect
+from spectragent.core.capabilities.browser.presentation import BrowserWords
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import (
     ClickCoordinateEvent,
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class ClickCoordinateAction(SettleableAction, ActionBase):
+class ClickCoordinateAction(BrowserWords, SettleableAction, ActionBase):
     """Click at a point in the viewport, no element index involved.
 
     The coordinate space is **CSS pixels of the page viewport**, origin at
@@ -41,6 +42,7 @@ class ClickCoordinateAction(SettleableAction, ActionBase):
     the contract every agent has to meet.
     """
 
+    person_verb: ClassVar[str] = "点击"
     __registry_key__ = "browser.click_coordinate"
 
     #: Where it pressed, what the page hit there, and the focus afterwards.

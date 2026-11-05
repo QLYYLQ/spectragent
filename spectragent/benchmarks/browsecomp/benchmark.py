@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from pydantic import BaseModel
+
 from spectragent.benchmarks._registrar import BenchmarkBase
+from spectragent.benchmarks.browsecomp.data import BrowseCompData
 
 
 class BrowseCompBenchmark(BenchmarkBase):
@@ -18,3 +21,8 @@ class BrowseCompBenchmark(BenchmarkBase):
         # Its grader, and exact matching for a short answer the reference spells out.
         "verifiers": ("verifier", ["browsecomp", "exact_match"]),
     }
+
+    @classmethod
+    def pinned_data(cls, config: BaseModel) -> BrowseCompData:
+        """Its tasks at the pinned version (``data.py``), whatever the block configures."""
+        return BrowseCompData()

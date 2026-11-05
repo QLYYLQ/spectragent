@@ -3,10 +3,10 @@
 ``docs/architecture_design.md`` §11.2 ("任务裁判与 ``AndroidSetup``"). The list
 (format ``androidworld-tasks-2``, ``spectragent/benchmarks/androidworld/tasks.py``)
 is a split file in the usual data layout: ``data_dir`` (default
-``$SPECTRAGENT_BENCHMARK_DATA/android/androidworld``) holds ``data_info.json``,
+``<data root>/android/androidworld``, in the shared cache) holds ``data_info.json``,
 whose ``split`` maps the ``subset`` to the file. ``task_list.py`` beside the
 AndroidWorld launcher (``spectragent/benchmarks/androidworld/androidworld_service/``)
-writes both.
+writes both; ``spectragent benchmark fetch androidworld`` runs it.
 
 Each listed task becomes one Android task: its id ``<task>/<suite seed>/<index>``,
 its text the goal, and its record, unchanged, the setup's ``oracle_task``, which
@@ -41,10 +41,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
-from pydantic import ValidationError
-
 from spectragent.core.data_loader._common import (
     BenchmarkDataError,
+    read_data_version,
     resolve_data_dir,
     resolve_split_file,
 )
@@ -83,26 +82,11 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
         return context
 
     def _load(self) -> None:
-        from spectragent.benchmarks.androidworld.tasks import (
-            TASK_LIST_FORMAT,
-            UNREPRODUCIBLE,
-            AndroidWorldTaskList,
-        )
+        from spectragent.benchmarks.androidworld.tasks import UNREPRODUCIBLE, read_task_list
 
-        path = resolve_split_file(
-            resolve_data_dir(self.env_type, self.__registry_key__, self.data_dir), self.subset
-        )
-        try:
-            listing = AndroidWorldTaskList.model_validate_json(path.read_bytes())
-        except OSError as exc:
-            raise BenchmarkDataError(
-                f"cannot read the AndroidWorld task list {path}: {exc}"
-            ) from exc
-        except ValidationError as exc:
-            raise BenchmarkDataError(
-                f"{path} is not an AndroidWorld task list (format {TASK_LIST_FORMAT}, written "
-                f"by task_list.py; regenerate an older one): {exc}"
-            ) from exc
+        root = resolve_data_dir(self.env_type, self.__registry_key__, self.data_dir)
+        path = resolve_split_file(root, self.subset)
+        listing = read_task_list(path)
         setup_type = setup_class_for_env(self.env_type).__registry_key__
         tasks: dict[str, TaskDefinition] = {}
         step_budgets: dict[str, int] = {}
@@ -144,3 +128,5 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
         self._tasks.update(tasks)
         self._step_budgets.update(step_budgets)
         self._skipped.update(skipped)
+        # After the list, as the base reads it (``TaskLoaderBase._load``).
+        self._data_version = read_data_version(root)

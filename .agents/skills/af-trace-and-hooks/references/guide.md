@@ -223,7 +223,11 @@ came in an earlier step.
   `RestorationCheck` refuses a bare mapping. Each evidence carries its checks
   (`REASONS`, `failed_checks()`, from its own fields and the limits it recorded); the
   check's `reasons` are those checks, in evidence order, then the restorer's action
-  reasons. The browser's (`BrowserRestorationEvidence`, `restoration_evidence.py`)
+  reasons. Android's (`AndroidRestorationEvidence`) is described in §11.2 "分支回放落地了什么";
+  what it compares was recorded with each capture as `DeviceAtCapture` (device clock,
+  foreground app and window) on the Android fragments, `None` when the device would not
+  say, and a trace from before it has `None` there: those checks measure nothing.
+  The browser's (`BrowserRestorationEvidence`, `restoration_evidence.py`)
   carries URL, signature, screenshot distance, document misses, the limits
   `screenshot_max_distance` / `media_time_tolerance_s`, and `media` (`MediaEvidence`):
   `comparisons` (each media element matched / missing / extra / ambiguous, live or not,
@@ -272,11 +276,18 @@ Three layers now (`models.py:437-524`):
   archivers declared; whether any were bound is `negotiation.active_archivers`, and the
   old `env_evidence_recorded` boolean that duplicated it is gone).
 
-Plus two per-task facts. `task_setup` (`TaskSetupRecord`) is the environment setup
+Plus per-task and per-benchmark facts. `task_setup` (`TaskSetupRecord`) is the environment setup
 context `execute()` handed to `setup_environment` (`start_url` …, a relative
 `replay_archive` already made absolute), value-level redacted with its ledger; a branch
 task (M31) re-creates its source environment from it, never from a redacted one.
 `branch` (`BranchProvenance`, M31) says where a branch run came from.
+`earlier_tasks_on_environment` is how many tasks the run's environment served before it
+(a sweep that asked for `--reuse-environment` kept it; `0`, not written, is a new one).
+`data_version` (`DataVersion`, `schemas/data_version.py`) is the version of the benchmark
+data the task loader read, as the fetch that wrote it recorded it in `data_version.json`
+(not written when the run has no benchmark or the data was put there by hand); unlike the
+per-task facts it **is** in the digest, since the same configuration on other data is
+another experiment.
 
 **A per-task or per-feature field is written only when it has a value** (user ruling,
 2026-10-13): `Field(exclude_if=...)` keeps `branch`, `task_setup` and
@@ -293,9 +304,9 @@ configuration ended up recorded nowhere in the first place.
 
 ### The digest has two fidelities and they must not be confused
 
-`configuration_digest` (`models.py:526`) covers identity + benchmark/subset + resolved
+`configuration_digest` (`models.py:526`) covers identity + benchmark/subset/data version + resolved
 config + negotiation, and deliberately **not** `task` / `task_id` / `extra` /
-`task_setup` / `branch` (per task) nor `secrets_recorded` / `env_evidence_privacy` (provenance),
+`task_setup` / `branch` / `earlier_tasks_on_environment` (per task) nor `secrets_recorded` / `env_evidence_privacy` (provenance),
 so two tasks of one sweep share a hash — including two that differ only in `start_url`, or
 two branches of one sweep (`test_run_configuration.py::TestBranchProvenance`).
 Archive settings move the hash through the two existing roads and nothing else: the
@@ -356,9 +367,16 @@ M31 applied it once more:
   group) — per task (the task id is `<source_run_id>/s<t>/b<i>`), so not in the digest;
   the sweep-level knobs (`continue_steps`, `history_source`, prompt contribution configuration, the teacher's sampling,
   the restorer's `verify`) move the hash through `resolved` as usual. It arrives as the third part of
-  `TaskLoader.get_task_context(id)` (`TaskContext{env, loop, branch}`), is passed as
+  `TaskLoader.get_task_context(id)` (`TaskContext{env, loop, branch, benchmark}`), is passed as
   `execute(branch=…)` and on to `on_run_start(branch=…)`, and is recorded as given. Not
   named "provenance": that word is the `secrets_recorded` / `env_evidence_privacy` layer.
+- `TraceConfig.benchmark_spec`: how the benchmark the run's task belongs to was selected
+  (`benchmark_id`, the `--benchmark` selection, `--subset`) and the sha256 of each part of
+  the block that decides how its tasks run (`fingerprints`; verifiers left out, so a branch
+  can tell the block changed); absent when it belongs to none.
+  Not in the digest: the benchmark block itself is in `resolved`. A branch run's is its
+  source's, from the fourth context part `benchmark`, and its run root holds that benchmark's
+  block too (architecture §5.3 "实验身份"). Trace format 9 added it; format 8 is refused.
 
 ## 6. Secrets: deny by default, at field level
 

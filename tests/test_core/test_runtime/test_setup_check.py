@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -394,6 +395,7 @@ class _Benchmark:
 
     setup: _Setup | None
     verifiers: list[_Verifier] = field(default_factory=list)
+    task_loader: SimpleNamespace = field(default_factory=lambda: SimpleNamespace(data_version=None))
 
     def live_verifiers(self) -> list[_Verifier]:
         return list(self.verifiers)
@@ -502,6 +504,28 @@ class TestPrepareRoutesTheBenchmarksSetup:
         )
         with pytest.raises(ValueError, match="hosted by the 'contract_archive' capability, and "):
             AgentRuntime.for_agent(run, AGENT_ID).prepare()
+
+
+class TestABranchTasksTwoBenchmarkBlocks:
+    """A branch task's run holds its task source and its source's benchmark (§4.10.1).
+
+    The task source never has a setup component or a verifier of its own, so
+    what is routed is the source benchmark's.
+    """
+
+    def test_the_source_benchmarks_components_are_routed(self) -> None:
+        cap, setup, verifier = _JudgingCap(), _Setup(), _Verifier()
+        run = _benchmark_run(cap, setup, [verifier])
+        task_source = _Benchmark(None)
+        run.by_layer["benchmark"] = {
+            "trace_branches#0": task_source,
+            "source#0": run.by_layer["benchmark"]["benchmark#0"],
+        }
+
+        AgentRuntime.for_agent(run, AGENT_ID).prepare()
+
+        assert ("bind", setup) in cap.hosted
+        assert ("bind verifiers", (verifier,)) in cap.hosted
 
 
 class TestPrepareRoutesTheBenchmarksLiveVerifiers:

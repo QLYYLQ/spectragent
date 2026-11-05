@@ -28,7 +28,8 @@ from conscribe.introspect import WiringSlot, wiring_slots
 from conscribe.wiring import expand_relative_keys
 from pydantic import BaseModel, JsonValue
 
-from spectragent.benchmarks.selection import read_benchmark, run_root
+from spectragent.benchmarks.operations import read_benchmark_with_data
+from spectragent.benchmarks.selection import run_root
 from spectragent.core.actions._registrar import ACTION_KEY_SEPARATOR
 from spectragent.core.capabilities._registrar import CapabilityRegistrar
 from spectragent.core.capability_merge import (
@@ -79,6 +80,24 @@ class TemplateChoices:
     capability_flags: Mapping[str, str] = field(default_factory=dict)
     #: ``--benchmark``: a shipped alias or the path of a benchmark YAML.
     benchmark: str | None = None
+    #: ``--subset``: written into the benchmark's task loader before it is composed.
+    subset: str | None = None
+
+
+@dataclass(frozen=True)
+class _Starts:
+    """What a capability block the template starts, or starts over, begins from beyond its package's start.
+
+    In order of precedence below a ``--from`` skeleton's values and the
+    template flags (``docs/architecture_design.md`` §4.17 "agent 的模板起点"):
+    the settings *benchmarks* supply, left out; then *agent*'s starting values
+    for the block (``__template_capabilities__``); then the capability's own
+    ``TEMPLATE_BLOCK``.
+    """
+
+    benchmarks: Sequence[Mapping[str, Any]]
+    #: The agent the run's capability blocks start for; ``None``: no agent's values.
+    agent: type | None = None
 
 
 @dataclass(frozen=True)
@@ -104,16 +123,22 @@ def render_config_template(
     """
     composer = composer or ConfigComposer.for_every_package()
     catalog = composer.catalog
-    benchmarks = [read_benchmark(choices.benchmark)] if choices.benchmark is not None else []
+    if choices.subset is not None and choices.benchmark is None:
+        raise ValueError("--subset selects a benchmark's tasks: give --benchmark with it")
+    benchmarks = (
+        [read_benchmark_with_data(choices.benchmark, subset=choices.subset)]
+        if choices.benchmark is not None
+        else []
+    )
     origins: dict[TemplatePath, str] = {}
     if source is None:
-        raw = _new_template(choices, composer, benchmarks, origins)
+        raw = _new_template(choices, composer, _Starts(benchmarks), origins)
         # The new template already holds these selections.
         choices = replace(choices, agent=None, loop=None, llm=None, environment=None)
     else:
         raw = copy.deepcopy(dict(source))
         _mark_origins(raw, (), origins, "input YAML")
-    _apply_choices(raw, choices, composer, benchmarks, origins)
+    _apply_choices(raw, choices, composer, _Starts(benchmarks), origins)
     # A benchmark section in the skeleton is refused when a benchmark is
     # selected, as a run refuses one; without --benchmark any root expands.
     root = run_root(raw, *benchmarks) if benchmarks else raw
@@ -156,9 +181,11 @@ def render_config_template(
         "# metrics records reported tokens, call counts and timings, not monetary cost.",
     ]
     if benchmarks:
+        selection = f"--benchmark {choices.benchmark}" + (
+            f" --subset {choices.subset}" if choices.subset is not None else ""
+        )
         header += [
-            f"# Use it with --benchmark {choices.benchmark}: the capability settings that "
-            "benchmark supplies",
+            f"# Use it with {selection}: the capability settings that benchmark supplies",
             "# are left out, each named in a comment where it would sit.",
         ]
     return "\n".join([*header, "", *_render_mapping(expanded, (), comments, 0)]) + "\n"
@@ -284,21 +311,31 @@ def _capability_keys(environment: type) -> tuple[str, ...]:
 
 
 def _capability_blocks(
-    composer: ConfigComposer, environment: str, benchmarks: Sequence[Mapping[str, Any]]
+    composer: ConfigComposer, environment: str, starts: _Starts
 ) -> list[dict[str, Any]]:
     """One block per capability *environment* takes, each from its package's starting block.
 
-    A setting the benchmarks supply is taken out of the starting block, so the
-    template's starting choice never conflicts with it (Android's placeholder
-    AVD gives way to AndroidWorld's).
+    The agent's starting values for a capability (``__template_capabilities__``)
+    replace the package's start field by field, each field or receptor whole
+    (Skyvern's own cleaner in place of BrowserUse's). A setting the benchmarks
+    supply is then taken out, so neither starting choice conflicts with it
+    (Android's placeholder AVD gives way to AndroidWorld's).
     """
     catalog = composer.catalog
     keys = _capability_keys(_definition(catalog, ENVIRONMENT_SECTION, environment).implementation)
-    starts = {item.capability_id: item.template_block for item in capability_declarations(keys)}
+    packages = {item.capability_id: item.template_block for item in capability_declarations(keys)}
+    agents: Mapping[str, Mapping[str, JsonValue]] = getattr(
+        starts.agent, "__template_capabilities__", {}
+    )
     blocks = [
-        {**_selector(catalog, CAPABILITY_SECTION, key), **copy.deepcopy(dict(starts[key]))}
+        {
+            **_selector(catalog, CAPABILITY_SECTION, key),
+            **copy.deepcopy(dict(packages[key])),
+            **copy.deepcopy(dict(agents.get(key, {}))),
+        }
         for key in keys
     ]
+    benchmarks = starts.benchmarks
     if benchmarks:
         # Blocks naming only their capability: everything the benchmark writes
         # is then what it supplies, its strategies' names included.
@@ -337,35 +374,38 @@ def _drop(block: dict[str, Any], path: SettingPath) -> None:
 def _new_template(
     choices: TemplateChoices,
     composer: ConfigComposer,
-    benchmarks: Sequence[Mapping[str, Any]],
+    starts: _Starts,
     origins: dict[TemplatePath, str],
 ) -> dict[str, Any]:
     """The starting graph, with the selected agent, Loop, model and environment.
 
     The agent block starts from the agent's own declared values
     (``__template_block__``); a receptor it leaves out starts from the
-    framework's starting choice. ``--loop`` and ``--llm`` then replace their
-    receptors as on a skeleton: naming the declared implementation keeps its
-    values.
+    framework's starting choice (:func:`_receptor_start`). ``--loop`` and
+    ``--llm`` choose their receptors' implementations: naming the one the
+    agent declares keeps its values, naming another starts that one over, and
+    values declared without an implementation (an agent's sampling values)
+    go into whichever is chosen.
     """
     catalog = composer.catalog
     agent_key = choices.agent or STARTING_AGENT
     agent_cls = _definition(catalog, "agent", agent_key).implementation
+    declared = _declared_block(agent_cls)
+    slots = wiring_slots(agent_cls)
     agent: dict[str, Any] = {
         **_selector(catalog, "agent", agent_key),
         "id": "main",
-        **_declared_block(agent_cls),
+        **{name: value for name, value in declared.items() if name not in slots},
     }
-    for receptor in wiring_slots(agent_cls).values():
-        # Only a receptor the agent declares nothing for falls back: the
-        # framework's key may be one its wiring refuses.
-        if (
-            receptor.name in STARTING_RECEPTORS
-            and receptor.slot is not None
-            and receptor.name not in agent
+    chosen = {"agent_loop": choices.loop, "llm": choices.llm}
+    for receptor in slots.values():
+        # Only a receptor the agent declares, or one the framework starts,
+        # gets a block: the framework does not choose an optional helper.
+        if receptor.slot is not None and (
+            receptor.name in declared or receptor.name in STARTING_RECEPTORS
         ):
-            agent[receptor.name] = _selector(
-                catalog, receptor.spec.registry_name, _starting_key(agent_cls, receptor)
+            agent[receptor.name] = _receptor_start(
+                catalog, agent_cls, receptor, chosen.get(receptor.name)
             )
     loop_key = choices.loop or _key_of(catalog, "agent_loop", agent.get("agent_loop"))
     environment_key = choices.environment or _environment_for(catalog, agent_key, loop_key)
@@ -375,7 +415,9 @@ def _new_template(
             {
                 **_selector(catalog, ENVIRONMENT_SECTION, environment_key),
                 "id": f"{environment_key}_env",
-                ENVIRONMENT_CAPABILITIES: _capability_blocks(composer, environment_key, benchmarks),
+                ENVIRONMENT_CAPABILITIES: _capability_blocks(
+                    composer, environment_key, replace(starts, agent=agent_cls)
+                ),
             }
         ],
         "hook": [
@@ -398,16 +440,8 @@ def _new_template(
         ("llm", choices.llm, "--llm"),
     ):
         if key is not None:
-            _replace_component(
-                agent,
-                field_name,
-                field_name,
-                key,
-                composer,
-                benchmarks,
-                ("agent", 0, field_name),
-                origins,
-                flag,
+            _mark_origins(
+                _selector(catalog, field_name, key), ("agent", 0, field_name), origins, flag
             )
     return raw
 
@@ -416,6 +450,56 @@ def _declared_block(owner: type) -> dict[str, JsonValue]:
     """*owner*'s own template starting values (an agent's ``__template_block__``), a fresh copy."""
     declared: Mapping[str, JsonValue] = getattr(owner, "__template_block__", {})
     return copy.deepcopy(dict(declared))
+
+
+def _receptor_start(
+    catalog: ConfigurationCatalog, owner: type, receptor: WiringSlot, key: str | None = None
+) -> dict[str, Any]:
+    """The block a template starts *owner*'s *receptor* from; *key*: the implementation a flag names.
+
+    A block *owner* declares for it (an agent's ``__template_block__``) that
+    names an implementation stands when the template uses that one; naming
+    another starts that one over. A declared block that names none gives
+    values, not the choice: the template chooses as it would without it
+    (*key*, else :func:`_starting_key`) and writes each value the chosen
+    implementation has a field for, so an agent's sampling values reach
+    whichever model provider is chosen and a field one provider lacks
+    (``frequency_penalty`` on Anthropic) is left out.
+    """
+    layer = receptor.spec.registry_name
+    declared = _declared_block(owner).get(receptor.name)
+    if isinstance(declared, dict):
+        named = _named_key(catalog, layer, declared)
+        if named is not None:
+            return declared if key in (None, named) else _selector(catalog, layer, key)
+    chosen = key or _starting_key(owner, receptor)
+    block = _selector(catalog, layer, chosen)
+    if isinstance(declared, dict):
+        fields = {
+            info.alias or name
+            for name, info in _definition(catalog, layer, chosen).config_model.model_fields.items()
+        }
+        block.update(
+            {
+                name: value
+                for name, value in declared.items()
+                if name in fields and name not in block
+            }
+        )
+    return block
+
+
+def _named_key(catalog: ConfigurationCatalog, layer: str, block: dict[str, Any]) -> str | None:
+    """The implementation of *layer* whose fixed name *block* writes; ``None`` when it names none.
+
+    *block* must write every top-level part of the name, so a values-only
+    ``llm`` block (no ``model_type``) names no provider.
+    """
+    for key, definition in catalog.components.get(layer, {}).items():
+        selector = _constant_fields(definition.config_model)
+        if selector and selector.keys() <= block.keys() and _matches_selector(block, selector):
+            return key
+    return None
 
 
 def _key_of(catalog: ConfigurationCatalog, layer: str, block: object) -> str:
@@ -453,11 +537,19 @@ def _replace_component(
     layer: str,
     key: str,
     composer: ConfigComposer,
-    benchmarks: Sequence[Mapping[str, Any]],
+    starts: _Starts,
     path: TemplatePath,
     origins: dict[TemplatePath, str],
     flag: str,
+    *,
+    owner_cls: type | None = None,
 ) -> None:
+    """Make *owner*'s *field_name* a block of *key*: kept when it already is one, else started over.
+
+    *owner_cls* is the class that holds the receptor (the agent, for
+    ``--loop`` and ``--llm``): a block started over begins from what it
+    declares for the receptor (:func:`_receptor_start`).
+    """
     catalog = composer.catalog
     selector = _selector(catalog, layer, key)
     previous = owner.get(field_name)
@@ -468,6 +560,12 @@ def _replace_component(
     # survive so changing an Agent does not choose a different model or Loop;
     # a receptor value the new implementation's wiring does not take is
     # replaced by the template's starting choice.
+    held = None if owner_cls is None else wiring_slots(owner_cls).get(field_name)
+    start = (
+        selector
+        if owner_cls is None or held is None
+        else _receptor_start(catalog, owner_cls, held, key)
+    )
     implementation = catalog.components[layer][key].implementation
     slots = wiring_slots(implementation)
     retained = (
@@ -480,7 +578,7 @@ def _replace_component(
         else {}
     )
     restarted = {
-        name: _starting_value(composer, benchmarks, implementation, key, slots[name])
+        name: _starting_value(composer, starts, implementation, key, slots[name])
         for name, value in retained.items()
         if name != "id" and not _accepted(catalog, slots[name], value)
     }
@@ -488,11 +586,11 @@ def _replace_component(
     # What the skeleton does not keep starts from the new implementation's own
     # declared values (an agent's ``__template_block__``).
     declared = {
-        name: value
+        name: _receptor_start(catalog, implementation, slots[name]) if name in slots else value
         for name, value in _declared_block(implementation).items()
         if name not in retained
     }
-    owner[field_name] = {**selector, **declared, **retained}
+    owner[field_name] = {**start, **declared, **retained}
     for origin_path in tuple(origins):
         if origin_path[: len(path)] == path and (
             len(origin_path) == len(path)
@@ -500,7 +598,7 @@ def _replace_component(
             or origin_path[len(path)] in restarted
         ):
             del origins[origin_path]
-    for name, value in {**declared, **restarted}.items():
+    for name, value in {**start, **declared, **restarted}.items():
         _mark_origins(value, (*path, name), origins, TEMPLATE_DEFAULT)
     _mark_origins(selector, path, origins, flag)
 
@@ -525,22 +623,28 @@ def _accepted(catalog: ConfigurationCatalog, receptor: WiringSlot, value: object
 
 def _starting_value(
     composer: ConfigComposer,
-    benchmarks: Sequence[Mapping[str, Any]],
+    starts: _Starts,
     owner: type,
     owner_key: str,
     receptor: WiringSlot,
 ) -> object:
     """The template's starting choice for *receptor*.
 
-    An environment's capability blocks; else the block *owner* declares for it
-    (an agent's ``__template_block__``); else one strategy (:func:`_starting_key`).
+    An environment's capability blocks; else what *owner* declares for it (an
+    agent's ``__template_block__``) or the framework's choice (:func:`_receptor_start`).
     """
     if receptor.spec.registry_name == CAPABILITY_SECTION:
-        return _capability_blocks(composer, owner_key, benchmarks)
-    declared = _declared_block(owner).get(receptor.name)
-    if declared is not None:
-        return declared
-    return _selector(composer.catalog, receptor.spec.registry_name, _starting_key(owner, receptor))
+        return _capability_blocks(composer, owner_key, starts)
+    return _receptor_start(composer.catalog, owner, receptor)
+
+
+def _agent_class(catalog: ConfigurationCatalog, raw: Mapping[str, Any]) -> type | None:
+    """The class of the one agent block *raw* holds; ``None`` without exactly one that names an agent."""
+    entries = raw.get("agent")
+    if not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict):
+        return None
+    key = _named_key(catalog, "agent", entries[0])
+    return None if key is None else catalog.components["agent"][key].implementation
 
 
 def _matches_selector(previous: dict[str, Any], selector: dict[str, Any]) -> bool:
@@ -562,10 +666,11 @@ def _apply_choices(
     raw: dict[str, Any],
     choices: TemplateChoices,
     composer: ConfigComposer,
-    benchmarks: Sequence[Mapping[str, Any]],
+    starts: _Starts,
     origins: dict[TemplatePath, str],
 ) -> None:
     catalog = composer.catalog
+    starts = replace(starts, agent=_agent_class(catalog, raw))
     if any(
         value is not None for value in (choices.agent, choices.loop, choices.llm, choices.model)
     ):
@@ -578,12 +683,13 @@ def _apply_choices(
                 "agent",
                 choices.agent,
                 composer,
-                benchmarks,
+                starts,
                 path,
                 origins,
                 "--agent",
             )
             raw["agent"][0] = agent = holder["selected"]
+            starts = replace(starts, agent=_agent_class(catalog, raw))
         for field_name, layer, key, flag in (
             ("agent_loop", "agent_loop", choices.loop, "--loop"),
             ("llm", "llm", choices.llm, "--llm"),
@@ -595,10 +701,11 @@ def _apply_choices(
                     layer,
                     key,
                     composer,
-                    benchmarks,
+                    starts,
                     (*path, field_name),
                     origins,
                     flag,
+                    owner_cls=starts.agent,
                 )
         if choices.model is not None:
             if not isinstance(agent.get("llm"), dict):
@@ -615,13 +722,13 @@ def _apply_choices(
                 ENVIRONMENT_SECTION,
                 choices.environment,
                 composer,
-                benchmarks,
+                starts,
                 path,
                 origins,
                 "--environment",
             )
             raw[ENVIRONMENT_SECTION][0] = environment = holder["selected"]
-        _apply_capability_flags(environment, path, choices, composer, benchmarks, origins)
+        _apply_capability_flags(environment, path, choices, composer, starts, origins)
     if choices.recording is not None:
         hooks = raw.setdefault("hook", [])
         writers = [
@@ -644,7 +751,7 @@ def _apply_capability_flags(
     path: TemplatePath,
     choices: TemplateChoices,
     composer: ConfigComposer,
-    benchmarks: Sequence[Mapping[str, Any]],
+    starts: _Starts,
     origins: dict[TemplatePath, str],
 ) -> None:
     """Each given template flag replaces the strategy in its receptor of its capability's block."""
@@ -678,7 +785,7 @@ def _apply_capability_flags(
             layer,
             key,
             composer,
-            benchmarks,
+            starts,
             (*path, ENVIRONMENT_CAPABILITIES, index, receptor),
             origins,
             flag,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
@@ -16,6 +16,7 @@ from spectragent.core.capabilities.browser.actions._common import (
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.effects import NavigationEffect
+from spectragent.core.capabilities.browser.presentation import BrowserWords
 from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import NavigateToUrlEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class NavigateAction(SettleableAction, ActionBase):
+class NavigateAction(BrowserWords, SettleableAction, ActionBase):
     """Navigate the current tab to a URL.
 
     Waits for the page to commit (``timeout_ms``), then for ``wait_until``
@@ -37,6 +38,7 @@ class NavigateAction(SettleableAction, ActionBase):
     the document shown when the handler returned had finished loading.
     """
 
+    person_verb: ClassVar[str] = "打开网址"
     __registry_key__ = "browser.navigate"
     Effect = NavigationEffect
 

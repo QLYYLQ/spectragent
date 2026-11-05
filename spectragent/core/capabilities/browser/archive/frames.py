@@ -64,6 +64,7 @@ from spectragent.core.capabilities.browser.archive.base import (
     BrowserArchiveSession,
     CommittedCycle,
 )
+from spectragent.core.presentation import ArchivedFrame
 from spectragent.schemas.observation.image import image_size
 
 logger = logging.getLogger(__name__)
@@ -144,6 +145,38 @@ class FramesArchiver(BrowserArchiverBase):
 
     __registry_key__ = "browser.frames"
     needs: ClassVar[frozenset[ArchiveNeed]] = frozenset({"action_boundary"})
+
+    # How the viewer reads the frames (``core/presentation.py::KeepsActionFrames``).
+
+    @classmethod
+    def action_frames(
+        cls, reader: ArchiveReader, step: int, *, action_times: Sequence[tuple[float, float]] | None
+    ) -> list[ArchivedFrame]:
+        """The frames of *step*'s actual action calls (:func:`before_action_frames`)."""
+        return [
+            _archived(at, frame)
+            for at, frame in before_action_frames(reader, step, action_times=action_times)
+        ]
+
+    @classmethod
+    def archived_frame(
+        cls, reader: ArchiveReader, step: int | None, name: str
+    ) -> ArchivedFrame | None:
+        """The frame of the image *name* committed at *step* (``None``: a trailing batch)."""
+        record = next((record for record in _records(reader, step) if record.name == name), None)
+        return _archived(step, record) if record is not None else None
+
+    @classmethod
+    def frame_image(cls, reader: ArchiveReader, frame: ArchivedFrame) -> bytes:
+        """The PNG of a captured *frame* (:func:`read_frame_image`)."""
+        records = [
+            record
+            for record in _records(reader, frame.collected_at)
+            if _archived(frame.collected_at, record).id == frame.id
+        ]
+        if len(records) != 1:
+            raise KeyError(f"no single browser.frames record {frame.id}")
+        return read_frame_image(reader, frame.collected_at, records[0])
 
     def __init__(
         self,
@@ -749,3 +782,26 @@ def read_frame_image(reader: ArchiveReader, step: int | None, record: FrameRecor
             return reader.read_extra(entry.path)
     where = f"step {step}" if step is not None else "the trailing batches"
     raise KeyError(f"{where} holds no browser.frames image {record.name!r} ({record.sha256})")
+
+
+def _records(reader: ArchiveReader, step: int | None) -> list[FrameRecord]:
+    """The frames *step*'s commit took (``None``: every trailing batch's)."""
+    if step is not None:
+        return read_frames(reader, step)
+    return [record for at, record in iter_frames(reader, include_trailing=True) if at is None]
+
+
+def _archived(at: int | None, record: FrameRecord) -> ArchivedFrame:
+    """*record*, collected at *at*, as the viewer reads a frame."""
+    return ArchivedFrame(
+        id=f"{at if at is not None else 'trailing'}:{record.cycle}:{record.action_index}",
+        collected_at=at,
+        kind=record.kind,
+        action_call=record.action_index,
+        action=record.action,
+        outcome=record.outcome,
+        detail=record.detail,
+        name=record.name,
+        width=record.width,
+        height=record.height,
+    )

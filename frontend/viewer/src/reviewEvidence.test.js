@@ -1,6 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { imageCanBeEdited, sectionEvidence, trajectorySteps, frameStatus, recordedReply, comparisonEvidence, pointerPresentation } from "./reviewEvidence.js";
+import {
+  actionLine,
+  comparisonEvidence,
+  defaultNeighbour,
+  folderNeighbour,
+  folderSteps,
+  frameStatus,
+  imageCanBeEdited,
+  nextObservation,
+  observationFacts,
+  pointerPresentation,
+  recordedReply,
+  sectionEvidence,
+  tallestRatio,
+} from "./reviewEvidence.js";
 
 test("a source comparison never appears in the main evidence, irrespective of its wording", () => {
   const item = {
@@ -22,14 +36,12 @@ test("only the specified image can accept gold boxes while other queue images re
   assert.equal(imageCanBeEdited("next", []), false);
 });
 
-test("archive groups committed evidence before, at and after the review anchor without filling gaps", () => {
+test("the archive's tabs keep committed steps in order without filling gaps or reordering the input", () => {
   const steps = [4, 1, 3, 0, 7].map(index => ({index}));
-  const groups = trajectorySteps(steps, 4);
-  assert.deepEqual(groups.past.map(step => step.index), [0, 1, 3]);
-  assert.equal(groups.current.index, 4);
-  assert.deepEqual(groups.future.map(step => step.index), [7]);
+  const tabs = folderSteps(steps, 4);
+  assert.deepEqual(tabs.map(step => [step.index, step.relation]), [[0, "past"], [1, "past"], [3, "past"], [4, "current"], [7, "future"]]);
   assert.deepEqual(steps.map(step => step.index), [4, 1, 3, 0, 7]);
-  assert.equal(trajectorySteps(steps, 2).current, null);
+  assert.ok(!folderSteps(steps, 2).some(step => step.relation === "current"));
 });
 
 test("pointer overlay uses its image dimensions and preserves a measured zero", () => {
@@ -72,4 +84,52 @@ test("pixel comparison can cross main and collapsed evidence while side-by-side 
   const item = {images: [{role: "branch"}, {role: "source", section: "comparison"}]};
   assert.deepEqual(comparisonEvidence(item, "side").map(image => image.role), ["branch"]);
   assert.deepEqual(comparisonEvidence(item, "difference").map(image => image.role), ["branch", "source"]);
+});
+
+test("the folder marks each committed step before, at or after the reviewed one, and moves within them", () => {
+  const steps = folderSteps([{index: 3}, {index: 0}, {index: 1}], 1);
+  assert.deepEqual(steps.map((step) => [step.index, step.relation]), [[0, "past"], [1, "current"], [3, "future"]]);
+  assert.equal(folderNeighbour(steps, 1, 1), 3);
+  assert.equal(folderNeighbour(steps, 3, 1), 3);
+  assert.equal(folderNeighbour(steps, 0, -1), 0);
+  assert.equal(nextObservation(steps, 0)?.index, 1);
+  assert.equal(nextObservation(steps, 1), null, "a gap after the step has no screen after it");
+});
+
+test("observation facts come from recorded fields, never from fragment names", () => {
+  const android = observationFacts({
+    "android.screenshot": {device: {package: "com.android.settings", activity: "com.android.settings.Settings"}},
+    "android.ui_tree": {serialized: 'UI element 0: {"text": "Display"}\nUI element 1: {"text": "Sound"}'},
+  });
+  assert.equal(android.front, "com.android.settings · Settings");
+  assert.deepEqual(android.text, {source: "android.ui_tree", lines: ['UI element 0: {"text": "Display"}', 'UI element 1: {"text": "Sound"}']});
+  const browser = observationFacts({
+    "browser.browser_meta": {url: "https://example.test/", page_title: "Example"},
+    "browser.dom": {selector_map: {"7": {tag_name: "button", attributes: {"aria-label": "Search"}}}},
+  });
+  assert.equal(browser.page, "Example · https://example.test/");
+  assert.deepEqual(browser.text.lines, ["[7] <button> Search"]);
+  assert.deepEqual(observationFacts({}), {front: null, page: null, text: null});
+});
+
+test("a comparison row's box takes the tallest known image, and knows nothing without sizes", () => {
+  assert.equal(tallestRatio([{width: 640, height: 400}, {width: 1080, height: 2400}, null, {width: 0, height: 5}]), 2400 / 1080);
+  assert.equal(tallestRatio([{}, null]), null);
+});
+
+test("the folder opens the step just before the reviewed one, else the one after", () => {
+  const steps = [0, 1, 3, 4].map(index => ({index}));
+  assert.equal(defaultNeighbour(steps, 3), 1);
+  assert.equal(defaultNeighbour(steps, 0), 1);
+  assert.equal(defaultNeighbour([{index: 2}], 2), null);
+  // moving the opened neighbour skips nothing but the pinned step, which is not among them
+  const others = steps.filter(step => step.index !== 3);
+  assert.equal(folderNeighbour(others, 1, 1), 4);
+  assert.equal(folderNeighbour(others, 0, -Infinity), 0);
+});
+
+test("a folder tab says a step's actions in one line", () => {
+  assert.equal(actionLine("1. 点击 (1, 2) → #0 按钮“Save”\n2. 按键 返回"), "点击 (1, 2) → #0 按钮“Save”（另 1 个动作）");
+  assert.equal(actionLine("（没有动作）"), "（没有动作）");
+  assert.equal(actionLine(""), "没有动作");
 });

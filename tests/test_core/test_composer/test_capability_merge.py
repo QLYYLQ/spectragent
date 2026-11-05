@@ -79,7 +79,8 @@ def _android(**written: JsonValue) -> Block:
 
 
 def _table(data: Path, apps: Mapping[str, JsonValue] = TABLE, commit: str = PINNED_COMMIT) -> Path:
-    data.mkdir(parents=True, exist_ok=True)
+    """AndroidWorld's data in *data* (one task, whose subset the benchmark reads its wait from), this table."""
+    androidworld_data(data)
     table = {"format": OPEN_APP_FORMAT, "commit": commit, "apps": dict(apps)}
     (data / OPEN_APP_FILE).write_text(json.dumps(table))
     return data
@@ -302,6 +303,7 @@ def test_what_a_part_supplies_is_recorded_field_by_field(tmp_path: Path) -> None
     assert [(item.block, written(item.path), item.source) for item in supplied] == [
         (block, "backend.provider_id", "the benchmark androidworld"),
         (block, "backend.avd", "the benchmark androidworld"),
+        (block, "settle_max_wait_s", "the benchmark androidworld, computed in code"),
         (block, "actions[android.open_app].apps", "the benchmark androidworld, computed in code"),
     ]
     assert supplied[-1].path == ("actions", ("action_id", "android.open_app"), "apps")
@@ -318,6 +320,7 @@ def test_a_value_the_run_writes_too_is_not_recorded_as_supplied(tmp_path: Path) 
 
     assert [written(item.path) for item in supplied] == [
         "backend.avd",
+        "settle_max_wait_s",
         "actions[android.open_app].apps",
     ]
 

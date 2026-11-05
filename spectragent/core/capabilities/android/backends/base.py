@@ -66,8 +66,10 @@ class DeviceNeeds(BaseModel):
         guest_wifi: The guest's Wi-Fi has its IPv4 default route. It came
             4-7 s after the boot completed; on about 3 of 24 boots it never
             came, read-only boots of a set-up AVD included (measured).
-        fresh: The run's changes are thrown away when the device is
-            released, so every run starts from the same device.
+        fresh: The changes made on the device are thrown away when it is
+            released, so every device starts from the same one. A sweep may
+            keep a device for the next task when the setup component resets
+            it between tasks (``docs/architecture_design.md`` §4.10.1).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

@@ -51,18 +51,35 @@ async def test_single_run_passes_the_source_version_it_parsed(tmp_path, monkeypa
 
 
 def _stub_composer(monkeypatch, path, *, change_source=False):
-    """A composer that builds one benchmark whose task loader has no task; returns its YAML."""
+    """A composer that builds one benchmark whose task loader has no task; returns its YAML.
+
+    The benchmark pins no data, so reading it checks none.
+    """
+    from spectragent.benchmarks.selection import read_benchmark
     from spectragent.core import benchmark_runner
 
     block = {"benchmark_id": "fixture"}
+    monkeypatch.setattr(
+        benchmark_runner,
+        "read_benchmark_with_data",
+        lambda selection, *, subset=None, fetch=False, say=None: read_benchmark(
+            selection, subset=subset
+        ),
+    )
 
     def compose(raw):
-        if change_source:
+        # The benchmark block alone gives the tasks; the run root is composed after.
+        if change_source and raw != {"benchmark": [block]}:
             assert raw == {"version": "consumed", "benchmark": [block]}
             path.write_bytes(b"version: changed\n")
-        loader = SimpleNamespace(benchmark_name="fixture", subset="all", task_ids=lambda: [])
+        loader = SimpleNamespace(
+            benchmark_name="fixture", subset="all", data_version=None, task_ids=lambda: []
+        )
         chosen = SimpleNamespace(
-            task_loader=loader, offline_verifiers=lambda: [], primary_verifier=None
+            benchmark_id="fixture",
+            task_loader=loader,
+            offline_verifiers=lambda: [],
+            primary_verifier=None,
         )
         return ComposedRun(by_layer={"benchmark": {"fixture": chosen}})
 

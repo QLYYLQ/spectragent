@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 from spectragent.benchmarks import BenchmarkBase
-from spectragent.core.benchmark_runner import BenchmarkRunner
+from spectragent.core.benchmark_runner import BenchmarkRunner, PrimaryTally
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks.trace_writer import TraceWriter
@@ -148,6 +148,7 @@ class _Task:
 class _TaskLoader:
     benchmark_name = "offline_e2e"
     subset = "test"
+    data_version = None
 
     def task_ids(self):
         return list(_ANSWERS)
@@ -319,13 +320,16 @@ async def test_the_summary_reports_the_primary_verdict_and_the_success_rate(
 
     summary = await runner.run()
 
-    assert summary.primary_verifier == "exact_match"
     assert [(o.task_id, o.success) for o in summary.outcomes] == [("t-1", 1.0), ("t-2", 0.0)]
     assert all(
-        o.primary is not None and o.primary.slug == verifier.identity().slug
+        o.primary_verifier == "exact_match"
+        and o.primary is not None
+        and o.primary.slug == verifier.identity().slug
         for o in summary.outcomes
     )
-    assert (summary.judged, summary.success_rate) == (2, 0.5)
+    assert summary.primaries == [
+        PrimaryTally(verifier_id="exact_match", tasks=2, judged=2, success_rate=0.5)
+    ]
     table = summary.format_table()
     lines = table.splitlines()
     ledger = next(i for i, line in enumerate(lines) if line.startswith("  trace:"))
@@ -333,11 +337,9 @@ async def test_the_summary_reports_the_primary_verdict_and_the_success_rate(
         "  primary verdict (exact_match): success rate 50.0% over the 2 of 2 task(s) it judged"
     )
     assert "primary label 1, success 1" in table and "primary label 0, success 0" in table
-    assert summary.as_dict()["primary"] == {
-        "verifier_id": "exact_match",
-        "judged": 2,
-        "success_rate": 0.5,
-    }
+    assert summary.as_dict()["primary"] == [
+        {"verifier_id": "exact_match", "tasks": 2, "judged": 2, "success_rate": 0.5}
+    ]
 
 
 async def test_a_task_its_primary_verifier_could_not_judge_is_left_out_of_the_rate(
@@ -356,7 +358,8 @@ async def test_a_task_its_primary_verifier_could_not_judge_is_left_out_of_the_ra
     summary = await runner.run()
 
     assert [(o.task_id, o.success) for o in summary.outcomes] == [("t-1", 1.0), ("t-2", None)]
-    assert (summary.judged, summary.success_rate) == (1, 1.0)
+    [tally] = summary.primaries
+    assert (tally.judged, tally.success_rate) == (1, 1.0)
     assert "over the 1 of 2 task(s) it judged" in summary.format_table()
     assert "no primary verdict" in summary.format_table()
 

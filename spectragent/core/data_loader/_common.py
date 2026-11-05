@@ -15,17 +15,23 @@ import os
 from pathlib import Path
 from typing import Any
 
-from spectragent import BENCHMARK_DATA_ROOT
+from pydantic import ValidationError
 
-#: Environment variable naming an alternative benchmark-data root.
+from spectragent.core.refusal import Refusal
+from spectragent.schemas.data_version import DataVersion
+
+#: Environment variable naming the benchmark-data root.
 #:
-#: The shipped tree is not part of the distribution (see
-#: ``[tool.setuptools.package-data]``), so an installed spectragent has no
-#: data at all. ``data_dir`` on the loader config only fixes one loader at
-#: a time — a run needs the same benchmark named twice, once on the task
-#: loader and once on the eval loader — so pointing the *root* somewhere
-#: else has to be expressible in one place.
+#: No data ships with spectragent, and the root is shared by every checkout
+#: and worktree, so it lives outside the repository: unset, it is the cache
+#: below (``docs/architecture_design.md`` §4.10.1 "数据"). ``data_dir`` on
+#: the loader config only fixes one loader at a time — a run needs the same
+#: benchmark named twice, once on the task loader and once on the eval
+#: loader — so pointing the *root* somewhere else has to be expressible in
+#: one place.
 BENCHMARK_DATA_ENV: str = "SPECTRAGENT_BENCHMARK_DATA"
+#: The root under the user's cache directory when the variable is unset.
+_CACHE_SUBDIR = ("spectragent", "benchmarks")
 
 #: Wrapper keys recognised when a JSON data file holds records under a key.
 _WRAPPER_KEYS = ("tasks", "data", "records", "items")
@@ -35,22 +41,77 @@ _WRAPPER_KEYS = ("tasks", "data", "records", "items")
 _TASK_ID_KEYS = ("task_id", "id", "instance_id")
 
 
-class BenchmarkDataError(RuntimeError):
-    """Raised when benchmark data is missing, malformed, or empty."""
+class BenchmarkDataError(Refusal, RuntimeError):
+    """Raised when benchmark data is missing, malformed, or empty.
+
+    A :class:`~spectragent.core.refusal.Refusal`: its message names the file
+    and what is wrong with it in a few lines, so every command shows it as it
+    is, a loader's constructor included.
+    """
+
+
+def validation_summary(exc: ValidationError) -> str:
+    """*exc* in one line: how many problems, and where the first is and what it says.
+
+    A data file that is not what a loader reads can fail on every record;
+    pydantic's own text lists them all, hundreds of lines for one cause.
+    """
+    errors = exc.errors(include_input=False, include_context=False, include_url=False)
+    first = errors[0]
+    where = ".".join(str(part) for part in first["loc"]) or "the document"
+    count = f"{len(errors)} problems" if len(errors) > 1 else "1 problem"
+    return f"{count}, the first at {where}: {first['msg']}"
 
 
 def benchmark_data_root() -> Path:
     """The root every benchmark's data directory hangs off.
 
-    ``$SPECTRAGENT_BENCHMARK_DATA`` wins over the in-package default so a
-    single environment variable relocates *every* loader in a run. Read on
-    each call rather than captured at import: a module-level snapshot would
-    be global state, and tests that relocate the root would need a reload.
+    ``$SPECTRAGENT_BENCHMARK_DATA`` when set, so a single environment
+    variable relocates *every* loader in a run; otherwise the shared cache,
+    ``$XDG_CACHE_HOME/spectragent/benchmarks`` (``~/.cache/spectragent/benchmarks``
+    when that is unset too), where ``spectragent benchmark fetch`` and
+    ``spectragent benchmark setup`` write. Read on each call rather than
+    captured at import: a module-level snapshot would be global state, and
+    tests that relocate the root would need a reload.
     """
     override = os.environ.get(BENCHMARK_DATA_ENV)
     if override:
         return Path(override).expanduser()
-    return BENCHMARK_DATA_ROOT
+    cache = os.environ.get("XDG_CACHE_HOME")
+    base = Path(cache).expanduser() if cache else Path.home() / ".cache"
+    return base.joinpath(*_CACHE_SUBDIR)
+
+
+#: The file beside a benchmark's data naming its version, written last by
+#: ``spectragent benchmark fetch`` (``docs/architecture_design.md`` §4.10.1 "数据").
+DATA_VERSION_FILE = "data_version.json"
+
+
+def read_data_version(directory: Path) -> DataVersion | None:
+    """The version of the data in *directory*, as a fetch recorded it; ``None`` when none did.
+
+    Raises:
+        BenchmarkDataError: The record is there and cannot be read or is not one.
+    """
+    path = directory / DATA_VERSION_FILE
+    try:
+        return DataVersion.model_validate_json(path.read_bytes())
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise BenchmarkDataError(f"cannot read the data version {path}: {exc}") from exc
+    except ValidationError as exc:
+        raise BenchmarkDataError(
+            f"{path} is not a data version record ({validation_summary(exc)})"
+        ) from None
+
+
+def write_data_version(directory: Path, version: DataVersion) -> None:
+    """Record *version* as the version of the data in *directory*, atomically."""
+    path = directory / DATA_VERSION_FILE
+    partial = path.with_name(f".{path.name}.partial")
+    partial.write_text(version.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    os.replace(partial, path)
 
 
 def resolve_data_dir(env_type: str, registry_key: str, data_dir: str | None) -> Path:

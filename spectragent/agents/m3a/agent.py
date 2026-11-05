@@ -93,11 +93,20 @@ least 2 (:meth:`M3AAgent.check_run_settings`); ``answer`` and ``status`` are
 action it can take, so a run must offer them all
 (:meth:`M3AAgent.check_action_space`).
 
-M3A runs on the ``react`` Loop only: a branch replays recorded decisions
-through the prompt builder, and M3A's history lines come from summary calls a
-replay does not make. It is not a training-export student either (no
-``format_react_output``): the export renders a student's prompts offline,
-where no summary model is called. ``parse_react_thought`` reads its reason.
+**A branch reuses the source's summaries** (user ruling 2026-11-04, §4.1
+"M3A"). On the ``branch`` Loop with ``history_source: source``, rebuilding the
+source's history makes no model call: where M3A would call its summary model
+(each replayed step, and the first policy step's line about the step before
+the checkpoint), it takes the summary the source recorded
+(``ReactPromptContext.source_helper_replies``, purpose ``step_summary``), so
+its rebuilt prompts are the source's. A source step with no such summary is
+refused (``IncompatibleCheckpointError``). From the step after the
+checkpoint on, the summary is called live. ``history_source: restored`` is
+refused: M3A has no ``build_restored_history``, and a restored step's line
+would need a summary of a screen the source never summarized. It is not a
+training-export student (no ``format_react_output``): the export renders a
+student's prompts offline, where no summary model is called.
+``parse_react_thought`` reads its reason.
 """
 
 from __future__ import annotations
@@ -126,6 +135,7 @@ from spectragent.core.llm.messages import (
     UserMessage,
 )
 from spectragent.core.loops.limits import ExecutionLimits
+from spectragent.core.loops.validation import IncompatibleCheckpointError
 from spectragent.schemas.action import Action
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.observation.fragments import HistoryObs, TaskObs
@@ -213,7 +223,7 @@ class M3AAgent(AgentBase):
     )
 
     __wiring__: ClassVar[dict[str, Any]] = {
-        "agent_loop": ("agent_loop", ["react"]),
+        "agent_loop": ("agent_loop", ["react", "branch"]),
         "observation": {
             "registry": "observation",
             "keys": ["screenshot", "ui_tree", "task", "history"],
@@ -246,6 +256,21 @@ class M3AAgent(AgentBase):
             "cut_off_reply": "read_as_is",
         },
         "memory": {"memory_id": "sliding_window", "window_size": 1},
+        # AndroidWorld's runner runs M3A on ``Gpt4Wrapper`` (``run.py``, agent
+        # ``m3a_gpt4v``), which sends temperature 0.0 and no penalty:
+        # https://github.com/google-research/android_world/blob/55ddaf5edc6f6c25673aed343907d5b9dca66f84/android_world/agents/infer.py#L261
+        # and #L290-L300. No provider named: the template writes it into
+        # whichever model block it chooses.
+        "llm": {"temperature": 0.0},
+    }
+    #: Where a new ``config template`` starts the Android block: M3A sleeps 2 s
+    #: after every action before it reads the screen again
+    #: (``wait_after_action_seconds``,
+    #: https://github.com/google-research/android_world/blob/55ddaf5edc6f6c25673aed343907d5b9dca66f84/android_world/agents/m3a.py#L342 and #L540). M3A's own habit,
+    #: not the benchmark's: AndroidWorld's runner settings for every agent
+    #: come from ``configs/benchmarks/androidworld.yaml``.
+    __template_capabilities__: ClassVar[Mapping[str, Mapping[str, JsonValue]]] = {
+        "android": {"settle_min_after_action_ms": 2000}
     }
 
     # ── config ─────────────────────────────────────────────────
@@ -375,7 +400,9 @@ class M3AAgent(AgentBase):
         screen, marked = _screen(observation, context.step)
         goal = observation.task.user_request
         if observation.history.items:
-            line = await self._history_line(observation.history.items[-1], screen, marked, goal)
+            line = await self._history_line(
+                observation.history.items[-1], screen, marked, goal, context
+            )
             self._history.append(line)
         self._before = screen
         history = "\n".join(f"Step {n}- {line}" for n, line in enumerate(self._history, 1))
@@ -423,9 +450,19 @@ class M3AAgent(AgentBase):
     # ── The history ────────────────────────────────────────────
 
     async def _history_line(
-        self, record: StepRecord, after: _Screen, after_marked: Image.Image, goal: str
+        self,
+        record: StepRecord,
+        after: _Screen,
+        after_marked: Image.Image,
+        goal: str,
+        context: ReactPromptContext,
     ) -> str:
-        """M3A's history line for the step *record* recorded, whose result *after* shows."""
+        """M3A's history line for the step *record* recorded, whose result *after* shows.
+
+        Its summary is the source's recorded one where *context* hands the
+        source's helper replies over (a branch rebuilding its source's
+        history), else the summary call's.
+        """
         if record.error_phase == "parse":
             return record.error or NOT_IN_FORMAT
         before = self._before
@@ -440,9 +477,12 @@ class M3AAgent(AgentBase):
         if failed is not None:
             why = f": {failed.error}" if failed.error else "."
             return f"Action selected: {reply.action}. The action failed{why}"
-        summary = await self._summarize(
-            goal, reply.action, reply.reason, before, after, after_marked
-        )
+        if context.source_helper_replies is not None:
+            summary = _recorded_summary(context, record.step)
+        else:
+            summary = await self._summarize(
+                goal, reply.action, reply.reason, before, after, after_marked
+            )
         return f"Action selected: {reply.action}. {summary}"
 
     async def _summarize(
@@ -490,6 +530,26 @@ class M3AAgent(AgentBase):
             except ModelOutputTruncatedError as exc:
                 return exc.partial_output or ""
         return completion.completion
+
+
+def _recorded_summary(context: ReactPromptContext, summarized: int) -> str:
+    """The summary of step *summarized* the source wrote while it built step ``context.step``.
+
+    Raises:
+        IncompatibleCheckpointError: The source recorded no such summary, or
+            more than one: a branch makes no model call to write it again.
+    """
+    replies = (context.source_helper_replies or {}).get(SUMMARY_PURPOSE, ())
+    if len(replies) != 1:
+        raise IncompatibleCheckpointError(
+            context.source_run_id or "the source run",
+            [
+                f"step {context.step} recorded {len(replies)} {SUMMARY_PURPOSE} replies; M3A's "
+                f"history line of step {summarized} is the one summary the source wrote, and "
+                "rebuilding the source's history makes no model call to write it again"
+            ],
+        )
+    return replies[0]
 
 
 def _screen(observation: M3AObservation, step: int) -> tuple[_Screen, Image.Image]:

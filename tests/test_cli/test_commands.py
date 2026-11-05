@@ -392,10 +392,16 @@ def _androidworld_m3a_config(tmp_path, monkeypatch, **loop) -> Path:
     import sys
 
     from tests._helpers.android_device import fake_service_apk
-    from tests._helpers.benchmark_data import androidworld_data
+    from tests._helpers.benchmark_data import androidworld_data, androidworld_task
     from tests._helpers.fake_androidworld import fake_installation
 
-    data = androidworld_data(tmp_path / "data" / "android" / "androidworld")
+    click = androidworld_task(
+        "click-button",
+        family="miniwob",
+        goal="Follow the instructions shown on the top of the screen.",
+        goal_at_initialize="made",
+    )
+    data = androidworld_data(tmp_path / "data" / "android" / "androidworld", miniwob=[click])
     fake_installation(data / "installation", monkeypatch)
     monkeypatch.setenv("SPECTRAGENT_BENCHMARK_DATA", str(tmp_path / "data"))
     # The emulator's gRPC token was measured on macOS only (``local_emulator``).
@@ -404,7 +410,7 @@ def _androidworld_m3a_config(tmp_path, monkeypatch, **loop) -> Path:
         "capability_id": "android",
         "service_apk": str(fake_service_apk(tmp_path)),
         "tap_injector": {"injector_id": "shell_injection"},
-        "typing_backend": {"typing_id": "set_text"},
+        # No typing_backend: the benchmark supplies AndroidWorld's (key_events).
         "ui_tree_cleaner": {"cleaner_id": "androidworld"},
         "ui_tree_serializer": {"serializer_id": "m3a"},
     }
@@ -451,8 +457,46 @@ def test_config_check_with_androidworld_alone_merges_its_part_and_checks_without
     explained = json.loads(capsys.readouterr().out)
     (block,) = explained["resolved"]["environment"][0]["capabilities"]
     assert block["backend"]["avd"] == "AndroidWorldAvd"
+    assert (block["typing_backend"]["typing_id"], block["settle_max_wait_s"]) == ("key_events", 6.0)
     (open_app,) = [a for a in block["actions"] if a["action_id"] == "android.open_app"]
     assert open_app["apps"] == ANDROIDWORLD_APPS
+
+
+@pytest.mark.parametrize("command", [["config", "check"], ["run", "--dry-run", "--config"]])
+def test_a_loaders_refusal_reaches_the_user_in_its_own_short_words(
+    tmp_path, capsys, monkeypatch, command
+):
+    """A task list of an older format is refused by the loader's constructor; ``config check`` and
+    ``run --dry-run`` both show that refusal itself, in one line naming the file and the command
+    that writes it again, not a placeholder or pydantic's dump of every task."""
+    config = _androidworld_m3a_config(tmp_path, monkeypatch)
+    listing = tmp_path / "data" / "android" / "androidworld" / "All.json"
+    old = json.loads(listing.read_text())
+    old["format"] = "androidworld-tasks-1"
+    old["tasks"] = old["tasks"] * 40
+    listing.write_text(json.dumps(old))
+    task = ["--task-id", "SystemBrightnessMax/42/0"]
+
+    argv = ["--json", *command, str(config), "--benchmark", "androidworld", *task]
+    assert main(argv) == 2
+    error = json.loads(capsys.readouterr().out)["error"]
+    message = error["message"]
+    assert f"{listing} is not an AndroidWorld task list of format androidworld-tasks-2" in message
+    assert "spectragent benchmark fetch androidworld" in message
+    assert "\n" not in message and len(message) < 500
+    if command[0] == "config":
+        assert error["issues"][0]["code"] == "component_refused"
+
+
+@pytest.mark.parametrize(("subset", "wait"), [(None, 6.0), ("All", 6.0), ("miniwob", 2.0)])
+def test_the_still_screen_wait_follows_the_subset_run(tmp_path, capsys, monkeypatch, subset, wait):
+    """``--subset`` reaches the benchmark block before it is composed, so the wait AndroidWorld's
+    runner gives that subset is the one merged: 6 s, and 2 s for MiniWoB++ tasks."""
+    config = _androidworld_m3a_config(tmp_path, monkeypatch)
+    argv = ["--json", "config", "explain", str(config), "--benchmark", "androidworld"]
+    assert main([*argv, *(["--subset", subset] if subset else [])]) == 0
+    (block,) = json.loads(capsys.readouterr().out)["resolved"]["environment"][0]["capabilities"]
+    assert (block["settle_max_wait_s"], block["settle_quiet_ms"]) == (wait, 300)
 
 
 def test_config_check_refuses_a_loop_m3a_cannot_run_on(tmp_path, capsys, monkeypatch):
@@ -578,3 +622,58 @@ async def test_agent_done_and_incomplete_recording_remain_separate(tmp_path, mon
     assert report["recording"]["status"] == "incomplete"
     assert report["recording"]["complete_through"] == -1
     assert report["verdicts"] == []
+
+
+def test_benchmark_fetch_writes_the_pinned_data_and_says_which_version(
+    tmp_path, capsys, monkeypatch
+):
+    """``spectragent benchmark fetch`` (``docs/architecture_design.md`` §4.10.1 "数据"):
+    BrowseComp's file, stood in for, into the shared cache."""
+    from spectragent.benchmarks.browsecomp import data as browsecomp_data
+
+    def download(url, sha256, target, say):
+        say(f"downloading {url}")
+        target.write_text("problem,answer,problem_topic,canary\nq,a,Art,c\n")
+        return target
+
+    monkeypatch.setattr(browsecomp_data, "download_file", download)
+    monkeypatch.setenv("SPECTRAGENT_BENCHMARK_DATA", str(tmp_path))
+
+    assert main(["--json", "benchmark", "fetch", "browsecomp"]) == 0
+    captured = capsys.readouterr()
+    fetched = json.loads(captured.out)
+    assert fetched["directory"] == str(tmp_path / "browser" / "browsecomp")
+    assert fetched["data_version"] == browsecomp_data.DATA.model_dump(mode="json")
+    assert "downloading https://openaipublic" in captured.err
+
+    # Now there, the run commands read it.
+    argv = ["--json", "config", "check", "configs/browser_use_local.yaml"]
+    assert main([*argv, "--benchmark", "browsecomp"]) == 0
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["config", "check", "configs/browser_use_local.yaml", "--benchmark", "browsecomp"],
+        ["bench", "--config", "configs/browser_use_local.yaml", "--benchmark", "browsecomp"],
+        ["run", "--config", "configs/browser_use_local.yaml", "--benchmark", "browsecomp"]
+        + ["--task-id", "browsecomp_000", "--dry-run"],
+    ],
+)
+def test_missing_benchmark_data_is_refused_naming_the_fetch_command(
+    tmp_path, capsys, monkeypatch, argv
+):
+    monkeypatch.setenv("SPECTRAGENT_BENCHMARK_DATA", str(tmp_path))
+    assert main(["--json", *argv]) == 2
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["message"] == (
+        f"there is no browsecomp data at {tmp_path / 'browser' / 'browsecomp'}: fetch it with "
+        f"`spectragent benchmark fetch browsecomp` (run and bench fetch it first when given "
+        f"--fetch)"
+    )
+    assert not (tmp_path / "browser" / "browsecomp").exists(), "nothing was downloaded"
+
+
+def test_fetch_goes_with_a_benchmark(capsys):
+    assert main(["run", "--config", "configs/browser_use_local.yaml", "--fetch", "--dry-run"]) == 2
+    assert "--fetch fetches a benchmark's data" in capsys.readouterr().err

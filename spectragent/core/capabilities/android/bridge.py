@@ -4,8 +4,10 @@
 contracts as Protocols, and the layers below are their implementations. The
 capability reaches a device only through :class:`DeviceBridge`: the screen
 (:class:`ScreenCapture`), input (:class:`InputInjection`), the foreground app
-(:class:`ForegroundApps`), launching apps (:class:`AppLauncher`) and the
-device's measured facts (:class:`DeviceFacts`).
+(:class:`ForegroundApps`), launching apps (:class:`AppLauncher`), the
+device's measured facts (:class:`DeviceFacts`), its wall clock
+(:class:`DeviceClock`) and the settings a run changes and puts back
+(:class:`DeviceSettings`).
 
 Two sides implement them.
 
@@ -19,11 +21,13 @@ Two sides implement them.
   so a service channel it replaced (``ensure_bound``) is the one used next.
 - **adb's own commands**, for what the window manager, the package manager and
   the settings report, and for starting apps (:class:`AdbQueries`):
-  ``dumpsys``, ``pm``, ``cmd package``, ``am``, ``wm``, ``getprop`` and
-  ``settings``, each one ``shell,v2`` round trip over the host transport
+  ``dumpsys``, ``pm``, ``cmd package``, ``am``, ``wm``, ``getprop``,
+  ``settings``, ``date`` and ``cmd alarm``, each one ``shell,v2`` round trip over the host transport
   (``adb.py``). Medians measured on the emulator (API 33, 2026-11-01):
   ``dumpsys window`` 18 ms, ``getprop`` 8 ms, ``dumpsys input_method`` about
-  0.1 s (550 KB, most of it the keyboard's own state). The device side replaced
+  0.1 s (550 KB, most of it the keyboard's own state); ``date +%s%3N`` 12-27 ms
+  and ``cmd alarm set-time`` 14-34 ms, as the shell user, no root (2026-11-04,
+  toybox 0.8.6). The device side replaced
   ``screencap`` (about 0.7 s, against 0.12 s from the helper) and ``input``;
   ``uiautomator dump`` is never run here: it unbinds every accessibility
   service while it runs, ours included.
@@ -39,6 +43,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -84,7 +89,18 @@ _IME_INPUT_TARGET = re.compile(
 _SERVED_CONNECTION = re.compile(
     r"^ +mServedInputConnection(?:Wrapper)?=(?P<connection>\S+)", re.MULTILINE
 )
+#: ``StartInput #5:``, one record of the input method's history of starting input
+#: (``mStartInputHistory``), oldest first: the number goes up by one each time the input
+#: method starts or restarts input for the view with focus (measured on API 33).
+_START_INPUT = re.compile(r"^ +StartInput #(?P<number>\d+):$", re.MULTILINE)
 _FRAMES = re.compile(r"Total frames rendered: (?P<frames>\d+)")
+#: The global settings that scale every animation's duration, as AndroidWorld's
+#: Docker image sets them to 0 (``docker_setup/start_emu_headless.sh``).
+ANIMATION_SCALES = (
+    "window_animation_scale",
+    "transition_animation_scale",
+    "animator_duration_scale",
+)
 _SIZE = re.compile(r"(?P<kind>Physical|Override) size: (?P<width>\d+)x(?P<height>\d+)")
 
 
@@ -120,10 +136,14 @@ class TextFocus:
             method serves the window, and the view with focus in it holds an
             input connection. ``False`` when no window has focus; ``None``
             when the device did not say.
+        input_started: The number of the input method's latest start of
+            input (``StartInput #N``), which changes when it starts input for
+            another field; ``None`` when its report lists none.
     """
 
     window: str | None
     text_field: bool | None
+    input_started: int | None = None
 
 
 @runtime_checkable
@@ -225,6 +245,32 @@ class DeviceFacts(Protocol):
     async def input_method(self) -> str | None: ...
 
 
+@runtime_checkable
+class DeviceClock(Protocol):
+    """The device's wall clock: read with every capture, set when a restored observation is aligned."""
+
+    async def now_ms(self) -> int:
+        """The device's wall clock, in ms since the epoch."""
+        ...
+
+    async def set_ms(self, epoch_ms: int) -> None:
+        """Set the device's wall clock to *epoch_ms*, ms since the epoch."""
+        ...
+
+
+@runtime_checkable
+class DeviceSettings(Protocol):
+    """The global settings a run changes for itself and puts back: the animation scales."""
+
+    async def animation_scales(self) -> dict[str, str | None]:
+        """Each of :data:`ANIMATION_SCALES` as the device holds it; ``None``: not set."""
+        ...
+
+    async def put_animation_scales(self, values: Mapping[str, str | None]) -> None:
+        """Write each scale of *values*; ``None`` deletes it, as it was before anything set it."""
+        ...
+
+
 @dataclass(frozen=True)
 class DeviceBridge:
     """Everything the capability asks of one device, one implementation per role."""
@@ -234,6 +280,8 @@ class DeviceBridge:
     apps: ForegroundApps
     launcher: AppLauncher
     facts: DeviceFacts
+    clock: DeviceClock
+    settings: DeviceSettings
 
 
 @dataclass(frozen=True)
@@ -359,6 +407,33 @@ class AdbQueries:
         value = result.stdout.decode().strip()
         return value if result.exit_code == 0 and value not in ("", "null") else None
 
+    async def now_ms(self) -> int:
+        reported = (await self._check("date +%s%3N")).decode(errors="replace").strip()
+        if not reported.isdigit():
+            raise BridgeError(f"date reported no time in ms: {reported!r}")
+        return int(reported)
+
+    async def set_ms(self, epoch_ms: int) -> None:
+        if epoch_ms < 0:
+            raise ValueError(f"not a time since the epoch: {epoch_ms}")
+        await self._check(f"cmd alarm set-time {int(epoch_ms)}")
+
+    async def animation_scales(self) -> dict[str, str | None]:
+        scales: dict[str, str | None] = {}
+        for setting in ANIMATION_SCALES:
+            value = (await self._check(f"settings get global {setting}")).decode().strip()
+            scales[setting] = None if value in ("", "null") else value
+        return scales
+
+    async def put_animation_scales(self, values: Mapping[str, str | None]) -> None:
+        for setting, value in values.items():
+            if setting not in ANIMATION_SCALES:
+                raise ValueError(f"not an animation scale: {setting!r}")
+            if value is None:
+                await self._check(f"settings delete global {setting}")
+            else:
+                await self._check(f"settings put global {setting} {shlex.quote(value)}")
+
     async def _run(self, command: str) -> ShellResult:
         return await self._client.shell(self._serial, command)
 
@@ -406,20 +481,30 @@ def parse_text_focus(windows: str, methods: str) -> TextFocus:
     window manager's names no window the input method serves while there is a
     connection. No connection is an answer without the window: no field of the
     input method's client takes the text.
+
+    ``input_started`` is the last ``StartInput #N`` of the input method's own
+    part of its report, which comes before its client's and is there when the
+    client does not answer.
     """
+    records = _START_INPUT.findall(methods)
+    started = int(records[-1]) if records else None
     focus = _CURRENT_FOCUS.search(windows)
     if focus is None:
-        return TextFocus(window=None, text_field=False)
+        return TextFocus(window=None, text_field=False, input_started=started)
     window = focus["title"]
     served = _SERVED_CONNECTION.search(methods)
     if served is None:
-        return TextFocus(window=window, text_field=None)
+        return TextFocus(window=window, text_field=None, input_started=started)
     if served["connection"] == "null":
-        return TextFocus(window=window, text_field=False)
+        return TextFocus(window=window, text_field=False, input_started=started)
     target = _IME_INPUT_TARGET.search(windows)
     if target is None:
-        return TextFocus(window=window, text_field=None)
-    return TextFocus(window=window, text_field=target["window"] == focus["window"])
+        return TextFocus(window=window, text_field=None, input_started=started)
+    return TextFocus(
+        window=window,
+        text_field=target["window"] == focus["window"],
+        input_started=started,
+    )
 
 
 def _package(package: str) -> str:

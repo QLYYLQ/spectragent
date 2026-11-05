@@ -63,20 +63,34 @@ def androidworld_task(
     }
 
 
-def androidworld_data(directory: Path, tasks: Sequence[Mapping[str, object]] = ()) -> Path:
-    """AndroidWorld's data in *directory*, as ``task_list.py`` writes it: the tasks, and the app table.
+def androidworld_data(
+    directory: Path,
+    tasks: Sequence[Mapping[str, object]] = (),
+    miniwob: Sequence[Mapping[str, object]] = (),
+) -> Path:
+    """AndroidWorld's data in *directory*, as its fetch writes it: the tasks, the app table, the version.
 
     *tasks* (``SystemBrightnessMax`` alone when none are given) form the subset
-    ``All``; ``open_app.json`` holds :data:`ANDROIDWORLD_APPS`.
+    ``All``, and *miniwob*, when given, the subset ``miniwob``; ``open_app.json``
+    holds :data:`ANDROIDWORLD_APPS`; ``data_version.json`` names the pinned
+    commit, as ``spectragent benchmark fetch androidworld`` records it.
     """
+    from spectragent.benchmarks.androidworld.data import DATA
     from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FILE, OPEN_APP_FORMAT
     from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
     from spectragent.benchmarks.androidworld.tasks import TASK_LIST_FORMAT
+    from spectragent.core.data_loader._common import write_data_version
 
     directory.mkdir(parents=True, exist_ok=True)
     listed = list(tasks) or [androidworld_task(params={"max_or_min": "max"})]
     (directory / "All.json").write_text(json.dumps({"format": TASK_LIST_FORMAT, "tasks": listed}))
-    (directory / "data_info.json").write_text(json.dumps({"split": {"All": "All.json"}}))
+    split = {"All": "All.json"}
+    if miniwob:
+        payload = {"format": TASK_LIST_FORMAT, "tasks": list(miniwob)}
+        (directory / "miniwob.json").write_text(json.dumps(payload))
+        split["miniwob"] = "miniwob.json"
+    (directory / "data_info.json").write_text(json.dumps({"split": split}))
     table = {"format": OPEN_APP_FORMAT, "commit": PINNED_COMMIT, "apps": ANDROIDWORLD_APPS}
     (directory / OPEN_APP_FILE).write_text(json.dumps(table))
+    write_data_version(directory, DATA)
     return directory

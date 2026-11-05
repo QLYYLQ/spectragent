@@ -27,7 +27,7 @@ from spectragent.benchmarks.androidworld.tasks import instance_seed
 from spectragent.benchmarks.selection import BenchmarkSelectionError, read_benchmark, run_root
 from spectragent.cli import main
 from spectragent.cli.config_templates import TemplateChoices, render_config_template
-from spectragent.core.composer import ConfigComposer, UnresolvedWiringError
+from spectragent.core.composer import ComposeError, ConfigComposer, UnresolvedWiringError
 from spectragent.core.registries import (
     TemplateFlag,
     capability_declarations,
@@ -520,12 +520,258 @@ def test_an_agents_declared_loop_stands_where_its_wiring_refuses_the_frameworks(
     assert raw["agent"][0]["agent_loop"]["loop_id"] == "second_react"
 
 
-def test_an_agent_without_declared_values_starts_from_the_frameworks_choices(composer):
-    assert BrowserUseDomAgent.__template_block__ == {}
+def test_a_receptor_the_agent_declares_nothing_for_starts_from_the_frameworks_choice(composer):
+    assert "memory" not in BrowserUseDomAgent.__template_block__
     raw = yaml.safe_load(render_config_template(TemplateChoices(model="m"), composer=composer))
     agent = raw["agent"][0]
     assert agent["agent_loop"]["loop_id"] == "react"
     assert agent["memory"]["memory_id"] == "simple"
+    assert (agent["llm"]["model_type"], agent["llm"]["provider"]["name"]) == ("openai", "direct")
+
+
+# ── every agent: its upstream settings (user ruling 2026-11-04) ──────
+
+#: Each agent's official starting values, as its upstream project sets them;
+#: the citations are on each ``__template_block__``.
+OFFICIAL = [
+    # browser-use 6e2add1c: ChatOpenAI 0.2 / 0.3 (browser_use/llm/openai/chat.py:37-38),
+    # AgentSettings.max_actions_per_step 5 (agent/views.py:70), Agent.run max_steps 500
+    # (agent/service.py:2468).
+    (
+        "browser_use.dom",
+        None,
+        {"temperature": 0.2, "frequency_penalty": 0.3},
+        {"max_actions_per_step": 5, "max_steps": 500},
+    ),
+    (
+        "browser_use.dom_vision",
+        None,
+        {"temperature": 0.2, "frequency_penalty": 0.3},
+        {"max_actions_per_step": 5, "max_steps": 500},
+    ),
+    # Skyvern bd68e1af: LLM_CONFIG_TEMPERATURE 0 (skyvern/config.py:196), no penalty;
+    # MAX_STEPS_PER_RUN 10 (skyvern/config.py:58).
+    ("skyvern.dom", None, {"temperature": 0.0, "frequency_penalty": None}, {"max_steps": 10}),
+    (
+        "skyvern.dom_vision",
+        None,
+        {"temperature": 0.0, "frequency_penalty": None},
+        {"max_steps": 10},
+    ),
+    # UI-TARS 582f3a7e: temperature 0.0, frequency_penalty None (README_deploy.md:99-105);
+    # one action a step (codes/ui_tars/prompt.py:3-9).
+    (
+        "ui_tars",
+        "browser",
+        {"temperature": 0.0, "frequency_penalty": None},
+        {"max_actions_per_step": 1},
+    ),
+    # AndroidWorld 55ddaf5e: Gpt4Wrapper temperature 0.0, no penalty
+    # (android_world/agents/infer.py:261, 290-300).
+    (
+        "m3a",
+        None,
+        {"temperature": 0.0, "frequency_penalty": None},
+        {"max_actions_per_step": 2, "parse_retries_per_step": 0},
+    ),
+]
+
+
+@pytest.mark.parametrize(("agent_id", "environment", "llm", "loop"), OFFICIAL, ids=lambda v: str(v))
+def test_each_agent_starts_from_its_upstream_settings(composer, agent_id, environment, llm, loop):
+    raw = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent=agent_id, environment=environment, model="m"),
+            composer=composer,
+        )
+    )
+    agent = raw["agent"][0]
+    assert {name: agent["llm"][name] for name in llm} == llm
+    assert {name: agent["agent_loop"][name] for name in loop} == loop
+    composer.compose(raw)
+
+
+@pytest.mark.parametrize(
+    ("llm", "written"),
+    [
+        ("openai.direct", {"temperature": 0.2, "frequency_penalty": 0.3}),
+        ("openai.deepseek", {"temperature": 0.2, "frequency_penalty": 0.3}),
+        # Anthropic and Google have no frequency_penalty; Ollama takes neither.
+        ("anthropic.direct", {"temperature": 0.2}),
+        ("google.default", {"temperature": 0.2}),
+        ("ollama.default", {}),
+    ],
+)
+def test_an_agents_sampling_values_go_into_the_provider_chosen_where_it_has_the_field(
+    composer, llm, written
+):
+    """The values name no provider: each lands only where the chosen provider has the field."""
+    raw = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="browser_use.dom", llm=llm, model="m"), composer=composer
+        )
+    )
+    block = raw["agent"][0]["llm"]
+    fields = set(composer.catalog.components["llm"][llm].config_model.model_fields)
+    for name in {"temperature", "frequency_penalty"} & fields - set(written):
+        assert block[name] is None, name
+    assert {name: block[name] for name in written} == written
+    composer.compose(raw)
+
+
+# ── an agent's start for its capability blocks (user ruling 2026-11-04) ──
+
+
+@pytest.mark.parametrize("agent_id", ["skyvern.dom", "skyvern.dom_vision"])
+def test_skyvern_starts_the_browser_block_reading_the_page_as_skyvern_does(composer, agent_id):
+    """Skyvern's own DOM extraction printed as HTML, not the browser package's BrowserUse/text."""
+    raw = yaml.safe_load(
+        render_config_template(TemplateChoices(agent=agent_id, model="m"), composer=composer)
+    )
+    browser = _browser(raw)
+    assert browser["dom_cleaner"]["cleaner_type"] == "skyvern"
+    assert browser["dom_serializer"]["serializer_type"] == "html"
+    run = composer.compose(raw)
+    assert run.single("capability").dom_cleaner.cleaner_type == "skyvern"
+
+
+def test_browser_use_starts_the_page_text_limit_where_browser_use_cuts_it(composer):
+    """browser-use's max_clickable_elements_length, 40000 (agent/views.py:91)."""
+    raw = yaml.safe_load(render_config_template(TemplateChoices(model="m"), composer=composer))
+    assert _browser(raw)["dom_max_serialized_chars"] == 40000
+    ui_tars = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="ui_tars", environment="browser", model="m"), composer=composer
+        )
+    )
+    assert _browser(ui_tars)["dom_max_serialized_chars"] == "unlimited", "only BrowserUse's"
+
+
+@pytest.mark.parametrize(
+    ("flag", "receptor", "field_name", "key"),
+    [
+        ("--dom-cleaner", "dom_cleaner", "cleaner_type", "browser_use"),
+        ("--dom-serializer", "dom_serializer", "serializer_type", "text"),
+    ],
+)
+def test_a_template_flag_overrides_the_agents_capability_start(
+    composer, flag, receptor, field_name, key
+):
+    raw = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="skyvern.dom", model="m", capability_flags={flag: key}),
+            composer=composer,
+        )
+    )
+    assert _browser(raw)[receptor][field_name] == key
+    # Mixing stays a valid run: Skyvern on another reading of the page is refused nowhere.
+    AgentRuntime.for_agent(composer.compose(raw), "main").prepare()
+
+
+def test_a_flag_picks_the_skeletons_receptor_and_keeps_its_knobs_when_it_names_the_same(composer):
+    """The flag comes first: it replaces the skeleton's implementation, or keeps its knobs."""
+    source = yaml.safe_load(Path("configs/skyvern_agent_local.yaml").read_text())
+    _browser(source)["dom_cleaner"]["max_text_length"] = 777
+
+    def cleaner(key: str) -> dict[str, Any]:
+        choices = TemplateChoices(capability_flags={"--dom-cleaner": key})
+        return _browser(yaml.safe_load(render_config_template(choices, source, composer=composer)))[
+            "dom_cleaner"
+        ]
+
+    replaced = cleaner("browser_use")
+    assert replaced["cleaner_type"] == "browser_use" and "max_text_length" not in replaced
+    kept = cleaner("skyvern")
+    assert (kept["cleaner_type"], kept["max_text_length"]) == ("skyvern", 777)
+
+
+def test_a_flag_against_a_setting_the_benchmark_supplies_is_refused(
+    composer, tmp_path, monkeypatch
+):
+    """A flag never overrides the benchmark: naming another implementation is a conflict."""
+    from spectragent.core.capabilities.android import declarations
+
+    flag = TemplateFlag("--typing-backend", "typing_backend", "Android typing backend.")
+    monkeypatch.setattr(declarations, "TEMPLATE_FLAGS", (flag,))
+    benchmark = str(_shipped_androidworld(tmp_path))
+
+    def template(key: str) -> str:
+        choices = TemplateChoices(
+            agent="m3a", model="m", benchmark=benchmark, capability_flags={flag.flag: key}
+        )
+        return render_config_template(choices, composer=composer)
+
+    with pytest.raises(ComposeError, match="typing_id"):
+        template("set_text")
+    # The benchmark's own implementation agrees with it: its other settings still come from it.
+    agreed = template("key_events")
+    assert _android(yaml.safe_load(agreed))["typing_backend"]["typing_id"] == "key_events"
+    assert "# typing_backend.fold_accents: true, from the benchmark androidworld" in agreed
+
+
+def test_a_skeletons_capability_values_win_over_the_new_agents_start(composer):
+    source = yaml.safe_load(Path("configs/browser_use_local.yaml").read_text())
+    expanded = yaml.safe_load(
+        render_config_template(TemplateChoices(agent="skyvern.dom"), source, composer=composer)
+    )
+    browser = _browser(expanded)
+    assert browser["dom_cleaner"]["cleaner_type"] == _browser(source)["dom_cleaner"]["cleaner_type"]
+    assert browser["dom_serializer"]["serializer_type"] == "text"
+
+
+def test_what_the_benchmark_supplies_wins_over_the_agents_capability_start(composer, tmp_path):
+    benchmark = _androidworld(tmp_path)
+    document = yaml.safe_load(benchmark.read_text())
+    document["benchmark"][0]["capability"][0]["settle_min_after_action_ms"] = 1500
+    benchmark.write_text(yaml.safe_dump(document))
+    text = render_config_template(
+        TemplateChoices(agent="m3a", model="m", benchmark=str(benchmark)), composer=composer
+    )
+    raw = yaml.safe_load(text)
+    assert "settle_min_after_action_ms" not in _android(raw)
+    assert "# settle_min_after_action_ms: 1500, from the benchmark androidworld" in text
+    capability = composer.compose(run_root(raw, read_benchmark(str(benchmark)))).single(
+        "capability"
+    )
+    assert capability.settle_min_after_action_ms == 1500
+
+
+def test_an_agents_start_for_a_capability_the_run_lacks_is_not_used(composer, monkeypatch):
+    from spectragent.agents.ui_tars.agent import UITarsAgent
+
+    monkeypatch.setattr(
+        UITarsAgent,
+        "__template_capabilities__",
+        {"android": {"settle_min_after_action_ms": 2000}},
+    )
+    browser = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="ui_tars", environment="browser", model="m"), composer=composer
+        )
+    )
+    assert [block["capability_id"] for block in browser["environment"][0]["capabilities"]] == [
+        "browser"
+    ]
+    composer.compose(browser)
+    android = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="ui_tars", environment="android", model="m"), composer=composer
+        )
+    )
+    assert _android(android)["settle_min_after_action_ms"] == 2000
+
+
+def test_changing_the_model_provider_of_a_skeleton_keeps_the_agents_sampling_values(composer):
+    source = yaml.safe_load(
+        render_config_template(TemplateChoices(agent="m3a", model="m"), composer=composer)
+    )
+    expanded = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(llm="anthropic.direct", model="claude"), source, composer=composer
+        )
+    )
+    llm = expanded["agent"][0]["llm"]
+    assert (llm["model_type"], llm["temperature"]) == ("anthropic", 0.0)
 
 
 def test_every_environment_starts_from_its_capabilities_declared_blocks(composer):
@@ -582,6 +828,8 @@ def test_changing_environment_and_agent_restarts_what_the_new_wiring_does_not_ta
     assert agent["llm"]["model"] == "chosen-model", "a receptor the new agent takes is kept"
     # The skeleton's ReAct Loop is M3A's too: its written values win.
     assert agent["agent_loop"]["max_actions_per_step"] == 4
+    # The Android block starts over, from M3A's own value for it.
+    assert environment["capabilities"][0]["settle_min_after_action_ms"] == 2000
 
 
 def test_a_loop_written_without_its_omittable_receptor_is_kept_when_the_agent_changes(composer):
@@ -617,8 +865,8 @@ def test_a_capability_flag_that_shadows_a_framework_flag_is_refused(monkeypatch,
 # ── with a benchmark: what it supplies stays out of the run configuration ──
 
 
-def _androidworld(root: Path) -> Path:
-    """An AndroidWorld benchmark YAML over a small data directory: one task, a two-name table."""
+def _androidworld_data(root: Path) -> Path:
+    """A small AndroidWorld data directory: one task, a two-name table."""
     data = root / "data"
     data.mkdir(parents=True)
     (data / OPEN_APP_FILE).write_text(
@@ -638,6 +886,12 @@ def _androidworld(root: Path) -> Path:
         "start_on_home_screen": True,
     }
     (data / "All.json").write_text(json.dumps({"format": "androidworld-tasks-2", "tasks": [task]}))
+    return data
+
+
+def _androidworld(root: Path) -> Path:
+    """An AndroidWorld benchmark YAML over a small data directory: one task, a two-name table."""
+    data = _androidworld_data(root)
     benchmark = root / "androidworld.yaml"
     block = {
         "benchmark_id": "androidworld",
@@ -652,6 +906,15 @@ def _androidworld(root: Path) -> Path:
         ],
     }
     benchmark.write_text(yaml.safe_dump({"benchmark": [block]}))
+    return benchmark
+
+
+def _shipped_androidworld(root: Path) -> Path:
+    """The shipped ``configs/benchmarks/androidworld.yaml``, its task loader over a small data directory."""
+    shipped = yaml.safe_load(Path("configs/benchmarks/androidworld.yaml").read_text())
+    shipped["benchmark"][0]["task_loader"]["data_dir"] = str(_androidworld_data(root))
+    benchmark = root / "androidworld.yaml"
+    benchmark.write_text(yaml.safe_dump(shipped))
     return benchmark
 
 
@@ -688,6 +951,101 @@ def test_what_the_benchmark_supplies_is_left_out_and_named_where_it_would_sit(co
     assert capability.backend.avd == "AW"
     open_app = next(a for a in capability.actions if a.action_id == "android.open_app")
     assert open_app.apps == TABLE
+
+
+def test_m3a_on_androidworld_writes_its_official_values_and_none_the_benchmark_supplies(
+    composer, tmp_path
+):
+    """AndroidWorld's runner settings come from the benchmark; M3A's own from its start."""
+    benchmark = str(_shipped_androidworld(tmp_path))
+    text = render_config_template(
+        TemplateChoices(agent="m3a", model="m", benchmark=benchmark), composer=composer
+    )
+    raw = yaml.safe_load(text)
+    block = read_benchmark(benchmark)
+    supplied = composer.merge_capability_parts(run_root(raw, block)).supplied
+    # The benchmark's part: AndroidWorld's AVD, its runner's waits, typing and
+    # scroll (configs/benchmarks/androidworld.yaml), and the open_app table.
+    scroll_entry = ("actions", ("action_id", "android.scroll"))
+    assert {setting.path for setting in supplied} >= {
+        ("settle_max_wait_s",),
+        ("typing_backend", "typing_id"),
+        ("typing_backend", "fold_accents"),
+        (*scroll_entry, "swipe_to"),
+        (*scroll_entry, "duration_ms"),
+        ("backend", "avd"),
+    }
+    android = _android(raw)
+    assert not {"settle_max_wait_s", "typing_backend"} & set(android)
+    # The still period stays the capability's own: AndroidWorld's is a different measure.
+    assert android["settle_quiet_ms"] == 300
+    # M3A's own 2 s pause after an action (AndroidWorld's agents/m3a.py:342, 540).
+    assert android["settle_min_after_action_ms"] == 2000
+    scroll = next(a for a in android["actions"] if a["action_id"] == "android.scroll")
+    assert not {"swipe_to", "duration_ms"} & set(scroll)
+    assert (
+        "# settle_max_wait_s: 6.0, from the benchmark androidworld, computed in code; left out here."
+    ) in text
+    assert (
+        "# typing_backend.fold_accents: true, from the benchmark androidworld; left out here."
+    ) in text
+    # M3A's official llm and Loop values (AndroidWorld's Gpt4Wrapper: temperature 0.0).
+    agent = raw["agent"][0]
+    assert (agent["llm"]["temperature"], agent["llm"]["frequency_penalty"]) == (0.0, None)
+    loop = M3AAgent.__template_block__["agent_loop"]
+    assert isinstance(loop, dict)
+    assert {key: agent["agent_loop"][key] for key in loop} == loop
+    # Composed with the benchmark, the run gets AndroidWorld's settings.
+    capability = composer.compose(run_root(raw, block)).single("capability")
+    assert (capability.settle_max_wait_s, capability.settle_quiet_ms) == (6.0, 300)
+    assert capability.settle_min_after_action_ms == 2000
+    assert capability.typing_backend.fold_accents is True
+    scroll = next(a for a in capability.actions if a.action_id == "android.scroll")
+    assert (scroll.swipe_to, scroll.duration_ms) == ("target_edge", 300)
+
+
+def test_a_subset_given_to_the_template_is_the_one_the_benchmark_supplies_for(
+    composer, tmp_path, capsys
+):
+    """``--subset`` reaches the benchmark block as ``run`` writes it: MiniWoB++ waits up to 2 s."""
+    from tests._helpers.benchmark_data import androidworld_data, androidworld_task
+
+    click = androidworld_task(
+        "click-button",
+        family="miniwob",
+        goal="Follow the instructions shown on the top of the screen.",
+        goal_at_initialize="made",
+    )
+    shipped = yaml.safe_load(Path("configs/benchmarks/androidworld.yaml").read_text())
+    data = androidworld_data(tmp_path / "data", miniwob=[click])
+    shipped["benchmark"][0]["task_loader"]["data_dir"] = str(data)
+    benchmark = tmp_path / "androidworld.yaml"
+    benchmark.write_text(yaml.safe_dump(shipped))
+
+    def template(subset: str | None) -> str:
+        choices = TemplateChoices(agent="m3a", model="m", benchmark=str(benchmark), subset=subset)
+        return render_config_template(choices, composer=composer)
+
+    miniwob = template("miniwob")
+    assert "# settle_max_wait_s: 2.0, from the benchmark androidworld, computed in code" in miniwob
+    assert f"--benchmark {benchmark} --subset miniwob" in miniwob
+    assert "# settle_max_wait_s: 6.0, from the benchmark androidworld" in template(None)
+    with pytest.raises(ValueError, match="give --benchmark with it"):
+        render_config_template(TemplateChoices(model="m", subset="miniwob"), composer=composer)
+    assert main(["config", "template", "--model", "m", "--subset", "miniwob", "--json"]) == 2
+    assert "give --benchmark" in json.loads(capsys.readouterr().out)["error"]["message"]
+
+
+def test_a_run_that_writes_a_benchmark_setting_differently_is_refused(composer, tmp_path):
+    benchmark = str(_shipped_androidworld(tmp_path))
+    raw = yaml.safe_load(
+        render_config_template(
+            TemplateChoices(agent="m3a", model="m", benchmark=benchmark), composer=composer
+        )
+    )
+    _android(raw)["settle_max_wait_s"] = 2.0
+    with pytest.raises(ComposeError, match="settle_max_wait_s"):
+        composer.compose(run_root(raw, read_benchmark(benchmark)))
 
 
 def test_from_with_a_benchmark_keeps_the_run_and_the_values_its_author_wrote(composer, tmp_path):

@@ -12,11 +12,14 @@ stack, with a fake AndroidWorld installation and nothing launched:
   the listed one is not;
 - AndroidWorld's live verifier, listed in the benchmark block, is bound to the
   Android capability beside the setup component, and is no part of the
-  configuration the run records.
+  configuration the run records;
+- a branch of such a task is refused in that ``prepare()``, before any device
+  is booted: its goal is drawn anew at every setup (§4.1, §11.2 "MiniWoB++").
 """
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -26,21 +29,46 @@ from pydantic import JsonValue
 from spectragent.benchmarks.androidworld.benchmark import AndroidWorldBenchmark
 from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
 from spectragent.benchmarks.androidworld.setup import AndroidWorldSetup
+from spectragent.benchmarks.androidworld.tasks import TASK_LIST_FORMAT
 from spectragent.benchmarks.androidworld.verifier import AndroidWorldVerifier
+from spectragent.benchmarks.operations import benchmark_of
 from spectragent.core.capabilities.android.actions import AndroidOpenAppAction
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.composer import ComposedRun, ConfigComposer
+from spectragent.core.loops.validation import IncompatibleCheckpointError
 from spectragent.core.runtime import AgentRuntime
+from spectragent.schemas.restoration import Checkpoint
 from tests._helpers.android_device import fake_service_apk
 from tests._helpers.benchmark_data import ANDROIDWORLD_APPS, androidworld_data, androidworld_task
+from tests._helpers.branch_sources import write_source
 from tests._helpers.fake_androidworld import fake_installation
 
 MINIWOB = "click-button/42/0"
 BRIGHTNESS = "SystemBrightnessMax/42/0"
 
 
+M3A: dict[str, JsonValue] = {
+    "agent_id": "m3a",
+    # AndroidWorld's settings, which M3A refuses to run without.
+    "agent_loop": {
+        "loop_id": "react",
+        "max_steps": 120,
+        "max_actions_per_step": 2,
+        "max_consecutive_parse_errors": None,
+    },
+    "llm": {"model_type": "openai", "model": "m", "provider": {"name": "direct"}},
+    "memory": {"memory_id": "sliding_window", "window_size": 1},
+}
+
+
 @pytest.fixture
 def run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ComposedRun:
+    return _composed(tmp_path, monkeypatch, M3A)
+
+
+def _composed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent: dict[str, JsonValue]
+) -> ComposedRun:
     # The emulator's gRPC token was measured on macOS only (``local_emulator``).
     monkeypatch.setattr(sys, "platform", "darwin")
     data = androidworld_data(
@@ -56,20 +84,7 @@ def run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ComposedRun:
         ],
     )
     root: dict[str, JsonValue] = {
-        "agent": [
-            {
-                "agent_id": "m3a",
-                # AndroidWorld's settings, which M3A refuses to run without.
-                "agent_loop": {
-                    "loop_id": "react",
-                    "max_steps": 120,
-                    "max_actions_per_step": 2,
-                    "max_consecutive_parse_errors": None,
-                },
-                "llm": {"model_type": "openai", "model": "m", "provider": {"name": "direct"}},
-                "memory": {"memory_id": "sliding_window", "window_size": 1},
-            }
-        ],
+        "agent": [agent],
         "environment": [
             {
                 "env_type": "android",
@@ -124,6 +139,43 @@ def test_the_benchmark_gives_the_avd_and_the_app_table(run: ComposedRun) -> None
     assert open_app.apps == ANDROIDWORLD_APPS
 
 
+def test_a_subset_with_other_tasks_than_miniwob_waits_up_to_6_s(run: ComposedRun) -> None:
+    """AndroidWorld's runner waits up to 6 s for a still screen (env/interface.py:247); this
+    subset mixes a MiniWoB++ task in, and only an all-MiniWoB++ subset waits less."""
+    capability = run.single("capability")
+    assert isinstance(capability, AndroidCapability)
+    assert capability.settle_max_wait_s == 6.0
+
+
+def test_a_subset_of_miniwob_tasks_waits_up_to_2_s_whatever_its_name(tmp_path: Path) -> None:
+    """Decided by the tasks' family, so a MiniWoB++ subset split under its own name counts too."""
+    data = androidworld_data(tmp_path / "data")
+    click = androidworld_task(
+        "click-button",
+        family="miniwob",
+        goal="Follow the instructions shown on the top of the screen.",
+        goal_at_initialize="made",
+    )
+    (data / "part1.json").write_text(json.dumps({"format": TASK_LIST_FORMAT, "tasks": [click]}))
+    (data / "data_info.json").write_text(
+        json.dumps({"split": {"All": "All.json", "part1": "part1.json"}})
+    )
+
+    def wait(subset: str) -> JsonValue:
+        loader = {"benchmark_name": "androidworld", "data_dir": str(data), "subset": subset}
+        cls, config = benchmark_of(
+            {
+                "benchmark_id": "androidworld",
+                "task_loader": loader,
+                "setup": {"setup_id": "androidworld"},
+            }
+        )
+        (part,) = cls.computed_capability(config)
+        return part["settle_max_wait_s"]
+
+    assert (wait("part1"), wait("All")) == (2.0, 6.0)
+
+
 def test_a_goal_made_on_the_device_is_known_on_the_first_prepare(run: ComposedRun) -> None:
     """The capability answers for the component about to be bound: nothing is bound yet."""
     capability = run.single("capability")
@@ -152,3 +204,34 @@ def test_the_live_verifier_is_bound_beside_the_setup_and_not_recorded(run: Compo
     assert recorded is not None
     (block,) = recorded.model_dump()["benchmark"]
     assert block["verifiers"] is None, "a verifier never changes the run, so it is not recorded"
+
+
+def test_a_branch_of_a_task_whose_goal_setup_makes_is_refused_in_prepare(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A MiniWoB++ goal is drawn on the device at every setup: no branch decides on the source's."""
+    ui_tars: dict[str, JsonValue] = {
+        "agent_id": "ui_tars",
+        "prompt_template": "mobile_use",
+        "coordinate_space": "screenshot_pixels",
+        "agent_loop": {"loop_id": "branch", "max_steps": 5, "max_actions_per_step": 1},
+        "llm": {"model_type": "openai", "model": "m", "provider": {"name": "direct"}},
+        "memory": {"memory_id": "simple", "max_messages": 80},
+    }
+    run = _composed(tmp_path, monkeypatch, ui_tars)
+    source = write_source(tmp_path / "sources", "miniwob-source", benchmark="androidworld")
+    benchmark = run.single("benchmark")
+    assert isinstance(benchmark, AndroidWorldBenchmark)
+    context = benchmark.task_loader.get_task_context(MINIWOB)
+    runtime = AgentRuntime.for_agent(run, run.ids("agent")[0])
+
+    with pytest.raises(IncompatibleCheckpointError) as caught:
+        runtime.prepare(
+            task_id=MINIWOB,
+            env_context=context.env,
+            loop_inputs={"checkpoint": Checkpoint(trace_dir=str(source), step=1)},
+        )
+
+    assert "this run's task text would be completed at setup by capability 'android'" in str(
+        caught.value
+    )
