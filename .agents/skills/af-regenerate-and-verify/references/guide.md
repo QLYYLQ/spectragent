@@ -101,5 +101,7 @@ agent's start the chosen implementation has no field for (M3A's `temperature` on
 With a benchmark, the Loop's `max_steps` carries a comment naming the official step budget
 the benchmark's task loader declares (`__step_budget__`, with its public source) or saying
 it has none, and, where the benchmark YAML sets the budget itself (Online-Mind2Web's
-required `step_budget`), the value it sets and whether it differs (architecture §4.10.1
-"基准的步数预算", §4.17; `tests/test_cli/test_config_templates.py`).
+required `step_budget`), the value it sets and whether it differs, and, when the agent's
+`max_steps` is below the budget each task gets, that the ceiling decides (Skyvern's 10
+against Online-Mind2Web's 25: its tasks run 10 steps unless `max_steps` is raised;
+architecture §4.10.1 "基准的步数预算", §4.17; `tests/test_cli/test_config_templates.py`).

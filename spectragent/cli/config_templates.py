@@ -1111,14 +1111,19 @@ def _name_step_budgets(
     The official budget is the task loader's ``__step_budget__``; where the
     benchmark YAML sets the budget itself (the task loader's ``step_budget``),
     the comment names that value beside the official one and says when they
-    differ. Only for a Loop that takes a task's own budget (the Loop input
-    ``max_steps``; ``docs/architecture_design.md`` §4.10.1 "基准的步数预算").
+    differ, and says when the agent's ``max_steps`` is below it: the ceiling
+    then decides how far each task runs (Skyvern's 10 against
+    Online-Mind2Web's 25). Only for a Loop that takes a task's own budget (the
+    Loop input ``max_steps``; ``docs/architecture_design.md`` §4.10.1
+    "基准的步数预算", §4.17).
     """
-    lines: list[str] = []
+    # Each benchmark's text, and the one budget each of its tasks is handed, when one.
+    budgets: list[tuple[str, str, int | None]] = []
     for benchmark, block in benchmarks:
         name = benchmark.benchmark_id
         official = benchmark.task_loader.__step_budget__
         loader = block.get("task_loader")
+        each: int | None = None
         if official is None:
             text = (
                 f"Step budget: the benchmark {name} has no official step budget, so every "
@@ -1132,6 +1137,7 @@ def _name_step_budgets(
             )
         else:
             given = loader.get("step_budget") if isinstance(loader, Mapping) else None
+            each = given if isinstance(given, int) else None
             protocol = f"The protocol's own budget is {official.steps} ({official.source})"
             text = (
                 f"Step budget: this benchmark YAML sets no step budget (the benchmark {name}'s "
@@ -1144,8 +1150,8 @@ def _name_step_budgets(
                 + (f"; the YAML's {given} differs from it. " if given != official.value else ". ")
                 + "This max_steps stays the ceiling: a task runs at most the smaller of the two."
             )
-        lines += textwrap.wrap(text, width=88, break_long_words=False, break_on_hyphens=False)
-    if not lines:
+        budgets.append((name, text, each))
+    if not budgets:
         return
     for index, agent in enumerate(expanded.get("agent") or []):
         loop = agent.get("agent_loop") if isinstance(agent, dict) else None
@@ -1155,8 +1161,18 @@ def _name_step_budgets(
         takes = key is not None and "max_steps" in getattr(
             catalog.components["agent_loop"][key].implementation, "__loop_inputs__", {}
         )
-        if takes:
-            comments.setdefault(("agent", index, "agent_loop", "max_steps"), []).extend(lines)
+        if not takes:
+            continue
+        ceiling = loop["max_steps"]
+        lines: list[str] = []
+        for name, text, each in budgets:
+            if isinstance(ceiling, int) and each is not None and ceiling < each:
+                text += (
+                    f" This max_steps, {ceiling}, is below the {each} steps the benchmark {name} "
+                    f"gives each task, so its tasks run {ceiling} steps unless max_steps is raised."
+                )
+            lines += textwrap.wrap(text, width=88, break_long_words=False, break_on_hyphens=False)
+        comments.setdefault(("agent", index, "agent_loop", "max_steps"), []).extend(lines)
 
 
 # -- rendering --------------------------------------------------------

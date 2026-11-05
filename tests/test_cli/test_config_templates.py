@@ -1163,7 +1163,7 @@ def test_the_budget_the_benchmark_yaml_sets_is_named_with_the_protocols_own(comp
         f"input max_steps. {_M2W_PROTOCOL}. This max_steps stays the ceiling: a task runs at "
         "most the smaller of the two."
     ) in comment
-    assert "differs" not in comment
+    assert "differs" not in comment and "is below" not in comment  # BrowserUse's 500
     # The URL is never broken across lines.
     assert any(
         line.strip().startswith("# ") and "https://arxiv.org/abs/2504.01382v4)" in line
@@ -1173,6 +1173,21 @@ def test_the_budget_the_benchmark_yaml_sets_is_named_with_the_protocols_own(comp
     raw = yaml.safe_load(text)
     assert raw["agent"][0]["agent_loop"]["max_steps"] == 500
     composer.compose(run_root(raw, read_benchmark(benchmark)))
+
+
+def test_an_agents_ceiling_below_the_budget_each_task_gets_is_pointed_out(composer, tmp_path):
+    """Skyvern starts from its upstream 10 steps; Online-Mind2Web gives each task 25."""
+    benchmark = _browser_benchmark(tmp_path, "online_mind2web", _M2W_TASK, step_budget=25)
+    text = render_config_template(
+        TemplateChoices(agent="skyvern.dom", model="m", benchmark=benchmark), composer=composer
+    )
+
+    assert _max_steps_comment(text).endswith(
+        "This max_steps stays the ceiling: a task runs at most the smaller of the two. This "
+        "max_steps, 10, is below the 25 steps the benchmark online_mind2web gives each task, so "
+        "its tasks run 10 steps unless max_steps is raised."
+    )
+    assert yaml.safe_load(text)["agent"][0]["agent_loop"]["max_steps"] == 10
 
 
 def test_a_configured_budget_other_than_the_protocols_is_pointed_out(composer, tmp_path):
