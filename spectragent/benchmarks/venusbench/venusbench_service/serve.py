@@ -27,6 +27,17 @@ checkout as it was cloned:
   fails to write the forwarder it installs, and the service never starts. It
   is set back to ``TMPDIR`` once the app has imported every task.
 
+It also fixes one bug of VenusBench's at run time (the user's ruling of
+2026-11-05: a bug of the official harness that affects runs or scoring is
+fixed on our side, and the deviation recorded): the GSATracking tasks start a
+thread at initialize that calls or texts the device on the wall clock, and
+only their ``is_successful`` stops it; ``tear_down`` never does. VenusBench's
+own runner calls ``is_successful`` only when the agent declared the task done,
+and a sweep that keeps its device skips the score when the benchmark lists no
+verifier or the answer or score call fails; the thread then rings or texts the
+next task's device. :func:`stop_background_threads` makes ``TaskEval.tear_down``
+stop and join a task's thread first.
+
 :func:`prepare` is shared with ``setup_apps.py`` beside it.
 """
 
@@ -35,6 +46,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 
@@ -55,6 +67,11 @@ LOCAL_FOLDERS = {
     "zipxtract_zip": "zip",
     "simple_draw_guim": "GUIM",
 }
+#: The flag and thread of each background loop a GSATracking task starts.
+BACKGROUND_THREADS = (("_stop_calling", "call_thread"), ("_stop_sending", "sms_thread"))
+#: How long tear-down waits for a stopped thread: each looks at its flag at least
+#: every 10 s (its pause between two calls or texts).
+THREAD_JOIN_S = 15.0
 #: Where its tasks put files on the device, as its own settings file says.
 REMOTE_PATHS = {"gui_browsing": "/sdcard/GUIBrowsing", "test": "/sdcard/test", "sdcard": "/sdcard"}
 
@@ -89,6 +106,34 @@ def settings(src: str, files: str, adb: str) -> dict[str, object]:
     }
 
 
+def stop_background_threads(
+    task_eval: type, *, warn: Callable[[str], object], join_s: float = THREAD_JOIN_S
+) -> None:
+    """Make *task_eval*'s ``tear_down`` stop a task's call or SMS thread before it runs.
+
+    *task_eval* is VenusBench's ``TaskEval``, the class every task's
+    ``tear_down`` reaches through ``super()``. For each background thread a
+    task started (:data:`BACKGROUND_THREADS`), its flag is set, as the task's
+    own ``is_successful`` sets it, and the thread is joined, at most *join_s*;
+    *warn* hears a thread still running then. A task with no thread is torn
+    down as before.
+    """
+    tear_down = task_eval.tear_down
+
+    def tear_down_after_its_threads(self: object, env: object) -> object:
+        for flag, name in BACKGROUND_THREADS:
+            thread = getattr(self, name, None)
+            if thread is None:
+                continue
+            setattr(self, flag, True)
+            thread.join(timeout=join_s)
+            if thread.is_alive():
+                warn(f"{type(self).__name__}'s {name} still runs {join_s:g} s after it was stopped")
+        return tear_down(self, env)
+
+    task_eval.tear_down = tear_down_after_its_threads
+
+
 def prepare(launcher: ModuleType, args: argparse.Namespace) -> None:
     """Enter the checkout, fill VenusBench's settings, and apply AndroidWorld's launcher's patches."""
     launcher.enter_checkout(args.src)
@@ -108,6 +153,12 @@ def main() -> None:
     android_server = load("android_server", args.service_app)
     # audio_recorder.py, imported with the app's registry, pointed it at the checkout.
     tempfile.tempdir = None
+    from absl import logging
+    from android_world.task_evals import task_eval
+
+    stop_background_threads(
+        task_eval.TaskEval, warn=lambda note: logging.warning("venusbench serve.py: %s", note)
+    )
     launcher.serve(android_server, args.port)
 
 
