@@ -3338,7 +3338,7 @@ c 段没做、留给后面的：`benchmark_spec` 记录与分叉任务继承源�
 
 AndroidWorld 的安装（`spectragent/benchmarks/androidworld/install.py`，默认在缓存里的 `android/androidworld/installation`，即开局布置组件省略 `root` 时找的地方）：
 
-1. `src/`：克隆仓库、检出钉住的 commit（已有检出在别的 commit 上时先 fetch 那个 commit；那里有个不是 git 检出的目录时拒绝，不碰它）；
+1. `src/`：只取钉住的那一个 commit（`git init` 再 `fetch --depth 1 origin <commit>`、检出；已有检出在别的 commit 上时照样只 fetch 那个 commit；那里有个不是 git 检出的目录时拒绝，不碰它）。2026-11-05 起与 VenusBench 的安装共用同一个 `check_out`（以前是整个克隆），下载也共用一个 `download_to`（`install.py`）；
 2. `.venv/`：`uv venv --python 3.11`，用 `uv pip sync` 对齐到 `androidworld_service/requirements.lock.txt`（随包发布，是 2026-11-01 起本机实际跑着的那 91 个，含 `requirements.txt` 没列的 fastapi 与 uvicorn；锁里的装成锁里的版本，锁里没有的卸掉），再以可编辑、不带依赖的方式装检出本身（这一步把它的两个 protobuf 编译进 `src/`），所以每次 setup 之后 venv 里恰好是锁里的包加检出；
 3. `cache/a11y/`：android_env 装到设备上的无障碍转发器，从它的地址下载一次，核对 SHA-256。
 

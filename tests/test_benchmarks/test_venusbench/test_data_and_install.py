@@ -202,9 +202,9 @@ def installer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, data_root: Path) 
     blobs = {name: name.encode() for name in ("app", "forwarder", "fitbook", "file")}
     sha = {name: hashlib.sha256(blob).hexdigest() for name, blob in blobs.items()}
     installer.contents = {sha[name]: blob for name, blob in blobs.items()}
-    for module in (install, androidworld_install):
-        monkeypatch.setattr(module, "run_program", installer)
-        monkeypatch.setattr(module, "download_file", installer.download)
+    # The checkout and the downloads are AndroidWorld's shared steps.
+    monkeypatch.setattr(androidworld_install, "run_program", installer)
+    monkeypatch.setattr(androidworld_install, "download_file", installer.download)
     monkeypatch.setattr(install, "SERVICE_APP_SHA256", sha["app"])
     monkeypatch.setattr(service, "SERVICE_APP_SHA256", sha["app"])
     monkeypatch.setattr(androidworld_install, "FORWARDER_SHA256", sha["forwarder"])

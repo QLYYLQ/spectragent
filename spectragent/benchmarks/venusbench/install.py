@@ -5,7 +5,7 @@ The installation the ``venusbench`` setup component runs the service from
 by default ``android/venusbench/installation`` in the shared cache:
 
 1. ``src/``: VenusBench's repository at the pinned commit, that one commit
-   only (a shallow fetch: its branch's history is not needed);
+   fetched (AndroidWorld's ``check_out``);
 2. ``.venv/``: a CPython 3.11 venv synced to ``venusbench_service/requirements.lock.txt``
    (``uv pip sync``, as AndroidWorld's); the checkout is not installed into
    it: the launcher puts it on ``sys.path``, and its protocol buffers' code is
@@ -34,17 +34,11 @@ from pathlib import Path
 from spectragent.benchmarks.androidworld.install import (
     avd_missing,
     cache_forwarder,
-    program,
+    check_out,
+    download_to,
     sync_venv,
 )
-from spectragent.benchmarks.androidworld.service import checkout_commit
-from spectragent.benchmarks.data import (
-    BenchmarkSetupError,
-    Say,
-    download_file,
-    file_sha256,
-    run_program,
-)
+from spectragent.benchmarks.data import Say, file_sha256
 from spectragent.benchmarks.venusbench.service import (
     SERVICE_APP_SHA256,
     SERVICE_APP_URL,
@@ -121,49 +115,12 @@ class VenusBenchInstaller:
 
     def install(self, say: Say) -> None:
         installation = self.installation
-        self._check_out(say)
+        check_out(installation.src, installation.code, say)
         sync_venv(installation.python, LOCK, say, "VenusBench")
-        _download(SERVICE_APP_URL, SERVICE_APP_SHA256, installation.service_app, say)
+        download_to(SERVICE_APP_URL, SERVICE_APP_SHA256, installation.service_app, say)
         cache_forwarder(installation.forwarder_apk, say)
         self._download_the_files(say)
-        _download(FITBOOK_URL, FITBOOK_SHA256, installation.fitbook_apk, say)
-
-    def _check_out(self, say: Say) -> None:
-        src = self.installation.src
-        code = self.installation.code
-        git = program("git", code.name)
-        if checkout_commit(src) == code.commit:
-            say(f"VenusBench's checkout {src} is at {code.commit}")
-            return
-        if not src.exists():
-            say(f"fetching {code.commit} of {code.repository} into {src}")
-            src.mkdir(parents=True)
-            run_program([git, "-C", src, "init", "--quiet"], "make VenusBench's checkout")
-            run_program(
-                [git, "-C", src, "remote", "add", "origin", code.repository],
-                "name VenusBench's repository",
-            )
-        elif not (src / ".git").exists():
-            raise BenchmarkSetupError(
-                f"{src} is there and is no git checkout: move it away, and VenusBench is "
-                f"fetched there"
-            )
-        else:
-            say(f"fetching {code.commit} into {src}")
-        run_program(
-            [git, "-C", src, "fetch", "--quiet", "--depth", "1", "origin", code.commit],
-            "fetch VenusBench's pinned commit",
-        )
-        run_program(
-            [git, "-C", src, "-c", "advice.detachedHead=false", "checkout", "--quiet"]
-            + ["--detach", code.commit],
-            "check out VenusBench's pinned commit",
-        )
-        found = checkout_commit(src)
-        if found != code.commit:
-            raise BenchmarkSetupError(
-                f"the checkout {src} is at {found} after checking out {code.commit}"
-            )
+        download_to(FITBOOK_URL, FITBOOK_SHA256, installation.fitbook_apk, say)
 
     def _download_the_files(self, say: Say) -> None:
         files = drive_files()
@@ -180,18 +137,7 @@ class VenusBenchInstaller:
             return
         say(f"downloading {len(missing)} of VenusBench's {len(files)} external files into {folder}")
         for item in missing:
-            _download(DRIVE_URL.format(id=item.drive_id), item.sha256, folder / item.path, say)
-
-
-def _download(url: str, sha256: str, target: Path, say: Say) -> None:
-    """Download *url* to *target*, checked against *sha256*, unless *target* already is that file."""
-    if target.is_file() and file_sha256(target) == sha256:
-        say(f"{target} is in place")
-        return
-    target.parent.mkdir(parents=True, exist_ok=True)
-    partial = target.with_name(f".{target.name}.partial")
-    download_file(url, sha256, partial, say)
-    partial.replace(target)
+            download_to(DRIVE_URL.format(id=item.drive_id), item.sha256, folder / item.path, say)
 
 
 __all__ = [

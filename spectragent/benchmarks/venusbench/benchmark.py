@@ -8,7 +8,7 @@ from pydantic import BaseModel, JsonValue
 
 from spectragent.benchmarks._registrar import BenchmarkBase
 from spectragent.benchmarks.androidworld.data import Subset, TaskLists
-from spectragent.benchmarks.androidworld.install import named_emulator
+from spectragent.benchmarks.androidworld.install import installation_of, named_emulator
 from spectragent.benchmarks.androidworld.open_app import read_open_app_table
 from spectragent.benchmarks.venusbench.install import VenusBenchInstaller
 from spectragent.benchmarks.venusbench.service import VenusBenchInstallation
@@ -103,10 +103,7 @@ class VenusBenchBenchmark(BenchmarkBase):
 
 def _installation(config: BaseModel) -> VenusBenchInstallation:
     """The installation the block's setup component looks for: at its ``root``, else the default."""
-    root: object = getattr(getattr(config, "setup", None), "root", None)
-    if not (root is None or isinstance(root, str)):
-        raise TypeError(f"the venusbench setup's root is {root!r}")
-    return VenusBenchInstallation.at(root)
+    return installation_of(config, VenusBenchInstallation)
 
 
 __all__ = ["SUBSETS", "VenusBenchBenchmark"]

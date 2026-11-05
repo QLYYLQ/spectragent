@@ -4,8 +4,8 @@ The installation the setup component runs AndroidWorld's service from
 (``service.py``'s :class:`~spectragent.benchmarks.androidworld.service.Installation`),
 by default ``android/androidworld/installation`` in the shared cache:
 
-1. ``src/``: AndroidWorld's repository, cloned and checked out at the pinned
-   commit (fetched first when a checkout there is at another commit);
+1. ``src/``: AndroidWorld's repository at the pinned commit, that one commit
+   fetched (:func:`check_out`, shared with VenusBench's installation);
 2. ``.venv/``: a CPython 3.11 venv made by ``uv``, synced to the packages
    of ``androidworld_service/requirements.lock.txt`` (``uv pip sync``: what
    the lock lists is installed at its version, and anything else removed),
@@ -23,8 +23,8 @@ prepares on a running emulator (this command starts none).
 
 VenusBench's installation (``spectragent/benchmarks/venusbench/install.py``)
 shares the steps that do not depend on AndroidWorld's checkout:
-:func:`program`, :func:`sync_venv`, :func:`cache_forwarder` and
-:func:`avd_missing`.
+:func:`check_out`, :func:`program`, :func:`sync_venv`, :func:`cache_forwarder`,
+:func:`download_to`, :func:`avd_missing` and :func:`installation_of`.
 """
 
 from __future__ import annotations
@@ -34,14 +34,14 @@ import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
 from pydantic import BaseModel, JsonValue
 
 from spectragent.benchmarks.androidworld.service import (
     FORWARDER_APK,
-    PINNED_COMMIT,
-    REPOSITORY,
     Installation,
+    PinnedCode,
     checkout_commit,
 )
 from spectragent.benchmarks.data import (
@@ -53,6 +53,8 @@ from spectragent.benchmarks.data import (
 )
 from spectragent.core.capabilities.android.backends.local_emulator import find_avd_home
 
+#: An installation of a benchmark that runs AndroidWorld's code.
+Kind = TypeVar("Kind", bound=Installation)
 #: The packages the venv holds.
 LOCK = Path(__file__).resolve().parent / "androidworld_service" / "requirements.lock.txt"
 #: The Python AndroidWorld runs on (its pyproject.toml: ``>=3.11``; its Dockerfile: 3.11).
@@ -97,7 +99,7 @@ class AndroidWorldInstallation:
         return found
 
     def install(self, say: Say) -> None:
-        self._check_out(say)
+        check_out(self.installation.src, self.installation.code, say)
         sync_venv(self.installation.python, LOCK, say, "AndroidWorld")
         run_program(
             [
@@ -114,40 +116,52 @@ class AndroidWorldInstallation:
         )
         cache_forwarder(self.installation.forwarder_apk, say)
 
-    def _check_out(self, say: Say) -> None:
-        src = self.installation.src
-        git = program("git", "AndroidWorld")
-        if checkout_commit(src) == PINNED_COMMIT:
-            say(f"AndroidWorld's checkout {src} is at {PINNED_COMMIT}")
-            return
-        if not src.exists():
-            say(f"cloning {REPOSITORY} into {src}")
-            src.parent.mkdir(parents=True, exist_ok=True)
-            run_program(
-                [git, "clone", "--quiet", "--no-checkout", REPOSITORY, src],
-                "clone AndroidWorld",
-            )
-        elif (src / ".git").exists():
-            say(f"fetching {PINNED_COMMIT} into {src}")
-            run_program(
-                [git, "-C", src, "fetch", "--quiet", "origin", PINNED_COMMIT],
-                "fetch AndroidWorld's pinned commit",
-            )
-        else:
-            raise BenchmarkSetupError(
-                f"{src} is there and is no git checkout: move it away, and AndroidWorld is "
-                f"cloned there"
-            )
+
+def check_out(src: Path, code: PinnedCode, say: Say) -> None:
+    """Check *code*'s pinned commit out at *src*, fetching that one commit; nothing when it is there.
+
+    A new checkout is made empty and fetches the commit alone (``--depth 1``:
+    the branch's history is not needed); a checkout at another commit fetches
+    the pinned one the same way. A directory there that is no git checkout is
+    left alone.
+
+    Raises:
+        BenchmarkSetupError: Git is not on PATH, the directory is no checkout,
+            or the checkout is not at the commit afterwards.
+        ProgramError: A git command failed.
+    """
+    git = program("git", code.name)
+    if checkout_commit(src) == code.commit:
+        say(f"{code.name}'s checkout {src} is at {code.commit}")
+        return
+    if not src.exists():
+        say(f"fetching {code.commit} of {code.repository} into {src}")
+        src.mkdir(parents=True)
+        run_program([git, "-C", src, "init", "--quiet"], f"make {code.name}'s checkout")
         run_program(
-            [git, "-C", src, "-c", "advice.detachedHead=false", "checkout", "--quiet"]
-            + ["--detach", PINNED_COMMIT],
-            "check out AndroidWorld's pinned commit",
+            [git, "-C", src, "remote", "add", "origin", code.repository],
+            f"name {code.name}'s repository",
         )
-        found = checkout_commit(src)
-        if found != PINNED_COMMIT:
-            raise BenchmarkSetupError(
-                f"the checkout {src} is at {found} after checking out {PINNED_COMMIT}"
-            )
+    elif not (src / ".git").exists():
+        raise BenchmarkSetupError(
+            f"{src} is there and is no git checkout: move it away, and {code.name} is fetched there"
+        )
+    else:
+        say(f"fetching {code.commit} into {src}")
+    run_program(
+        [git, "-C", src, "fetch", "--quiet", "--depth", "1", "origin", code.commit],
+        f"fetch {code.name}'s pinned commit",
+    )
+    run_program(
+        [git, "-C", src, "-c", "advice.detachedHead=false", "checkout", "--quiet"]
+        + ["--detach", code.commit],
+        f"check out {code.name}'s pinned commit",
+    )
+    found = checkout_commit(src)
+    if found != code.commit:
+        raise BenchmarkSetupError(
+            f"the checkout {src} is at {found} after checking out {code.commit}"
+        )
 
 
 def sync_venv(python: Path, lock: Path, say: Say, name: str) -> None:
@@ -167,13 +181,30 @@ def sync_venv(python: Path, lock: Path, say: Say, name: str) -> None:
 
 def cache_forwarder(target: Path, say: Say) -> None:
     """Download the accessibility forwarder android_env installs to *target*, unless it is there."""
-    if target.is_file() and file_sha256(target) == FORWARDER_SHA256:
-        say(f"the accessibility forwarder is cached at {target}")
+    download_to(FORWARDER_URL, FORWARDER_SHA256, target, say)
+
+
+def download_to(url: str, sha256: str, target: Path, say: Say) -> None:
+    """Download *url* to *target*, checked against *sha256*, unless *target* already is that file.
+
+    Written beside *target* first and moved into place, so an interrupted
+    download leaves no file that looks installed.
+    """
+    if target.is_file() and file_sha256(target) == sha256:
+        say(f"{target} is in place")
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_name(f".{target.name}.partial")
-    download_file(FORWARDER_URL, FORWARDER_SHA256, partial, say)
+    download_file(url, sha256, partial, say)
     partial.replace(target)
+
+
+def installation_of(config: BaseModel, kind: type[Kind]) -> Kind:
+    """The installation of *kind* a benchmark block's setup component looks for: at its ``root``, else the default."""
+    root: object = getattr(getattr(config, "setup", None), "root", None)
+    if not (root is None or isinstance(root, str)):
+        raise TypeError(f"the {kind.code.benchmark} setup's root is {root!r}")
+    return kind.at(root)
 
 
 def avd_missing(avd: str, avd_home: str | None) -> Path | None:
@@ -223,6 +254,9 @@ __all__ = [
     "AndroidWorldInstallation",
     "avd_missing",
     "cache_forwarder",
+    "check_out",
+    "download_to",
+    "installation_of",
     "named_emulator",
     "program",
     "sync_venv",
