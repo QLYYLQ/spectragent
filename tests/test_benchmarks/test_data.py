@@ -201,7 +201,7 @@ def test_online_mind2web_is_written_as_its_loader_reads_it(
 
     from spectragent.core.data_loader.task.online_mind2web import OnlineMind2WebTaskLoader
 
-    hard = OnlineMind2WebTaskLoader(subset="Hard", data_dir=str(tmp_path))
+    hard = OnlineMind2WebTaskLoader(subset="Hard", data_dir=str(tmp_path), step_budget=25)
     assert hard.task_ids() == ["t2"]
     assert hard.get_task_context("t2").env == {"start_url": "https://plans.example.com/"}
 

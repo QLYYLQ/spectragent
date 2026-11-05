@@ -26,6 +26,11 @@
 # (2 s for a subset of MiniWoB++ tasks), computed in code from the subset run. The
 # run configuration writes none of them; a field both write differently is refused.
 #
+# Each task gets the steps AndroidWorld's runner gives it, int(10 x complexity), 10 to
+# 120 (android_world/suite_utils.py:491-502): the task loader hands it to the Loop as
+# max_steps, and the run configuration's max_steps stays the ceiling, so matching its
+# runner on every task takes a max_steps of at least 120.
+#
 # The typing and scroll are how AndroidWorld's own runner drives every agent, at
 # its pinned commit 55ddaf5e (android_world/ in its checkout):
 #   typing: adb shell input text with the text decomposed and every non-ASCII

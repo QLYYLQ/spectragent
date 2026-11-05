@@ -68,7 +68,10 @@ def test_a_benchmark_block_needs_its_task_loader() -> None:
 def test_another_benchmarks_loader_is_refused() -> None:
     raw = {
         "benchmark": [
-            {"benchmark_id": "online_mind2web", "task_loader": {"benchmark_name": "browsecomp"}}
+            {
+                "benchmark_id": "online_mind2web",
+                "task_loader": {"benchmark_name": "browsecomp", "step_budget": 25},
+            }
         ]
     }
     with pytest.raises(ValidationError) as refused:
@@ -89,7 +92,11 @@ def test_an_unknown_benchmark_is_refused_before_anything_is_imported() -> None:
 def test_the_references_are_the_eval_loader_block(tmp_path: Path) -> None:
     directory = _data(tmp_path, "online_mind2web", "Hard", "t1")
     loader = {"benchmark_name": "online_mind2web", "subset": "Hard", "data_dir": str(directory)}
-    benchmark = _benchmark(benchmark_id="online_mind2web", task_loader=loader, eval_loader=loader)
+    benchmark = _benchmark(
+        benchmark_id="online_mind2web",
+        task_loader={**loader, "step_budget": 25},
+        eval_loader=loader,
+    )
     references = benchmark.reference_loader()  # type: ignore[attr-defined]
     assert references is benchmark.eval_loader  # type: ignore[attr-defined]
     assert references.get("t1").expected_answer == "answer t1"
@@ -103,7 +110,7 @@ def test_without_a_block_the_references_are_the_registered_loader_for_the_task_s
     _data(tmp_path, "online_mind2web", "Hard", "h1")
     benchmark = _benchmark(
         benchmark_id="online_mind2web",
-        task_loader={"benchmark_name": "online_mind2web", "subset": "Hard"},
+        task_loader={"benchmark_name": "online_mind2web", "subset": "Hard", "step_budget": 25},
     )
     assert benchmark.eval_loader is None  # type: ignore[attr-defined]
     references = benchmark.reference_loader()  # type: ignore[attr-defined]

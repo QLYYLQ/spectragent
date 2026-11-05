@@ -45,6 +45,7 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
+from typing import ClassVar
 
 from spectragent.core.data_loader._common import (
     BenchmarkDataError,
@@ -53,6 +54,7 @@ from spectragent.core.data_loader._common import (
     resolve_split_file,
 )
 from spectragent.core.data_loader.task._registrar import TaskLoaderBase
+from spectragent.core.data_loader.task.base import StepBudget
 from spectragent.core.registries import setup_class_for_env
 from spectragent.schemas.task import TaskContext, TaskDefinition
 
@@ -64,6 +66,14 @@ class AndroidWorldTaskLoader(TaskLoaderBase):
     """AndroidWorld's tasks, prepared and scored on the device by AndroidWorld's own service."""
 
     __registry_key__ = "androidworld"
+    __step_budget__: ClassVar[StepBudget | None] = StepBudget(
+        steps="int(10 x complexity) steps, 10 to 120 on the pinned commit",
+        source=(
+            "AndroidWorld's _allocate_step_budget: https://github.com/google-research/"
+            "android_world/blob/55ddaf5edc6f6c25673aed343907d5b9dca66f84/android_world/"
+            "suite_utils.py#L491-L502"
+        ),
+    )
 
     env_type: str = "android"
 

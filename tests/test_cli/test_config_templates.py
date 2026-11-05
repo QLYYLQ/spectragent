@@ -605,18 +605,53 @@ def test_each_agent_starts_from_its_upstream_settings(composer, agent_id, enviro
 def test_an_agents_sampling_values_go_into_the_provider_chosen_where_it_has_the_field(
     composer, llm, written
 ):
-    """The values name no provider: each lands only where the chosen provider has the field."""
-    raw = yaml.safe_load(
-        render_config_template(
-            TemplateChoices(agent="browser_use.dom", llm=llm, model="m"), composer=composer
-        )
+    """The values name no provider: each lands only where the chosen provider has the field.
+
+    One the provider has no field for is named in a comment instead, so the
+    template never drops an agent's start without a word.
+    """
+    text = render_config_template(
+        TemplateChoices(agent="browser_use.dom", llm=llm, model="m"), composer=composer
     )
+    raw = yaml.safe_load(text)
     block = raw["agent"][0]["llm"]
     fields = set(composer.catalog.components["llm"][llm].config_model.model_fields)
     for name in {"temperature", "frequency_penalty"} & fields - set(written):
         assert block[name] is None, name
     assert {name: block[name] for name in written} == written
+    declared = BrowserUseDomAgent.__template_block__["llm"]
+    assert isinstance(declared, dict)
+    for name, value in declared.items():
+        note = (
+            f"# {name}: {value}, the agent browser_use.dom's starting value, is not written: "
+            f"the llm {llm} has no {name} field."
+        )
+        assert (note in text) is (name not in written), name
     composer.compose(raw)
+
+
+def test_m3a_on_ollama_names_the_temperature_it_cannot_write(composer):
+    """Ollama has no temperature field: M3A's 0.0 is named where the field would be."""
+    text = render_config_template(
+        TemplateChoices(agent="m3a", llm="ollama.default", model="m"), composer=composer
+    )
+    note = (
+        "      # temperature: 0.0, the agent m3a's starting value, is not written: "
+        "the llm ollama.default has no temperature field."
+    )
+    lines = text.splitlines()
+    assert note in lines
+    # In the llm block, after its last field.
+    llm = lines.index("    llm:")
+    assert llm < lines.index(note) and lines[lines.index(note) + 1].startswith("# ")
+    assert "temperature" not in yaml.safe_load(text)["agent"][0]["llm"]
+    # Expanding the template again with --from keeps the comment: it is
+    # judged on the block the template writes, not on how the block began.
+    again = render_config_template(TemplateChoices(), yaml.safe_load(text), composer=composer)
+    assert note in again.splitlines()
+    assert "is not written" not in render_config_template(
+        TemplateChoices(agent="m3a", model="m"), composer=composer
+    )
 
 
 # ── an agent's start for its capability blocks (user ruling 2026-11-04) ──
@@ -1077,3 +1112,143 @@ def test_a_skeleton_holding_a_benchmark_is_refused_with_one_selected(composer, t
     source = yaml.safe_load(benchmark.read_text())
     with pytest.raises(BenchmarkSelectionError, match="never holds a benchmark"):
         render_config_template(TemplateChoices(benchmark=str(benchmark)), source, composer=composer)
+
+
+# ── with a benchmark: the step budget its tasks bring (§4.10.1 "基准的步数预算") ──
+
+
+def _browser_benchmark(
+    root: Path, benchmark_id: str, record: dict[str, str], **settings: int | None
+) -> str:
+    """A benchmark YAML over one task in a data directory of its own, its task loader given *settings*."""
+    data = root / "data"
+    data.mkdir(parents=True)
+    (data / "data_info.json").write_text(json.dumps({"split": {"All": "All.json"}}))
+    (data / "All.json").write_text(json.dumps([record]))
+    loader = {"benchmark_name": benchmark_id, "data_dir": str(data), **settings}
+    path = root / f"{benchmark_id}.yaml"
+    path.write_text(
+        yaml.safe_dump({"benchmark": [{"benchmark_id": benchmark_id, "task_loader": loader}]})
+    )
+    return str(path)
+
+
+def _max_steps_comment(text: str) -> str:
+    """The comment lines right above the agent Loop's ``max_steps``, joined into one text."""
+    lines = text.splitlines()
+    at = next(i for i, line in enumerate(lines) if line.startswith("      max_steps: "))
+    above = []
+    for line in reversed(lines[:at]):
+        if not line.startswith("      # "):
+            break
+        above.insert(0, line.removeprefix("      # "))
+    return " ".join(above)
+
+
+_M2W_TASK = {"task_id": "m2w-1", "task_text": "Find a flight", "start_url": "https://a.test"}
+#: How the comment names Online-Mind2Web's own budget and its source.
+_M2W_PROTOCOL = (
+    "The protocol's own budget is 25 steps (the Online-Mind2Web paper, Appendix E, for "
+    "open-source agents: https://arxiv.org/abs/2504.01382v4)"
+)
+
+
+def test_the_budget_the_benchmark_yaml_sets_is_named_with_the_protocols_own(composer, tmp_path):
+    benchmark = _browser_benchmark(tmp_path, "online_mind2web", _M2W_TASK, step_budget=25)
+    text = render_config_template(
+        TemplateChoices(model="m", benchmark=benchmark), composer=composer
+    )
+    comment = _max_steps_comment(text)
+    assert (
+        "Step budget: this benchmark YAML sets 25 steps for each task (the benchmark "
+        "online_mind2web's task_loader.step_budget), handed to the Loop per task as the Loop "
+        f"input max_steps. {_M2W_PROTOCOL}. This max_steps stays the ceiling: a task runs at "
+        "most the smaller of the two."
+    ) in comment
+    assert "differs" not in comment
+    # The URL is never broken across lines.
+    assert any(
+        line.strip().startswith("# ") and "https://arxiv.org/abs/2504.01382v4)" in line
+        for line in text.splitlines()
+    )
+    # The agent's ceiling stays what the agent starts from: BrowserUse's 500.
+    raw = yaml.safe_load(text)
+    assert raw["agent"][0]["agent_loop"]["max_steps"] == 500
+    composer.compose(run_root(raw, read_benchmark(benchmark)))
+
+
+def test_a_configured_budget_other_than_the_protocols_is_pointed_out(composer, tmp_path):
+    """The paper's 50-step computer-use setting, from a copy of the benchmark YAML."""
+    benchmark = _browser_benchmark(tmp_path, "online_mind2web", _M2W_TASK, step_budget=50)
+    text = render_config_template(
+        TemplateChoices(agent="ui_tars", environment="browser", model="m", benchmark=benchmark),
+        composer=composer,
+    )
+    comment = _max_steps_comment(text)
+    assert "this benchmark YAML sets 50 steps for each task" in comment
+    assert f"{_M2W_PROTOCOL}; the YAML's 50 differs from it." in comment
+
+
+def test_a_benchmark_yaml_that_sets_no_budget_says_so_and_names_the_protocols(composer, tmp_path):
+    benchmark = _browser_benchmark(tmp_path, "online_mind2web", _M2W_TASK, step_budget=None)
+    text = render_config_template(
+        TemplateChoices(model="m", benchmark=benchmark), composer=composer
+    )
+    assert (
+        "Step budget: this benchmark YAML sets no step budget (the benchmark online_mind2web's "
+        "task_loader.step_budget is null), so every task runs up to this max_steps, the "
+        f"agent's ceiling. {_M2W_PROTOCOL}."
+    ) in _max_steps_comment(text)
+
+
+@pytest.mark.parametrize(
+    ("benchmark_id", "record"),
+    [
+        ("browsecomp", {"task_id": "bc-1", "task_text": "(encrypted)"}),
+        (
+            "lexbench_browser",
+            {"task_id": "lex-1", "task_text": "Search", "start_url": "www.example.com"},
+        ),
+    ],
+)
+def test_a_benchmark_without_one_says_none_exists_and_the_agents_ceiling_applies(
+    composer, tmp_path, benchmark_id, record
+):
+    benchmark = _browser_benchmark(tmp_path, benchmark_id, record)
+    text = render_config_template(
+        TemplateChoices(agent="skyvern.dom", model="m", benchmark=benchmark), composer=composer
+    )
+    assert _max_steps_comment(text).endswith(
+        f"Step budget: the benchmark {benchmark_id} has no official step budget, so every "
+        "task runs up to this max_steps, the agent's ceiling."
+    )
+    assert yaml.safe_load(text)["agent"][0]["agent_loop"]["max_steps"] == 10
+
+
+def test_androidworlds_per_task_budget_is_named_beside_m3as_ceiling(composer, tmp_path):
+    benchmark = str(_androidworld(tmp_path))
+    text = render_config_template(
+        TemplateChoices(agent="m3a", model="m", benchmark=benchmark), composer=composer
+    )
+    comment = _max_steps_comment(text)
+    assert (
+        "Step budget: the benchmark androidworld gives each task int(10 x complexity) steps, "
+        "10 to 120 on the pinned commit, handed to the Loop per task as the Loop input "
+        "max_steps (AndroidWorld's _allocate_step_budget: https://github.com/google-research/"
+        "android_world/blob/55ddaf5edc6f6c25673aed343907d5b9dca66f84/android_world/"
+        "suite_utils.py#L491-L502)."
+    ) in comment
+
+
+def test_without_a_benchmark_no_step_budget_is_named(composer):
+    text = render_config_template(TemplateChoices(model="m"), composer=composer)
+    assert "Step budget" not in text
+
+
+def test_a_loop_that_takes_no_task_budget_is_told_none(composer, tmp_path):
+    """A branch runs ``1 + continue_steps`` and refuses a task's ``max_steps`` (§4.1 "Loop 输入")."""
+    benchmark = _browser_benchmark(tmp_path, "online_mind2web", _M2W_TASK, step_budget=25)
+    text = render_config_template(
+        TemplateChoices(loop="branch", model="m", benchmark=benchmark), composer=composer
+    )
+    assert "max_steps: " in text and "Step budget" not in text

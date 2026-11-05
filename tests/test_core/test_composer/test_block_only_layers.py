@@ -68,7 +68,7 @@ _ONLINE_MIND2WEB: Block = {
     "benchmark": [
         {
             "benchmark_id": "online_mind2web",
-            "task_loader": {"benchmark_name": "online_mind2web"},
+            "task_loader": {"benchmark_name": "online_mind2web", "step_budget": 25},
         }
     ]
 }

@@ -18,7 +18,7 @@ from spectragent.benchmarks.selection import (
 )
 from spectragent.schemas.benchmark_spec import BenchmarkSpec, BlockFingerprints
 
-_LOADER = {"benchmark_name": "online_mind2web"}
+_LOADER = {"benchmark_name": "online_mind2web", "step_budget": 25}
 _BLOCK = {"benchmark_id": "online_mind2web", "task_loader": _LOADER}
 
 
@@ -180,6 +180,20 @@ def test_a_block_whose_setup_changed_since_is_refused_naming_the_part(tmp_path: 
     message = str(refused.value)
     assert "its setup component (setup) changed since the run selected it" in message
     assert "task source" not in message and "capability" not in message
+
+
+def test_a_step_budget_changed_since_is_refused_as_a_changed_task_source(tmp_path: Path) -> None:
+    """``step_budget`` is part of the task loader block, so a branch's drift check sees it (§4.10.1)."""
+    path = _document(tmp_path, {"benchmark": [_BLOCK]})
+    spec = _selected(str(path))
+    assert read_spec(spec)["task_loader"]["step_budget"] == 25
+    changed = {**_BLOCK, "task_loader": {**_LOADER, "step_budget": 50}}
+    _document(tmp_path, {"benchmark": [changed]})
+    with pytest.raises(BenchmarkSelectionError) as refused:
+        read_spec(spec)
+    message = str(refused.value)
+    assert "its task source (task_loader) changed since the run selected it" in message
+    assert "setup" not in message and "capability" not in message
 
 
 def test_a_verifier_listed_since_is_allowed(tmp_path: Path) -> None:

@@ -23,10 +23,11 @@ def test_the_named_benchmarks_loaders_by_benchmark_in_the_order_named(
     directory = write_benchmark(tmp_path, "online_mind2web", [{"task_id": "t"}], subset="Hard")
     write_benchmark(tmp_path, "online_mind2web", [{"task_id": "u"}], subset="All")
     block = {"benchmark_name": "online_mind2web", "data_dir": str(directory)}
-    hard = {"benchmark_id": "online_mind2web", "task_loader": {**block, "subset": "Hard"}}
+    tasks = {**block, "step_budget": 25}
+    hard = {"benchmark_id": "online_mind2web", "task_loader": {**tasks, "subset": "Hard"}}
     every = {
         "benchmark_id": "online_mind2web",
-        "task_loader": {**block, "subset": "All"},
+        "task_loader": {**tasks, "subset": "All"},
         "eval_loader": {**block, "subset": "All"},
     }
     run = composer.compose({"benchmark": [hard, every]})

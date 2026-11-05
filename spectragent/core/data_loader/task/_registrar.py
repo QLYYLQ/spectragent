@@ -6,7 +6,7 @@ the ``TaskLoaderRegistrar`` metaclass.
 """
 
 from dataclasses import dataclass, field
-from typing import Annotated, Any
+from typing import Annotated, Any, ClassVar, Self
 
 from conscribe import create_registrar
 from pydantic import Field
@@ -19,7 +19,7 @@ from spectragent.core.data_loader._common import (
     resolve_split_file,
     resolve_task_id,
 )
-from spectragent.core.data_loader.task.base import BaseTaskLoader
+from spectragent.core.data_loader.task.base import BaseTaskLoader, StepBudget
 from spectragent.core.registries import setup_class_for_env
 from spectragent.schemas.data_version import DataVersion
 from spectragent.schemas.task import TaskContext, TaskDefinition
@@ -49,6 +49,11 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
 
     __abstract__ = True
     __config_annotated_only__ = True
+    #: The step budget its benchmark's public protocol gives each task, as
+    #: data (:class:`StepBudget`); ``None``: the protocol states none, and the
+    #: configured ``max_steps`` applies (``docs/architecture_design.md``
+    #: §4.10.1 "基准的步数预算").
+    __step_budget__: ClassVar[StepBudget | None] = None
 
     subset: Annotated[str, Field("All", description="Data subset")] = "All"
     data_dir: Annotated[
@@ -74,6 +79,18 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
 
     def __post_init__(self) -> None:
         self._load()
+
+    @classmethod
+    def for_reading(cls, subset: str | None = None) -> Self:
+        """This loader built from its defaults and *subset* only to read its tasks, never to run them.
+
+        What reads a benchmark's tasks without its benchmark YAML builds it
+        with: a branch sweep re-resolving a source run's setup context, an
+        export's decontamination. A loader with a setting only a run of its
+        tasks uses, which its benchmark YAML must write (Online-Mind2Web's
+        ``step_budget``), overrides this to give that setting explicitly.
+        """
+        return cls(subset=subset) if subset else cls()
 
     # ── Protocol implementation ──────────────────────────────────────
 
@@ -107,9 +124,11 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
 
         The ``env`` part delegates to the task's own setup, so each domain
         carries its own context forward: a browser task surfaces
-        ``start_url``. A dataset task has no loop inputs and no branch
+        ``start_url``. A loader whose benchmark gives a step budget
+        (``__step_budget__``) adds each task's as the loop input
+        ``max_steps`` in its override; a dataset task never has branch
         provenance. An unknown ``task_id``, or a task without a setup,
-        yields an empty ``TaskContext()``.
+        yields an empty ``TaskContext()`` here.
         """
         task = self._tasks.get(task_id)
         if task is None or task.setup is None:
