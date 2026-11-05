@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, JsonValue, ValidationError
 
 from spectragent.agents.browser_use.dom import BrowserUseDomAgent
 from spectragent.agents.m3a.agent import M3AAgent
-from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FILE, OPEN_APP_FORMAT
+from spectragent.benchmarks.androidworld.open_app import OPEN_APP_FILE
 from spectragent.benchmarks.androidworld.service import PINNED_COMMIT
 from spectragent.benchmarks.androidworld.tasks import instance_seed
 from spectragent.benchmarks.selection import BenchmarkSelectionError, read_benchmark, run_root
@@ -36,6 +36,7 @@ from spectragent.core.registries import (
 )
 from spectragent.core.runtime import AgentRuntime
 from tests._helpers.android_device import fake_service_apk
+from tests._helpers.benchmark_data import open_app_table
 
 #: A two-name ``open_app`` table, as AndroidWorld's task list writer would read it.
 TABLE = {
@@ -904,9 +905,7 @@ def _androidworld_data(root: Path) -> Path:
     """A small AndroidWorld data directory: one task, a two-name table."""
     data = root / "data"
     data.mkdir(parents=True)
-    (data / OPEN_APP_FILE).write_text(
-        json.dumps({"format": OPEN_APP_FORMAT, "commit": PINNED_COMMIT, "apps": TABLE})
-    )
+    (data / OPEN_APP_FILE).write_text(json.dumps(open_app_table(PINNED_COMMIT, TABLE)))
     (data / "data_info.json").write_text(json.dumps({"split": {"All": "All.json"}}))
     task = {
         "commit": PINNED_COMMIT,
@@ -1245,9 +1244,7 @@ def test_venusbenchs_per_task_budget_and_its_own_source_are_named(composer, tmp_
 
     data = tmp_path / "data"
     data.mkdir()
-    (data / OPEN_APP_FILE).write_text(
-        json.dumps({"format": OPEN_APP_FORMAT, "commit": VENUSBENCH.commit, "apps": TABLE})
-    )
+    (data / OPEN_APP_FILE).write_text(json.dumps(open_app_table(VENUSBENCH.commit, TABLE)))
     (data / "data_info.json").write_text(json.dumps({"split": {"All": "All.json"}}))
     task = {
         "commit": VENUSBENCH.commit,

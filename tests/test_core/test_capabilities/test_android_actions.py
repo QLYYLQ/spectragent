@@ -34,6 +34,7 @@ from spectragent.core.capabilities.android.actions import (
 from spectragent.core.capabilities.android.capability import AndroidCapability
 from spectragent.core.capabilities.android.device.channel import JsonObject
 from spectragent.core.capabilities.android.effects import (
+    AndroidOpenAppEffect,
     AndroidTextEffect,
     AndroidTouchEffect,
     ScreenPoint,
@@ -49,6 +50,7 @@ from tests._helpers.android_device import (
     phone_server,
     settings_forest,
 )
+from tests._helpers.benchmark_data import ANDROIDWORLD_DEFAULT_APP_URIS
 from tests._helpers.fake_adb import ShellResult
 from tests._helpers.fake_device_side import Answer
 
@@ -1294,6 +1296,131 @@ async def test_a_refusal_names_only_the_apps_of_the_table_that_are_installed(
     refused = await act(capability, "open_app", app_name="keep")
     assert refused.error == (
         "no app 'keep' is installed; installed apps by name: none, or an installed package name"
+    )
+
+
+#: AndroidWorld's ``contacts`` entry at the pinned commit (``adb_utils._PATTERN_TO_ACTIVITY``).
+PEOPLE = "com.google.android.contacts/com.android.contacts.activities.PeopleActivity"
+#: What this phone opens for AndroidWorld's contacts URI: not the table's activity.
+DEFAULT_CONTACTS = "com.example.contacts/com.example.contacts.People"
+
+
+async def test_a_default_app_name_opens_the_default_app_only_as_written_and_before_the_table(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    """AndroidWorld's ``launch_app`` checks ``app_name in _DEFAULT_URIS`` before its table.
+
+    So ``contacts`` opens the default app for ``content://contacts/people/``,
+    and ``Contacts`` the table's ``PeopleActivity``, as AndroidWorld's
+    lower-cased match of its table does; the table's names ignore extra
+    spaces, as before.
+    """
+    phone.launchable["com.google.android.contacts"] = PEOPLE
+    phone.default_apps["content://contacts/people/"] = DEFAULT_CONTACTS
+    capability.actions = [
+        AndroidOpenAppAction(
+            apps={"contacts": PEOPLE}, default_app_uris=ANDROIDWORLD_DEFAULT_APP_URIS
+        )
+    ]
+
+    opened = await act(capability, "open_app", app_name="contacts")
+    assert opened.success, opened.error
+    assert opened.effect == AndroidOpenAppEffect(
+        effect_id="android.open_app", uri="content://contacts/people/"
+    )
+    assert phone.focused == DEFAULT_CONTACTS
+    for name in ("Contacts", " contacts ", "CONTACTS"):
+        opened = await act(capability, "open_app", app_name=name)
+        assert opened.success, opened.error
+        assert opened.effect == AndroidOpenAppEffect(effect_id="android.open_app", activity=PEOPLE)
+        assert phone.focused == PEOPLE
+
+
+async def test_a_default_app_name_is_handed_to_the_view_intent_of_its_uri(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    phone.default_apps["http://"] = "com.android.chrome/com.google.android.apps.chrome.Main"
+    capability.actions = [AndroidOpenAppAction(apps={}, default_app_uris={"browser": "http://"})]
+
+    opened = await act(capability, "open_app", app_name="browser")
+
+    assert opened.success, opened.error
+    assert opened.effect is not None
+    assert opened.effect.describe() == "Asked the device's default app for http:// to open it."
+    assert phone.focused == "com.android.chrome/com.google.android.apps.chrome.Main"
+    # Not as written: no default app, no table name, no package of that name.
+    refused = await act(capability, "open_app", app_name="Browser")
+    assert refused.error == (
+        "no app 'Browser' is installed; installed apps by name: none; the device's default "
+        "apps by name, written exactly so: browser; or an installed package name"
+    )
+
+
+async def test_a_uri_no_app_takes_fails_with_ams_reason(
+    capability: AndroidCapability, phone: ScriptedPhone
+) -> None:
+    capability.actions = [AndroidOpenAppAction(default_app_uris={"email": "mailto:"})]
+    before = phone.focused
+
+    refused = await act(capability, "open_app", app_name="email")
+
+    assert not refused.success
+    assert refused.error == (
+        "BridgeError: am start of the default app for mailto: did not succeed: Error: Activity "
+        "not started, unable to resolve Intent { act=android.intent.action.VIEW dat=mailto: "
+        "flg=0x10000000 }"
+    )
+    assert phone.focused == before
+
+
+async def test_an_app_opened_by_name_or_package_records_the_activity_it_started(
+    capability: AndroidCapability,
+) -> None:
+    by_name = await act(capability, "open_app", app_name="Settings")
+    by_package = await act(capability, "open_app", app_name="com.android.settings")
+
+    assert by_name.effect == AndroidOpenAppEffect(
+        effect_id="android.open_app", activity="com.android.settings/com.android.settings.Settings"
+    )
+    assert by_package.effect == AndroidOpenAppEffect(
+        effect_id="android.open_app", activity="com.android.settings/.Settings"
+    )
+    assert by_package.effect is not None
+    assert by_package.effect.describe() == "Started com.android.settings/.Settings."
+    restored = restore_effects(ActionResult, by_package.model_dump(mode="json"), registered_effect)
+    assert ActionResult.model_validate(restored).effect == by_package.effect
+
+
+def test_the_description_and_the_refusal_name_the_default_app_names_when_there_are_some() -> None:
+    plain = AndroidOpenAppAction().descriptor().description
+    named = AndroidOpenAppAction(default_app_uris=ANDROIDWORLD_DEFAULT_APP_URIS).descriptor()
+
+    assert plain == (
+        "Open an app by its name on the home screen (for example Settings or Clock), or by its "
+        "package name."
+    )
+    assert named.description == (
+        f"{plain} The names browser, calendar, contacts, email and gallery, written exactly so, "
+        "open the device's default app for each."
+    )
+
+
+async def test_a_refusal_names_the_default_app_names_after_the_installed_apps(
+    capability: AndroidCapability,
+) -> None:
+    capability.actions = [
+        AndroidOpenAppAction(
+            apps={"settings": "com.android.settings"},
+            default_app_uris=ANDROIDWORLD_DEFAULT_APP_URIS,
+        )
+    ]
+
+    refused = await act(capability, "open_app", app_name="Notes")
+
+    assert refused.error == (
+        "no app 'Notes' is installed; installed apps by name: settings; the device's default "
+        "apps by name, written exactly so: browser, calendar, contacts, email, gallery; or an "
+        "installed package name"
     )
 
 

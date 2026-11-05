@@ -1742,6 +1742,22 @@ async def test_a_table_of_its_own_names_the_start_app_and_no_name_is_read_from_t
             await capability.teardown()
 
 
+async def test_a_start_app_takes_open_apps_default_app_names_first(tmp_path: Path) -> None:
+    """As ``open_app`` resolves it: ``browser`` written so is the default app for ``http://``."""
+    phone = ScriptedPhone(default_apps={"http://": "com.android.chrome/.Main"})
+    async with phone_server(phone) as adb:
+        capability = AndroidCapability(
+            service_apk=str(fake_service_apk(tmp_path)),
+            actions=[AndroidOpenAppAction(apps={}, default_app_uris={"browser": "http://"})],
+        )
+        configured(capability, adb)
+        await capability.setup(start_app="browser")
+        try:
+            assert phone.focused == "com.android.chrome/.Main"
+        finally:
+            await capability.teardown()
+
+
 async def test_a_run_that_opens_no_app_reads_no_names(tmp_path: Path) -> None:
     phone = ScriptedPhone()
     async with phone_server(phone) as adb:

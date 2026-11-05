@@ -18,9 +18,8 @@ from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.verdict import Verdict
 
-#: The Android capability and the action whose name table the benchmark gives.
+#: The Android capability, whose ``open_app`` name table the benchmark gives.
 _ANDROID = "android"
-_OPEN_APP = "android.open_app"
 #: The longest wait for a still screen before each capture: VenusBench's runner
 #: is AndroidWorld's, which waits up to 6 s at the start of each step.
 _STILL_SCREEN_WAIT_S = 6.0
@@ -56,26 +55,27 @@ class VenusBenchBenchmark(BenchmarkBase):
     def computed_capability(cls, config: BaseModel) -> list[dict[str, JsonValue]]:
         """VenusBench's ``open_app`` name table, and how long its runner waits for a still screen.
 
-        The table, as ``android.open_app``'s ``apps``, is read from beside the
-        task lists (``open_app.json``, which ``task_list.py`` writes from the
-        pinned checkout: the fork keeps AndroidWorld's table and adds its own
-        apps). Its ``calculator`` names Simple Calculator, which VenusBench
-        never installs (it installs Google's calculator); the table stays as
-        the fork has it, so opening ``calculator`` by name fails and says
-        which apps are installed.
+        The table, as ``android.open_app``'s ``apps`` and
+        ``default_app_uris``, is read from beside the task lists
+        (``open_app.json``, which ``task_list.py`` writes from the pinned
+        checkout: the fork keeps AndroidWorld's table and adds its own apps,
+        and keeps AndroidWorld's five default-app names, checked first, so
+        ``calendar`` written so opens the default calendar and ``Calendar``
+        its table's Google Calendar). Its ``calculator`` names Simple
+        Calculator, which VenusBench never installs (it installs Google's
+        calculator); the table stays as the fork has it, so opening
+        ``calculator`` by name fails and says which apps are installed.
 
         Raises:
             BenchmarkDataError: The task lists' directory holds no table from
                 the pinned commit.
         """
-        table: dict[str, JsonValue] = dict(
-            read_open_app_table(cls.data_directory(config), VENUSBENCH)
-        )
+        table = read_open_app_table(cls.data_directory(config), VENUSBENCH)
         return [
             {
                 "capability_id": _ANDROID,
                 "settle_max_wait_s": _STILL_SCREEN_WAIT_S,
-                "actions": [{"action_id": _OPEN_APP, "apps": table}],
+                "actions": [table.action_entry()],
             }
         ]
 

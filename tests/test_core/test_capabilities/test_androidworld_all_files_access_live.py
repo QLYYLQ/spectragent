@@ -108,7 +108,7 @@ async def prepared(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Pr
             capability=capability,
             adb=AdbClient(session.endpoint.host, session.endpoint.port),
             serial=session.serial,
-            apps=read_open_app_table(data),
+            apps=read_open_app_table(data).apps,
         )
     finally:
         await env.teardown()
@@ -204,8 +204,8 @@ async def _allowed_within(prepared: Prepared, package: str, within_s: float) -> 
 
 async def _open(prepared: Prepared, name: str) -> None:
     """Open the app *name* names in AndroidWorld's table, as ``open_app`` opens it."""
-    refused = await open_app(prepared.capability, prepared.apps, name)
-    assert refused is None, refused
+    started = await open_app(prepared.capability, prepared.apps, name)
+    assert not isinstance(started, str), started
 
 
 @pytest.mark.parametrize("app", GRANTED)

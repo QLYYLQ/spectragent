@@ -175,6 +175,10 @@ class ScriptedPhone:
             one it leaves out is labelled with its package name.
         more_launcher_apps: Further launcher activities the service lists,
             each ``{"label", "package", "activity"}``: a package with two.
+        default_apps: The app a data URI's ``VIEW`` intent brings to the
+            front, URI → component: the device's default app for it. ``am``
+            resolves a URI it lacks to nothing, as the emulator's does: exit 0,
+            the error on stderr (API 33, 2026-11-06).
         launcher_delay_s: How long the service takes to answer
             ``launcher_apps``: a cold device's package manager can be slow.
         helper_screenshots: Whether the helper takes screenshots (API 31-33);
@@ -254,6 +258,7 @@ class ScriptedPhone:
     )
     labels: dict[str, str] = field(default_factory=lambda: {"com.android.settings": "Settings"})
     more_launcher_apps: list[JsonValue] = field(default_factory=list)
+    default_apps: dict[str, str] = field(default_factory=dict)
     launcher_delay_s: float = 0.0
     helper_screenshots: bool = True
     screenshot_fails: bool = False
@@ -563,6 +568,18 @@ class ScriptedPhone:
             return ShellResult(
                 stdout=f"Starting: Intent {{ cmp={self.focused} }}\nStatus: ok\n".encode()
             )
+        if words[:5] == ["am", "start", "-a", "android.intent.action.VIEW", "-d"]:
+            uri = shlex.split(command)[5]
+            intent = f"act=android.intent.action.VIEW dat={uri}"
+            starting = f"Starting: Intent {{ {intent} }}\n".encode()
+            if uri not in self.default_apps:
+                return ShellResult(
+                    stdout=starting,
+                    stderr=f"Error: Activity not started, unable to resolve Intent {{ {intent} "
+                    "flg=0x10000000 }\n".encode(),
+                )
+            self.focused = self.default_apps[uri]
+            return ShellResult(stdout=starting)
         name = words[0] if words else command
         return ShellResult(
             stderr=f"/system/bin/sh: {name}: inaccessible or not found\n".encode(), exit_code=127

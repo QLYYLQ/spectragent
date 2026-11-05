@@ -118,3 +118,29 @@ class AndroidTextEffect(ActionEffect):
             field += f" of {self.field_package}"
         how = "replacing its text" if self.replaced else "at its cursor"
         return f"{head}Entered the text into {field}, {how}."
+
+
+class AndroidOpenAppEffect(ActionEffect):
+    """What ``open_app`` started: an activity, or the device's default app for a data URI.
+
+    Exactly one is given. ``activity`` is the component started,
+    ``package/activity``: the one the name's table entry gives, or the
+    package's launcher activity. ``uri`` is the data URI handed to the
+    device's default app for it (``am start -a android.intent.action.VIEW -d
+    <uri>``, AndroidWorld's default apps); which app took it is what the next
+    observation shows, as the system chose it.
+    """
+
+    activity: str | None = None
+    uri: str | None = None
+
+    @model_validator(mode="after")
+    def _one_target(self) -> Self:
+        if (self.activity is None) == (self.uri is None):
+            raise ValueError("exactly one of activity and uri is given")
+        return self
+
+    def describe(self, *, write_point: PointWriter = write_viewport_point) -> str:
+        if self.uri is not None:
+            return f"Asked the device's default app for {self.uri} to open it."
+        return f"Started {self.activity}."

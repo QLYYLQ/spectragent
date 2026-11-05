@@ -21,15 +21,20 @@ its cached forwarder; ``docs/architecture_design.md`` §11.2), and
   AndroidWorld's service wrote over the setting when it started;
 - the unsolved task scores 0 and, once the brightness is set over adb, 1, with
   the pinned commit in the verdict's identity and the task in its evidence;
+- ``open_app`` opens AndroidWorld's default-app names ``browser``, ``gallery``
+  and ``email`` as its ``launch_app`` does: the app AndroidWorld's own command
+  for the name's data URI brings to the front comes to the front;
 - teardown leaves no service, emulator or adb server, and nothing listens on
   adb's default port 5037 that did not before.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import socket
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 
 import pytest
@@ -42,8 +47,11 @@ from spectragent.core.capabilities.android.actions import AndroidOpenAppAction
 from spectragent.core.capabilities.android.adb import AdbClient
 from spectragent.core.capabilities.android.backends.base import AndroidProviderSession
 from spectragent.core.capabilities.android.backends.local_emulator import LocalEmulatorProvider
+from spectragent.core.capabilities.android.bridge import BridgeError, ForegroundApp
 from spectragent.core.capabilities.android.capability import AndroidCapability
+from spectragent.core.capabilities.android.effects import AndroidOpenAppEffect
 from spectragent.core.capabilities.android.environment import AndroidEnvironment
+from spectragent.schemas.action import Action
 from spectragent.schemas.verdict import Verdict
 from tests._helpers.android_runs import (
     FORWARDER,
@@ -51,6 +59,7 @@ from tests._helpers.android_runs import (
     installation_problem,
     write_task_list,
 )
+from tests._helpers.benchmark_data import ANDROIDWORLD_DEFAULT_APP_URIS
 from tests._helpers.process_checks import gone, groups, soon
 
 TASK = "SystemBrightnessMax"
@@ -169,6 +178,79 @@ async def test_the_task_scores_0_unsolved_and_1_once_solved(prepared: Prepared) 
         "task": TASK,
         "index": "0",
     }
+
+
+async def test_default_app_names_open_what_androidworlds_own_command_opens(
+    prepared: Prepared,
+) -> None:
+    """AndroidWorld's ``launch_app`` opens these with ``am start -a android.intent.action.VIEW -d <uri>``.
+
+    Each name is opened twice from the home screen: by that command, sent as
+    AndroidWorld sends it (``adb_utils._launch_default_app``), then by
+    ``open_app``; the same app comes to the front both times. The app is
+    stopped after each, so both start it from the same state: Gmail, opened
+    again while its first screen is up, stays behind the home screen.
+    """
+    capability = prepared.capability
+    (open_app,) = [a for a in capability.actions if isinstance(a, AndroidOpenAppAction)]
+    assert open_app.default_app_uris == ANDROIDWORLD_DEFAULT_APP_URIS  # from the checkout
+    home = await _home(prepared)
+
+    for name in ("browser", "gallery", "email"):
+        uri = ANDROIDWORLD_DEFAULT_APP_URIS[name]
+        await _shell(prepared, f"am start -a android.intent.action.VIEW -d {uri}")
+        theirs = await _opened(prepared, home)
+        await _stop(prepared, theirs)
+        opened = await capability.execute_action(
+            Action(name="android.open_app", params={"app_name": name})
+        )
+        ours = await _opened(prepared, home)
+        await _stop(prepared, ours)
+        print(f"open_app({name!r}), {uri}: AndroidWorld's command opened {theirs}; ours {ours}")
+
+        assert opened.success, opened.error
+        assert opened.effect == AndroidOpenAppEffect(effect_id="android.open_app", uri=uri)
+        assert ours.package not in (None, home.package)
+        assert ours.package == theirs.package
+
+
+async def test_a_uri_no_app_takes_fails_with_ams_reason(prepared: Prepared) -> None:
+    """``am`` exits 0 and says on stderr that nothing resolves the intent."""
+    with pytest.raises(BridgeError, match="unable to resolve Intent") as refused:
+        await prepared.capability.bridge.launcher.view("nosuchscheme:")
+    print(refused.value)
+
+
+async def _home(prepared: Prepared) -> ForegroundApp:
+    """Press home and return the home screen's app, once it has a window in front."""
+    await prepared.capability.execute_action(
+        Action(name="android.press_key", params={"key": "home"})
+    )
+    return await _shown(prepared, lambda front: True)
+
+
+async def _stop(prepared: Prepared, front: ForegroundApp) -> None:
+    """Stop the app *front* names, then go home."""
+    if front.package is not None:
+        await _shell(prepared, f"am force-stop {front.package}")
+    await _home(prepared)
+
+
+async def _opened(prepared: Prepared, home: ForegroundApp) -> ForegroundApp:
+    """The app that came up over the home screen; a cold start takes seconds."""
+    return await _shown(prepared, lambda front: front.package != home.package)
+
+
+async def _shown(
+    prepared: Prepared, wanted: Callable[[ForegroundApp], bool], within_s: float = 20.0
+) -> ForegroundApp:
+    """The app in front once it has a window and is *wanted*, or whatever is in front after *within_s*."""
+    deadline = time.monotonic() + within_s
+    front = await prepared.capability.bridge.apps.foreground()
+    while not (front.window is not None and wanted(front)) and time.monotonic() < deadline:
+        await asyncio.sleep(0.2)  # polling a window change, at most within_s
+        front = await prepared.capability.bridge.apps.foreground()
+    return front
 
 
 async def test_teardown_leaves_nothing_running(prepared: Prepared) -> None:
