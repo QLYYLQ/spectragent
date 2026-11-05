@@ -6,7 +6,7 @@ emulator booted writable from the AVD (a copy of AndroidWorld's set-up AVD,
 ``docs/architecture_design.md`` §11.2 "VenusBench-Mobile 的接入方案");
 ``spectragent benchmark setup venusbench`` names the steps::
 
-    emulator -avd VenusBenchAvd -no-snapshot -grpc 8554
+    emulator -avd VenusBenchAvd -no-snapshot -port 5554 -grpc 8554
     <root>/.venv/bin/python -I setup_apps.py --src <root>/src --files <root>/files/files_gui_browsing \\
         --adb <adb> --adb-server-port 5037 --console-port 5554 --grpc-target localhost:8554 \\
         --forwarder-apk <root>/cache/a11y/<forwarder> --fitbook-apk <root>/cache/fitbook/<apk>

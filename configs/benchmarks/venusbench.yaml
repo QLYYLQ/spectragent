@@ -35,7 +35,9 @@
 #
 # The benchmark's part of the Android capability's configuration is merged into the run
 # configuration's Android block (§4.10.1): the AVD and its runner's typing and scroll, below,
-# which are AndroidWorld's (the fork keeps env/adb_utils.py and env/actuation.py as they are);
+# which are AndroidWorld's: the fork keeps AndroidWorld's typing and scroll code, except that its
+# env/actuation.py has no clear_text handling and its env/adb_utils.py types empty words (two
+# spaces in a row), which AndroidWorld's skips;
 # the open_app name table, read from beside the task list; and the longest wait for a still
 # screen, 6 s, computed in code.
 #

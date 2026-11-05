@@ -264,6 +264,9 @@ def test_without_venusbenchs_avd_the_steps_to_make_it_are_named(
     assert f"there is no AVD named VenusBenchAvd in {tmp_path / 'avd'}: make it from" in message
     assert f"copy {tmp_path / 'avd'}/AndroidWorldAvd.avd to" in message
     assert str(install.SETUP_APPS) in message and "--fitbook-apk" in message
+    assert "emulator -avd VenusBenchAvd -no-snapshot -port 5554 -grpc 8554" in message, (
+        "the ports the next step reaches are the boot's own: a taken one fails the boot"
+    )
 
 
 def test_without_androidworlds_avd_its_setup_comes_first(
