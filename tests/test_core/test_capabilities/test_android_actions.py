@@ -1403,6 +1403,10 @@ def test_the_description_and_the_refusal_name_the_default_app_names_when_there_a
         f"{plain} The names browser, calendar, contacts, email and gallery, written exactly so, "
         "open the device's default app for each."
     )
+    one = AndroidOpenAppAction(default_app_uris={"browser": "http://"}).descriptor()
+    assert one.description == (
+        f"{plain} The name browser, written exactly so, opens the device's default app for it."
+    )
 
 
 async def test_a_refusal_names_the_default_app_names_after_the_installed_apps(

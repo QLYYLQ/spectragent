@@ -918,10 +918,11 @@ class AndroidOpenAppAction(AndroidWords, ActionBase):
         )
         if self.default_app_uris:
             *rest, last = sorted(self.default_app_uris)
-            names = f"{', '.join(rest)} and {last}" if rest else last
             text += (
-                f" The {'names' if rest else 'name'} {names}, written exactly so, open the "
-                "device's default app for each."
+                f" The names {', '.join(rest)} and {last}, written exactly so, open the device's "
+                "default app for each."
+                if rest
+                else f" The name {last}, written exactly so, opens the device's default app for it."
             )
         return self.describe(text, **context)
 
